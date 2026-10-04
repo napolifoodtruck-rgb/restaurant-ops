@@ -183,7 +183,8 @@ async function exportUnit(unit, options, folder) {
     console.log(`    ${window.startDate} to ${window.endDate}: ${summaries.length} invoices`);
     for (const summary of summaries) {
       try {
-        orders.push(await get(`/orders/${encodeURIComponent(summary.orderId)}`, { restaurantUnitId }));
+        // Keep the summary's fields too, in case the detail leaves any out.
+        orders.push({ ...summary, ...(await get(`/orders/${encodeURIComponent(summary.orderId)}`, { restaurantUnitId })) });
       } catch (error) {
         orders.push({ ...summary, detailError: error.message });
       }
