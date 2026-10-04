@@ -1,0 +1,19 @@
+{
+  "name": "restaurant-ops",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Restaurant operations system on top of Square: recipes, inventory, prep and ordering.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "typescript": "^6.0.0"
+  }
+}
