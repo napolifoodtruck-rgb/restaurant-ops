@@ -1,37 +1,40 @@
 /**
  * Reads a MarginEdge export (from scripts/marginedge-export.mjs) into our own neutral shapes:
- * vendors, products, vendor items with pack sizes, invoices with lines, and price history.
+ * vendors, products with units and conversions, vendor items with pack sizes, invoices
+ * with lines, and price history.
  *
- * It also runs the invoice self-checks from the design: each line's quantity × unit price
- * should equal its line total, and the lines plus charges should add up to the invoice
- * total. Lines that fail, and units we don't recognise, become flags for review instead of
- * silently entering costs.
+ * Invoice self-checks from the design:
+ * - each line's quantity × unit price should equal its line total;
+ * - the lines plus charges should add up to the invoice total;
+ * - each price, turned into a price per product unit, should be in the same range as
+ *   MarginEdge's own latest price for that product. A price far outside it usually means
+ *   we read the pack size wrong, so it becomes a question instead of entering costs.
  */
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { isStandardUnit, normalizeUnit, type Quantity } from '../core/units.ts';
+import { tryConvert, type ItemConversions, type Quantity } from '../core/units.ts';
+import { mergeConversions, parseReportUnit, readPack, sizeInItemName } from './marginedgeUnits.ts';
 
 // ---------------------------------------------------------------- MarginEdge shapes (export files)
 
+type Id = string | number;
+
 export interface MeProduct {
-  companyConceptProductId: string;
+  companyConceptProductId: Id;
   productName: string;
   reportByUnit?: string;
   latestPrice?: number;
-  centralProductId?: string;
-  taxExempt?: boolean;
-  categories?: { categoryId: string; percentAllocation?: number }[];
+  categories?: { categoryId: Id; percentAllocation?: number }[];
 }
 
 export interface MeVendor {
-  vendorId: string;
+  vendorId: Id;
   vendorName: string;
-  centralVendorId?: string;
 }
 
 export interface MePackaging {
-  packagingId: string;
+  packagingId: Id;
   packagingName?: string;
   quantity?: number;
   unit?: string;
@@ -39,8 +42,8 @@ export interface MePackaging {
 
 export interface MeVendorItem {
   vendorItemCode: string;
-  vendorId: string;
-  companyConceptProductId?: string;
+  vendorId: Id;
+  companyConceptProductId?: Id;
   productName?: string;
   packagings?: MePackaging[];
 }
@@ -51,17 +54,16 @@ export interface MeLineItem {
   quantity?: number;
   unitPrice?: number;
   linePrice?: number;
-  companyConceptProductId?: string;
-  categoryId?: string;
-  packagingId?: string;
+  companyConceptProductId?: Id;
+  packagingId?: Id | null;
 }
 
 export interface MeInvoice {
-  orderId: string;
+  orderId: Id;
   invoiceNumber?: string;
   invoiceDate?: string;
   createdDate?: string;
-  vendorId?: string;
+  vendorId?: Id;
   vendorName?: string;
   orderTotal?: number;
   tax?: number;
@@ -69,13 +71,12 @@ export interface MeInvoice {
   otherCharges?: number;
   creditAmount?: number;
   isCredit?: boolean;
-  status?: string;
-  lineItems?: MeLineItem[];
+  lineItems?: MeLineItem[] | null;
   detailError?: string;
 }
 
 export interface MeCategory {
-  categoryId: string;
+  categoryId: Id;
   categoryName: string;
   categoryType?: string;
 }
@@ -98,28 +99,15 @@ export interface ImportedVendor {
 export interface ImportedProduct {
   externalId: string;
   name: string;
-  /** Our unit name, or undefined when MarginEdge's unit isn't recognised. */
+  /** Our unit, or undefined when MarginEdge's unit couldn't be read. */
   baseUnit?: string;
   rawUnit?: string;
+  conversions: ItemConversions;
   category?: string;
-}
-
-export interface ImportedPack {
-  externalId: string;
-  name?: string;
-  /** What one purchased unit contains, e.g. 50 lb. Undefined when the unit isn't recognised. */
-  contents?: Quantity;
-  rawUnit?: string;
-  rawQuantity?: number;
-}
-
-export interface ImportedVendorItem {
-  vendorExternalId: string;
-  code: string;
-  /** The vendor's own wording, from invoice lines. */
-  descriptions: string[];
-  productExternalId?: string;
-  packs: ImportedPack[];
+  /** FOOD, WINE, BEER, LIQUOR, NA_BEVERAGES or OTHER (supplies, repairs...). */
+  categoryType?: string;
+  /** MarginEdge's latest price per one baseUnit, used as a sanity reference. */
+  referencePrice?: number;
 }
 
 export interface ImportedInvoiceLine {
@@ -130,7 +118,6 @@ export interface ImportedInvoiceLine {
   unitPrice: number;
   lineTotal: number;
   productExternalId?: string;
-  packExternalId?: string;
   /** False when quantity × unit price doesn't match the line total. */
   mathChecks: boolean;
 }
@@ -156,113 +143,88 @@ export interface PricePoint {
   date: string;
   /** Price paid for one purchased unit. */
   price: number;
-  /** What that purchased unit contains. */
+  /** What that purchased unit holds. */
   per: Quantity;
+  /** Price per one of the product's base units. */
+  perBaseUnit: number;
+  /** How the pack size was worked out. */
+  source: 'pack' | 'itemName' | 'productUnit';
 }
 
 export type ImportFlag =
   | { type: 'lineMath'; invoiceExternalId: string; lineNumber: number; description: string; expected: number; actual: number }
   | { type: 'invoiceTotal'; invoiceExternalId: string; invoiceNumber?: string; vendorName?: string; difference: number }
-  | { type: 'unknownUnit'; where: 'product' | 'pack'; externalId: string; name: string; rawUnit: string }
-  | { type: 'noPackSize'; invoiceExternalId: string; lineNumber: number; description: string }
+  | { type: 'unknownUnit'; productExternalId: string; name: string; rawUnit: string }
+  | { type: 'priceUnclear'; invoiceExternalId: string; lineNumber: number; vendorName?: string; description: string; productExternalId: string; price: number; impliedPerUnit?: number; referencePerUnit?: number; unit?: string }
   | { type: 'missingDetail'; invoiceExternalId: string; reason: string };
 
 export interface ImportResult {
   vendors: ImportedVendor[];
   products: ImportedProduct[];
-  vendorItems: ImportedVendorItem[];
   invoices: ImportedInvoice[];
   prices: PricePoint[];
   flags: ImportFlag[];
 }
 
-// ---------------------------------------------------------------- units
-
-const MARGINEDGE_UNITS: Record<string, string> = {
-  POUND: 'lb', POUNDS: 'lb', LB: 'lb',
-  OUNCE: 'oz', OUNCES: 'oz', OZ: 'oz',
-  GRAM: 'g', GRAMS: 'g', KILOGRAM: 'kg', KILOGRAMS: 'kg',
-  EACH: 'each', EA: 'each', PIECE: 'each', COUNT: 'each', DOZEN: 'dozen',
-  FLUID_OUNCE: 'floz', 'FLUID OUNCE': 'floz', FL_OZ: 'floz', 'FL OZ': 'floz',
-  CUP: 'cup', PINT: 'pt', QUART: 'qt', GALLON: 'gal',
-  LITER: 'l', LITRE: 'l', MILLILITER: 'ml', MILLILITRE: 'ml',
-  TEASPOON: 'tsp', TABLESPOON: 'tbsp',
-};
-
-/** Maps a MarginEdge unit name to ours, or undefined when we don't know it. */
-export function mapUnit(raw: string | undefined): string | undefined {
-  if (!raw) return undefined;
-  const key = raw.trim().toUpperCase();
-  const mapped = MARGINEDGE_UNITS[key] ?? MARGINEDGE_UNITS[key.replace(/S$/, '')];
-  if (mapped) return mapped;
-  const normalized = normalizeUnit(raw);
-  return isStandardUnit(normalized) ? normalized : undefined;
-}
-
 // ---------------------------------------------------------------- import
 
-const money = (value: number | undefined) => (Number.isFinite(value) ? (value as number) : 0);
+const id = (value: Id | null | undefined) => (value === null || value === undefined ? undefined : String(value));
+const money = (value: number | null | undefined) => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
 const round2 = (value: number) => Math.round(value * 100) / 100;
 
-/** quantity × unit price must match the line total within a cent or half a percent. */
+/** A price per unit this far from MarginEdge's own figure is treated as a misread pack size. */
+const PLAUSIBLE = { low: 0.4, high: 2.5 };
+
 function lineMathChecks(quantity: number, unitPrice: number, lineTotal: number): boolean {
-  const expected = quantity * unitPrice;
-  return Math.abs(expected - lineTotal) <= Math.max(0.02, Math.abs(lineTotal) * 0.005);
+  return Math.abs(quantity * unitPrice - lineTotal) <= Math.max(0.02, Math.abs(lineTotal) * 0.005);
 }
 
 export function importMarginEdge(data: MarginEdgeExport): ImportResult {
   const flags: ImportFlag[] = [];
-  const categoryNames = new Map(data.categories.map((c) => [c.categoryId, c.categoryName]));
+  const categories = new Map(data.categories.map((c) => [String(c.categoryId), c]));
 
-  const vendors: ImportedVendor[] = data.vendors.map((v) => ({ externalId: v.vendorId, name: v.vendorName }));
-
-  const products: ImportedProduct[] = data.products.map((p) => {
-    const baseUnit = mapUnit(p.reportByUnit);
-    if (!baseUnit && p.reportByUnit) {
-      flags.push({ type: 'unknownUnit', where: 'product', externalId: p.companyConceptProductId, name: p.productName, rawUnit: p.reportByUnit });
-    }
-    const mainCategory = [...(p.categories ?? [])].sort((a, b) => (b.percentAllocation ?? 0) - (a.percentAllocation ?? 0))[0];
-    return {
-      externalId: p.companyConceptProductId,
-      name: p.productName,
-      baseUnit,
-      rawUnit: p.reportByUnit,
-      category: mainCategory ? categoryNames.get(mainCategory.categoryId) : undefined,
-    };
-  });
-
-  // Vendor items, keyed by vendor + code; packs keyed by id for invoice lines.
-  const itemKey = (vendorId: string | undefined, code: string | undefined) => `${vendorId ?? '?'}|${code ?? '?'}`;
-  const vendorItems = new Map<string, ImportedVendorItem>();
-  const packs = new Map<string, ImportedPack>();
-
+  // Packs, keyed by their id, with the product they belong to.
+  const packs = new Map<string, { productId?: string; reading: ReturnType<typeof readPack> }>();
+  const taught = new Map<string, ItemConversions>();
   for (const item of data.vendorItems) {
-    const imported: ImportedVendorItem = {
-      vendorExternalId: item.vendorId,
-      code: item.vendorItemCode,
-      descriptions: [],
-      productExternalId: item.companyConceptProductId,
-      packs: [],
-    };
+    const productId = id(item.companyConceptProductId);
     for (const pack of item.packagings ?? []) {
-      const unit = mapUnit(pack.unit);
-      const contents = unit && pack.quantity && pack.quantity > 0 ? { amount: pack.quantity, unit } : undefined;
-      if (!unit && pack.unit) {
-        flags.push({ type: 'unknownUnit', where: 'pack', externalId: pack.packagingId, name: `${item.productName ?? item.vendorItemCode} (${pack.packagingName ?? 'pack'})`, rawUnit: pack.unit });
-      }
-      const importedPack: ImportedPack = { externalId: pack.packagingId, name: pack.packagingName, contents, rawUnit: pack.unit, rawQuantity: pack.quantity };
-      imported.packs.push(importedPack);
-      packs.set(pack.packagingId, importedPack);
+      const reading = readPack(pack);
+      packs.set(String(pack.packagingId), { productId, reading });
+      if (productId) taught.set(productId, mergeConversions(taught.get(productId) ?? {}, reading.teaches));
     }
-    vendorItems.set(itemKey(item.vendorId, item.vendorItemCode), imported);
+  }
+
+  const products = new Map<string, ImportedProduct>();
+  for (const p of data.products) {
+    const externalId = String(p.companyConceptProductId);
+    const report = parseReportUnit(p.reportByUnit);
+    if (!report.baseUnit && p.reportByUnit && p.reportByUnit.trim()) {
+      flags.push({ type: 'unknownUnit', productExternalId: externalId, name: p.productName.trim(), rawUnit: p.reportByUnit });
+    }
+    // The product's own unit definition wins over what packs suggest.
+    const conversions = mergeConversions(report.conversions, taught.get(externalId) ?? {});
+    const mainCategory = [...(p.categories ?? [])].sort((a, b) => (b.percentAllocation ?? 0) - (a.percentAllocation ?? 0))[0];
+    const category = mainCategory ? categories.get(String(mainCategory.categoryId)) : undefined;
+    products.set(externalId, {
+      externalId,
+      name: p.productName.trim(),
+      baseUnit: report.baseUnit,
+      rawUnit: p.reportByUnit,
+      conversions,
+      category: category?.categoryName,
+      categoryType: category?.categoryType,
+      referencePrice: p.latestPrice && report.baseUnit ? p.latestPrice / report.priceCovers : undefined,
+    });
   }
 
   const invoices: ImportedInvoice[] = [];
   const prices: PricePoint[] = [];
 
   for (const invoice of data.invoices) {
+    const invoiceId = String(invoice.orderId);
     if (invoice.detailError || !invoice.lineItems) {
-      flags.push({ type: 'missingDetail', invoiceExternalId: invoice.orderId, reason: invoice.detailError ?? 'no line items in export' });
+      flags.push({ type: 'missingDetail', invoiceExternalId: invoiceId, reason: invoice.detailError ?? 'no line items in export' });
       continue;
     }
     const invoiceDate = invoice.invoiceDate ?? invoice.createdDate;
@@ -273,58 +235,50 @@ export function importMarginEdge(data: MarginEdgeExport): ImportResult {
       const unitPrice = money(line.unitPrice);
       const lineTotal = money(line.linePrice);
       const description = line.vendorItemName?.trim() || line.vendorItemCode || `line ${lineNumber}`;
+      const productId = id(line.companyConceptProductId);
       const mathChecks = lineMathChecks(quantity, unitPrice, lineTotal);
       if (!mathChecks) {
-        flags.push({ type: 'lineMath', invoiceExternalId: invoice.orderId, lineNumber, description, expected: round2(quantity * unitPrice), actual: lineTotal });
+        flags.push({ type: 'lineMath', invoiceExternalId: invoiceId, lineNumber, description, expected: round2(quantity * unitPrice), actual: lineTotal });
       }
 
-      // Remember the vendor's wording for this item; it's what matching learns from.
-      const item = vendorItems.get(itemKey(invoice.vendorId, line.vendorItemCode));
-      if (item && line.vendorItemName && !item.descriptions.includes(line.vendorItemName)) item.descriptions.push(line.vendorItemName);
-
-      // A price point needs a product, a sane line and a known pack size.
-      if (line.companyConceptProductId && mathChecks && unitPrice > 0 && invoiceDate && !invoice.isCredit) {
-        const pack = line.packagingId ? packs.get(line.packagingId) : undefined;
-        if (pack?.contents) {
+      const product = productId ? products.get(productId) : undefined;
+      if (product?.baseUnit && mathChecks && unitPrice > 0 && invoiceDate && !invoice.isCredit) {
+        const point = pricePoint(product, line, description, unitPrice);
+        if (point.ok) {
           prices.push({
-            productExternalId: line.companyConceptProductId,
-            vendorExternalId: invoice.vendorId,
-            invoiceExternalId: invoice.orderId,
+            productExternalId: product.externalId,
+            vendorExternalId: id(invoice.vendorId),
+            invoiceExternalId: invoiceId,
             lineNumber,
             date: invoiceDate,
             price: unitPrice,
-            per: pack.contents,
+            per: point.per,
+            perBaseUnit: point.perBaseUnit,
+            source: point.source,
           });
         } else {
-          flags.push({ type: 'noPackSize', invoiceExternalId: invoice.orderId, lineNumber, description });
+          flags.push({
+            type: 'priceUnclear', invoiceExternalId: invoiceId, lineNumber, vendorName: invoice.vendorName, description,
+            productExternalId: product.externalId, price: unitPrice, impliedPerUnit: point.impliedPerUnit,
+            referencePerUnit: product.referencePrice, unit: product.baseUnit,
+          });
         }
       }
 
-      return {
-        lineNumber,
-        vendorItemCode: line.vendorItemCode,
-        description,
-        quantity,
-        unitPrice,
-        lineTotal,
-        productExternalId: line.companyConceptProductId,
-        packExternalId: line.packagingId,
-        mathChecks,
-      };
+      return { lineNumber, vendorItemCode: line.vendorItemCode || undefined, description, quantity, unitPrice, lineTotal, productExternalId: productId, mathChecks };
     });
 
     const linesTotal = lines.reduce((sum, line) => sum + line.lineTotal, 0);
     const explained = linesTotal + money(invoice.tax) + money(invoice.deliveryCharges) + money(invoice.otherCharges) - money(invoice.creditAmount);
     const total = money(invoice.orderTotal);
     const unexplainedDifference = round2(total - explained);
-    // Small rounding is normal; flag gaps over $1 that are also over 1% of the invoice.
     if (Math.abs(unexplainedDifference) > 1 && Math.abs(unexplainedDifference) > Math.abs(total) * 0.01) {
-      flags.push({ type: 'invoiceTotal', invoiceExternalId: invoice.orderId, invoiceNumber: invoice.invoiceNumber, vendorName: invoice.vendorName, difference: unexplainedDifference });
+      flags.push({ type: 'invoiceTotal', invoiceExternalId: invoiceId, invoiceNumber: invoice.invoiceNumber, vendorName: invoice.vendorName, difference: unexplainedDifference });
     }
 
     invoices.push({
-      externalId: invoice.orderId,
-      vendorExternalId: invoice.vendorId,
+      externalId: invoiceId,
+      vendorExternalId: id(invoice.vendorId),
       vendorName: invoice.vendorName,
       invoiceNumber: invoice.invoiceNumber,
       invoiceDate,
@@ -336,10 +290,46 @@ export function importMarginEdge(data: MarginEdgeExport): ImportResult {
   }
 
   prices.sort((a, b) => a.date.localeCompare(b.date));
-  return { vendors, products, vendorItems: [...vendorItems.values()], invoices, prices, flags };
+  return {
+    vendors: data.vendors.map((v) => ({ externalId: String(v.vendorId), name: v.vendorName.trim() })),
+    products: [...products.values()],
+    invoices,
+    prices,
+    flags,
+  };
+
+  /**
+   * Works out what one purchased unit holds, trying the most specific source first:
+   * the pack record, a size in the item's name, then one product unit. The first reading
+   * that converts and lands near MarginEdge's own price is used.
+   */
+  function pricePoint(product: ImportedProduct, line: MeLineItem, description: string, unitPrice: number):
+    | { ok: true; per: Quantity; perBaseUnit: number; source: PricePoint['source'] }
+    | { ok: false; impliedPerUnit?: number } {
+    const baseUnit = product.baseUnit!;
+    const tries: { per: Quantity; source: PricePoint['source'] }[] = [];
+    const pack = line.packagingId !== null && line.packagingId !== undefined ? packs.get(String(line.packagingId)) : undefined;
+    for (const per of pack?.reading.candidates ?? []) tries.push({ per, source: 'pack' });
+    const fromName = pack ? undefined : sizeInItemName(description);
+    if (fromName) tries.push({ per: fromName, source: 'itemName' });
+    if (!pack) tries.push({ per: { amount: 1, unit: baseUnit }, source: 'productUnit' });
+
+    let firstImplied: number | undefined;
+    for (const attempt of tries) {
+      const inBase = tryConvert(attempt.per, baseUnit, product.conversions);
+      if (!inBase || !(inBase > 0)) continue;
+      const perBaseUnit = unitPrice / inBase;
+      firstImplied ??= perBaseUnit;
+      const reference = product.referencePrice;
+      if (!reference || (perBaseUnit >= reference * PLAUSIBLE.low && perBaseUnit <= reference * PLAUSIBLE.high)) {
+        return { ok: true, per: attempt.per, perBaseUnit, source: attempt.source };
+      }
+    }
+    return { ok: false, impliedPerUnit: firstImplied };
+  }
 }
 
-/** Reads one restaurant's folder from the export (e.g. marginedge-export-2026-10-04/unit-123). */
+/** Reads one restaurant's export folder (the files the export script writes). */
 export async function readMarginEdgeExport(folder: string): Promise<MarginEdgeExport> {
   const load = async <T>(name: string): Promise<T> => JSON.parse(await readFile(join(folder, name), 'utf8')) as T;
   return {
@@ -351,7 +341,7 @@ export async function readMarginEdgeExport(folder: string): Promise<MarginEdgeEx
   };
 }
 
-/** Latest price per product, for seeding the recipe book's costs. */
+/** Latest price per product, for costing recipes. */
 export function latestPrices(prices: PricePoint[]): Map<string, PricePoint> {
   const latest = new Map<string, PricePoint>();
   for (const point of prices) {

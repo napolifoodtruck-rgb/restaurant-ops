@@ -1,111 +1,162 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { importMarginEdge, latestPrices, mapUnit, type MarginEdgeExport } from '../src/connectors/marginedge.ts';
+import { importMarginEdge, latestPrices, type MarginEdgeExport } from '../src/connectors/marginedge.ts';
+import { packNameStructure, parseReportUnit, readPack, sizeInItemName, sizeInPackName, unitWord } from '../src/connectors/marginedgeUnits.ts';
 import { RecipeBook } from '../src/core/recipes.ts';
+import { convert } from '../src/core/units.ts';
+
+const close = (actual: number | undefined, expected: number, tolerance = 1e-9) =>
+  assert.ok(actual !== undefined && Math.abs(actual - expected) <= tolerance, `expected ${expected}, got ${actual}`);
+
+// ---------------------------------------------------------------- reading MarginEdge's units (real examples)
+
+test('unit words', () => {
+  assert.equal(unitWord('Pounds'), 'lb');
+  assert.equal(unitWord('Fluid Ounces'), 'floz');
+  assert.equal(unitWord('Milliliters'), 'ml');
+  assert.equal(unitWord('Bottles'), 'bottle');
+  assert.equal(unitWord('Boxes'), 'box');
+  assert.equal(unitWord('Other'), undefined);
+});
+
+test('report-by units from the real export', () => {
+  assert.deepEqual(parseReportUnit('Pound'), { baseUnit: 'lb', priceCovers: 1, conversions: {} });
+  assert.deepEqual(parseReportUnit('100 Each'), { baseUnit: 'each', priceCovers: 100, conversions: {} });
+  assert.deepEqual(parseReportUnit('4 Gallons'), { baseUnit: 'gal', priceCovers: 4, conversions: {} });
+  assert.deepEqual(parseReportUnit('Bottle (750 Milliliters)'), { baseUnit: 'bottle', priceCovers: 1, conversions: { customUnits: { bottle: { amount: 750, unit: 'ml' } } } });
+  assert.deepEqual(parseReportUnit('Can (12 Fluid Ounces)').conversions, { customUnits: { can: { amount: 12, unit: 'floz' } } });
+  assert.deepEqual(parseReportUnit('Bottle (Liter)').conversions, { customUnits: { bottle: { amount: 1, unit: 'l' } } });
+  assert.deepEqual(parseReportUnit('Keg (1/6BBL) 5.16GAL').conversions, { customUnits: { keg: { amount: 5.16, unit: 'gal' } } });
+  assert.deepEqual(parseReportUnit('Case (35 Pounds)').conversions, { customUnits: { case: { amount: 35, unit: 'lb' } } });
+  assert.equal(parseReportUnit('Almonds, Sliced (Pound)').baseUnit, 'lb');
+  assert.deepEqual(parseReportUnit(' (9 Each)'), { baseUnit: 'each', priceCovers: 9, conversions: {} });
+  assert.equal(parseReportUnit('Bunch').baseUnit, 'bunch');
+  assert.equal(parseReportUnit('Other').baseUnit, undefined);
+  assert.equal(parseReportUnit('').baseUnit, undefined);
+});
+
+test('pack names', () => {
+  assert.deepEqual(sizeInPackName('Case/12/750ML Btl', 'bottle'), { amount: 750, unit: 'ml' });
+  assert.deepEqual(sizeInPackName('17.5OZ Btl', 'bottle'), { amount: 17.5, unit: 'floz' }); // ounces on a bottle are fluid
+  assert.deepEqual(sizeInPackName('EA/500GM', 'each'), { amount: 500, unit: 'g' });
+  assert.deepEqual(packNameStructure('Case/6/1KG'), { outer: 'case', count: 6, itemSize: { amount: 1, unit: 'kg' } });
+  assert.deepEqual(packNameStructure('EA/2LB'), { outer: 'each', count: 1, itemSize: { amount: 2, unit: 'lb' } });
+  assert.deepEqual(packNameStructure('LB'), { count: 1 });
+});
+
+test('what one pack holds', () => {
+  assert.deepEqual(readPack({ unit: 'BOTTLE', quantity: 12, packagingName: 'Case/12/750ML Btl' }).candidates, [
+    { amount: 9000, unit: 'ml' }, { amount: 12, unit: 'bottle' }, { amount: 1, unit: 'case' }, { amount: 12, unit: 'each' },
+  ]);
+  const puree = readPack({ unit: 'KILOGRAM', quantity: 6, packagingName: 'Case/6/1KG' });
+  assert.deepEqual(puree.candidates, [{ amount: 6, unit: 'kg' }, { amount: 1, unit: 'case' }, { amount: 6, unit: 'each' }]);
+  assert.equal(puree.teaches.gramsPerEach, 1000);
+  assert.deepEqual(readPack({ unit: 'KEG_ONE_SIXTH', quantity: 1, packagingName: 'Keg(1/6BBL)' }).candidates[0], { amount: 5.16, unit: 'gal' });
+  assert.equal(readPack({ unit: 'OTHER', quantity: 1 }).unknownUnit, 'OTHER');
+});
+
+test('sizes in item names, for vendors without pack data', () => {
+  assert.deepEqual(sizeInItemName('Limes 40LB'), { amount: 40, unit: 'lb' });
+  assert.deepEqual(sizeInItemName('Lettuce, Local Lettuce Salad Blend - 3#'), { amount: 3, unit: 'lb' });
+  assert.deepEqual(sizeInItemName('Beet, Baby Gold W/Top 24Ct'), { amount: 24, unit: 'each' });
+  assert.equal(sizeInItemName('Arugula, Baby (21 1/2lb bags)'), undefined); // a fraction: better unread than misread
+  assert.equal(sizeInItemName('Herb, Sage'), undefined);
+});
+
+// ---------------------------------------------------------------- the import
 
 const sample: MarginEdgeExport = {
-  categories: [{ categoryId: 'c1', categoryName: 'Produce' }, { categoryId: 'c2', categoryName: 'Dairy' }],
+  categories: [{ categoryId: '1450', categoryName: 'Produce', categoryType: 'FOOD' }, { categoryId: '1456', categoryName: 'Wine', categoryType: 'WINE' }],
   products: [
-    { companyConceptProductId: 'pr-garlic', productName: 'Garlic, peeled', reportByUnit: 'POUND', categories: [{ categoryId: 'c1', percentAllocation: 100 }] },
-    { companyConceptProductId: 'pr-cream', productName: 'Heavy cream', reportByUnit: 'QUART', categories: [{ categoryId: 'c2', percentAllocation: 100 }] },
-    { companyConceptProductId: 'pr-herbs', productName: 'Micro herbs', reportByUnit: 'CLAMSHELL' },
+    { companyConceptProductId: 'garlic', productName: 'Garlic, Peeled', reportByUnit: 'Pound', latestPrice: 4.1, categories: [{ categoryId: '1450', percentAllocation: 100 }] },
+    { companyConceptProductId: 'limes', productName: 'Limes, Fresh', reportByUnit: 'Pound', latestPrice: 0.74 },
+    { companyConceptProductId: 'sage', productName: 'Herb, Sage', reportByUnit: 'Pound', latestPrice: 36 },
+    { companyConceptProductId: 'basil', productName: 'Basil, Fresh', reportByUnit: 'Pound', latestPrice: 12 },
+    { companyConceptProductId: 'aperol', productName: 'Aperol Aperitivo', reportByUnit: 'Bottle (750 Milliliters)', latestPrice: 29.95, categories: [{ categoryId: '1456', percentAllocation: 100 }] },
+    { companyConceptProductId: 'mystery', productName: 'Misc', reportByUnit: 'Other' },
   ],
-  vendors: [{ vendorId: 'v1', vendorName: 'Produce Co' }, { vendorId: 'v2', vendorName: 'Dairy Co' }],
+  vendors: [{ vendorId: 1, vendorName: 'Blue Sky Farms' }, { vendorId: 2, vendorName: 'Empire Distributors' }],
   vendorItems: [
-    { vendorItemCode: 'GAR5', vendorId: 'v1', companyConceptProductId: 'pr-garlic', packagings: [{ packagingId: 'pk-gar5', packagingName: 'Case', quantity: 5, unit: 'POUND' }] },
-    { vendorItemCode: 'CRM12', vendorId: 'v2', companyConceptProductId: 'pr-cream', packagings: [{ packagingId: 'pk-crm12', packagingName: 'Case', quantity: 12, unit: 'QUART' }] },
-    { vendorItemCode: 'HERB1', vendorId: 'v1', companyConceptProductId: 'pr-herbs', packagings: [{ packagingId: 'pk-herb', packagingName: 'Flat', quantity: 6, unit: 'CLAMSHELL' }] },
+    { vendorItemCode: 'APE750', vendorId: 2, companyConceptProductId: 'aperol', packagings: [{ packagingId: '92132', packagingName: '750ML Btl', quantity: 1, unit: 'BOTTLE' }] },
   ],
   invoices: [
     {
-      orderId: 'o1', invoiceNumber: 'P-100', invoiceDate: '2026-08-01', vendorId: 'v1', vendorName: 'Produce Co',
-      orderTotal: 75, tax: 0, deliveryCharges: 5,
+      orderId: 'o1', invoiceNumber: 'BS-1', invoiceDate: '2026-09-28', vendorId: 1, vendorName: 'Blue Sky Farms', orderTotal: 59.75, isCredit: false,
       lineItems: [
-        { vendorItemCode: 'GAR5', vendorItemName: 'GARLIC PEELED 5#', quantity: 2, unitPrice: 30, linePrice: 60, companyConceptProductId: 'pr-garlic', packagingId: 'pk-gar5' },
-        { vendorItemCode: 'HERB1', vendorItemName: 'MICRO HERB MIX', quantity: 1, unitPrice: 10, linePrice: 10, companyConceptProductId: 'pr-herbs', packagingId: 'pk-herb' },
+        { vendorItemCode: '', vendorItemName: 'Garlic, Peeled 5 Lb', quantity: 1, unitPrice: 20.5, linePrice: 20.5, companyConceptProductId: 'garlic', packagingId: 63619 },
+        { vendorItemCode: '', vendorItemName: 'Limes 40LB', quantity: 1, unitPrice: 29.75, linePrice: 29.75, companyConceptProductId: 'limes', packagingId: 63620 },
+        { vendorItemCode: '', vendorItemName: 'Herb, Sage', quantity: 1, unitPrice: 9, linePrice: 9, companyConceptProductId: 'sage', packagingId: 63621 },
+        { vendorItemCode: '', vendorItemName: 'Charity', quantity: 1, unitPrice: 0.5, linePrice: 0.5, companyConceptProductId: 'mystery', packagingId: 63622 },
       ],
     },
     {
-      orderId: 'o2', invoiceNumber: 'P-131', invoiceDate: '2026-09-05', vendorId: 'v1', vendorName: 'Produce Co',
-      orderTotal: 95, // lines say 32.50; a misread total
-      lineItems: [
-        { vendorItemCode: 'GAR5', vendorItemName: 'GARLIC PEELD 5LB', quantity: 1, unitPrice: 32.5, linePrice: 32.5, companyConceptProductId: 'pr-garlic', packagingId: 'pk-gar5' },
-      ],
+      orderId: 'o2', invoiceNumber: 'BS-2', invoiceDate: '2026-10-02', vendorId: 1, vendorName: 'Blue Sky Farms', orderTotal: 24,
+      lineItems: [{ vendorItemCode: '', vendorItemName: 'Basil', quantity: 2, unitPrice: 12, linePrice: 24, companyConceptProductId: 'basil', packagingId: 1 }],
     },
     {
-      orderId: 'o3', invoiceNumber: 'D-77', invoiceDate: '2026-09-10', vendorId: 'v2', vendorName: 'Dairy Co',
-      orderTotal: 120,
-      lineItems: [
-        { vendorItemCode: 'CRM12', vendorItemName: 'CREAM HVY 40% 12/QT', quantity: 2, unitPrice: 54, linePrice: 120, companyConceptProductId: 'pr-cream', packagingId: 'pk-crm12' }, // 2 × 54 ≠ 120
-      ],
+      orderId: 'o3', invoiceNumber: 'E-9', invoiceDate: '2026-09-26', vendorId: 2, vendorName: 'Empire Distributors', orderTotal: 130,
+      lineItems: [{ vendorItemCode: 'APE750', vendorItemName: 'Aperol F', quantity: 2, unitPrice: 29.95, linePrice: 59.9, companyConceptProductId: 'aperol', packagingId: 92132 }], // numeric id, like the real export
     },
-    { orderId: 'o4', invoiceNumber: 'P-140', vendorId: 'v1', detailError: 'MarginEdge returned 500' },
+    {
+      orderId: 'o4', invoiceNumber: 'E-10', invoiceDate: '2026-09-27', vendorId: 2, vendorName: 'Empire Distributors', orderTotal: 60,
+      lineItems: [{ vendorItemCode: 'APE750', vendorItemName: 'Aperol F', quantity: 2, unitPrice: 29.95, linePrice: 65, companyConceptProductId: 'aperol', packagingId: 92132 }],
+    },
+    { orderId: 'o5', invoiceNumber: 'X', vendorId: 2, detailError: 'MarginEdge returned 500' },
   ],
 };
 
-test('MarginEdge units map to ours', () => {
-  assert.equal(mapUnit('POUND'), 'lb');
-  assert.equal(mapUnit('Quarts'), 'qt');
-  assert.equal(mapUnit('FLUID_OUNCE'), 'floz');
-  assert.equal(mapUnit('lbs'), 'lb');
-  assert.equal(mapUnit('CLAMSHELL'), undefined);
-  assert.equal(mapUnit(undefined), undefined);
-});
-
-test('products, vendors and pack sizes come across', () => {
+test('prices come from pack data, item names, or the product unit, whichever checks out', () => {
   const result = importMarginEdge(sample);
-  assert.equal(result.vendors.length, 2);
-  assert.deepEqual(result.products.map((p) => [p.name, p.baseUnit, p.category]), [
-    ['Garlic, peeled', 'lb', 'Produce'],
-    ['Heavy cream', 'qt', 'Dairy'],
-    ['Micro herbs', undefined, undefined],
-  ]);
-  const garlic = result.vendorItems.find((item) => item.code === 'GAR5');
-  assert.deepEqual(garlic?.packs[0]?.contents, { amount: 5, unit: 'lb' });
-  // The vendor's different spellings are kept for matching.
-  assert.deepEqual(garlic?.descriptions, ['GARLIC PEELED 5#', 'GARLIC PEELD 5LB']);
+  const point = (productId: string) => result.prices.find((p) => p.productExternalId === productId);
+
+  // Pack data (numeric id on the line, text id on the pack): a 750 ml bottle.
+  assert.equal(point('aperol')?.source, 'pack');
+  close(point('aperol')?.perBaseUnit, 29.95);
+  // Item name: "Limes 40LB" at $29.75 → $0.74/lb, in line with MarginEdge's $0.74.
+  assert.equal(point('limes')?.source, 'itemName');
+  close(point('limes')?.perBaseUnit, 29.75 / 40);
+  close(point('garlic')?.perBaseUnit, 4.1);
+  // Product unit: basil at $12 a pound.
+  assert.equal(point('basil')?.source, 'productUnit');
+  close(point('basil')?.perBaseUnit, 12);
 });
 
-test('price history comes only from lines that check out', () => {
+test('a price far from MarginEdge\'s own becomes a question, not a cost', () => {
   const result = importMarginEdge(sample);
-  assert.deepEqual(result.prices.map((p) => [p.productExternalId, p.date, p.price, p.per]), [
-    ['pr-garlic', '2026-08-01', 30, { amount: 5, unit: 'lb' }],
-    ['pr-garlic', '2026-09-05', 32.5, { amount: 5, unit: 'lb' }],
-  ]);
-  const latest = latestPrices(result.prices);
-  assert.equal(latest.get('pr-garlic')?.price, 32.5);
-  assert.equal(latest.has('pr-cream'), false); // its only line failed the math check
+  assert.equal(result.prices.some((p) => p.productExternalId === 'sage'), false);
+  const sage = result.flags.find((f) => f.type === 'priceUnclear' && f.productExternalId === 'sage');
+  assert.deepEqual(sage, {
+    type: 'priceUnclear', invoiceExternalId: 'o1', lineNumber: 3, vendorName: 'Blue Sky Farms', description: 'Herb, Sage',
+    productExternalId: 'sage', price: 9, impliedPerUnit: 9, referencePerUnit: 36, unit: 'lb',
+  });
 });
 
-test('self-checks flag only what needs a look', () => {
+test('the other self-checks', () => {
   const flags = importMarginEdge(sample).flags;
-  const summary = flags.map((flag) => flag.type).sort();
-  assert.deepEqual(summary, ['invoiceTotal', 'lineMath', 'missingDetail', 'noPackSize', 'unknownUnit', 'unknownUnit']);
+  assert.deepEqual(flags.map((f) => f.type).sort(), ['invoiceTotal', 'invoiceTotal', 'lineMath', 'missingDetail', 'priceUnclear', 'unknownUnit']);
+  // o3: total 130 but the lines say 59.90. o4: line says 2 × 29.95 but totals 65.
+  assert.ok(flags.some((f) => f.type === 'invoiceTotal' && f.invoiceExternalId === 'o3' && f.difference === 70.1));
+  assert.ok(flags.some((f) => f.type === 'lineMath' && f.invoiceExternalId === 'o4' && f.expected === 59.9 && f.actual === 65));
+  assert.ok(flags.some((f) => f.type === 'unknownUnit' && f.rawUnit === 'Other'));
+});
 
-  const lineMath = flags.find((flag) => flag.type === 'lineMath');
-  assert.deepEqual(lineMath, { type: 'lineMath', invoiceExternalId: 'o3', lineNumber: 1, description: 'CREAM HVY 40% 12/QT', expected: 108, actual: 120 });
-
-  const total = flags.find((flag) => flag.type === 'invoiceTotal');
-  assert.equal(total?.type === 'invoiceTotal' && total.difference, 62.5);
-
-  // The first invoice adds up once delivery is included: 60 + 10 + 5 = 75. No flag for it.
-  assert.equal(flags.some((flag) => 'invoiceExternalId' in flag && flag.invoiceExternalId === 'o1' && flag.type === 'invoiceTotal'), false);
+test('products carry their conversions and categories', () => {
+  const aperol = importMarginEdge(sample).products.find((p) => p.externalId === 'aperol')!;
+  assert.equal(aperol.baseUnit, 'bottle');
+  assert.equal(aperol.categoryType, 'WINE');
+  close(convert({ amount: 1.5, unit: 'floz' }, 'bottle', aperol.conversions), 1.5 * 29.5735295625 / 750); // one pour
 });
 
 test('imported prices cost recipes directly', () => {
   const result = importMarginEdge(sample);
   const latest = latestPrices(result.prices);
-  const products = result.products
-    .filter((p) => p.baseUnit)
-    .map((p) => {
-      const price = latest.get(p.externalId);
-      return { id: p.externalId, name: p.name, baseUnit: p.baseUnit!, cost: price && { price: price.price, per: price.per } };
-    });
+  const products = result.products.filter((p) => p.baseUnit).map((p) => {
+    const price = latest.get(p.externalId);
+    return { id: p.externalId, name: p.name, baseUnit: p.baseUnit!, conversions: p.conversions, cost: price && { price: price.price, per: price.per } };
+  });
   const book = new RecipeBook(products, [
-    { id: 'chopped', name: 'Chopped garlic', kind: 'prep', yield: { amount: 1, unit: 'cup' }, ingredients: [{ item: { kind: 'product', id: 'pr-garlic' }, quantity: { amount: 0.5, unit: 'lb' } }] },
+    { id: 'spritz', name: 'Aperol spritz', kind: 'dish', yield: { amount: 1, unit: 'each' }, ingredients: [{ item: { kind: 'product', id: 'aperol' }, quantity: { amount: 2, unit: 'floz' } }] },
   ]);
-  // $32.50 per 5 lb = $6.50/lb; half a pound = $3.25.
-  const cost = book.costOf({ kind: 'recipe', id: 'chopped' }, { amount: 1, unit: 'cup' });
-  assert.equal(cost.complete, true);
-  assert.ok(Math.abs(cost.total - 3.25) < 1e-9);
+  // 2 fl oz of a $29.95, 750 ml bottle.
+  close(book.portionCost('spritz').total, 29.95 * (2 * 29.5735295625) / 750);
 });
