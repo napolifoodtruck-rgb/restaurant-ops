@@ -186,12 +186,29 @@ export function importMarginEdge(data: MarginEdgeExport): ImportResult {
   // Packs, keyed by their id, with the product they belong to.
   const packs = new Map<string, { productId?: string; reading: ReturnType<typeof readPack> }>();
   const taught = new Map<string, ItemConversions>();
-  for (const item of data.vendorItems) {
-    const productId = id(item.companyConceptProductId);
-    for (const pack of item.packagings ?? []) {
-      const reading = readPack(pack);
-      packs.set(String(pack.packagingId), { productId, reading });
-      if (productId) taught.set(productId, mergeConversions(taught.get(productId) ?? {}, reading.teaches));
+  // When a product's packs disagree (the vendor went from a 250 ml to a 750 ml bottle of saba),
+  // the pack bought most recently says what a "bottle" is today.
+  const lastBought = new Map<string, string>();
+  for (const invoice of data.invoices) {
+    const date = invoice.invoiceDate ?? invoice.createdDate ?? '';
+    for (const line of invoice.lineItems ?? []) {
+      if (line.packagingId === null || line.packagingId === undefined) continue;
+      const key = String(line.packagingId);
+      if ((lastBought.get(key) ?? '') < date) lastBought.set(key, date);
+    }
+  }
+  const allPacks = data.vendorItems.flatMap((item) => (item.packagings ?? []).map((pack) => ({ productId: id(item.companyConceptProductId), pack })));
+  allPacks.sort((a, b) => (lastBought.get(String(b.pack.packagingId)) ?? '').localeCompare(lastBought.get(String(a.pack.packagingId)) ?? ''));
+  // Every size each pack unit has had, per product: MarginEdge's price may still be per the old one.
+  const pastSizes = new Map<string, Quantity[]>();
+  for (const { productId, pack } of allPacks) {
+    const reading = readPack(pack);
+    packs.set(String(pack.packagingId), { productId, reading });
+    if (!productId) continue;
+    taught.set(productId, mergeConversions(taught.get(productId) ?? {}, reading.teaches));
+    for (const [unit, size] of Object.entries(reading.teaches.customUnits ?? {})) {
+      const key = `${productId}|${unit}`;
+      pastSizes.set(key, [...(pastSizes.get(key) ?? []), size]);
     }
   }
 
@@ -374,12 +391,29 @@ export function importMarginEdge(data: MarginEdgeExport): ImportResult {
       if (!inBase || !(inBase > 0)) continue;
       const perBaseUnit = unitPrice / inBase;
       firstImplied ??= perBaseUnit;
-      const reference = product.referencePrice;
-      if (!reference || (perBaseUnit >= reference * PLAUSIBLE.low && perBaseUnit <= reference * PLAUSIBLE.high)) {
-        return { ok: true, per: attempt.per, perBaseUnit, source: attempt.source };
-      }
+      if (plausible(product, perBaseUnit)) return { ok: true, per: attempt.per, perBaseUnit, source: attempt.source };
     }
     return { ok: false, impliedPerUnit: firstImplied };
+  }
+
+  /**
+   * Whether a price per base unit is near MarginEdge's own. When the base unit's size has
+   * changed (a 250 ml bottle, now 750 ml), MarginEdge's price may be per the old size, so
+   * each past size is tried too.
+   */
+  function plausible(product: ImportedProduct, perBaseUnit: number): boolean {
+    const reference = product.referencePrice;
+    if (!reference) return true;
+    const near = (ref: number) => perBaseUnit >= ref * PLAUSIBLE.low && perBaseUnit <= ref * PLAUSIBLE.high;
+    if (near(reference)) return true;
+    const baseUnit = product.baseUnit!;
+    const current = product.conversions.customUnits?.[baseUnit];
+    if (!current) return false;
+    for (const past of pastSizes.get(`${product.externalId}|${baseUnit}`) ?? []) {
+      const ratio = tryConvert(current, past.unit) ;
+      if (ratio && past.amount > 0 && near(reference * (ratio / past.amount))) return true;
+    }
+    return false;
   }
 }
 

@@ -152,6 +152,29 @@ test('the other self-checks', () => {
   assert.ok(flags.some((f) => f.type === 'unknownUnit' && f.rawUnit === 'Other'));
 });
 
+test('when a pack size changes, the pack bought last says what a bottle is', () => {
+  // The vendor used to sell saba in 250 ml bottles and now sells 750 ml.
+  const data: MarginEdgeExport = {
+    restaurantUnit: { id: 1, name: 'Test' },
+    categories: [{ categoryId: 'c', categoryName: 'Grocery', categoryType: 'FOOD' }],
+    products: [{ companyConceptProductId: 'saba', productName: 'Vinegar, Saba', reportByUnit: 'Bottle', latestPrice: 11.09, categories: [{ categoryId: 'c' }] }],
+    vendors: [{ vendorId: 'v', vendorName: 'Gourmet' }],
+    vendorItems: [
+      { vendorId: 'v', vendorItemCode: 'old', vendorItemName: 'Saba 250ML', companyConceptProductId: 'saba', packagings: [{ packagingId: 1, packagingName: '250ML Btl', unit: 'BOTTLE', quantity: 1 }] },
+      { vendorId: 'v', vendorItemCode: 'new', vendorItemName: 'Saba 750ml', companyConceptProductId: 'saba', packagings: [{ packagingId: 2, packagingName: '750ML Btl', unit: 'BOTTLE', quantity: 1 }] },
+    ],
+    invoices: [
+      { orderId: 'a', vendorId: 'v', invoiceDate: '2025-06-01', orderTotal: 11, lineItems: [{ vendorItemCode: 'old', vendorItemName: 'Saba 250ML', companyConceptProductId: 'saba', packagingId: 1, unitPrice: 11, quantity: 1, linePrice: 11 }] },
+      { orderId: 'b', vendorId: 'v', invoiceDate: '2026-09-28', orderTotal: 33.27, lineItems: [{ vendorItemCode: 'new', vendorItemName: 'Saba 750ml', companyConceptProductId: 'saba', packagingId: 2, unitPrice: 33.27, quantity: 1, linePrice: 33.27 }] },
+    ],
+  } as unknown as MarginEdgeExport;
+  const result = importMarginEdge(data);
+  assert.deepEqual(result.products[0]?.conversions.customUnits?.bottle, { amount: 750, unit: 'ml' });
+  // Either way the price per ml is the invoice's: $33.27 for 750 ml.
+  const latest = latestPrices(result.prices).get('saba');
+  close(latest!.price / convert(latest!.per, 'ml', result.products[0]!.conversions), 33.27 / 750);
+});
+
 test('products carry their conversions and categories', () => {
   const aperol = importMarginEdge(sample).products.find((p) => p.externalId === 'aperol')!;
   assert.equal(aperol.baseUnit, 'bottle');
