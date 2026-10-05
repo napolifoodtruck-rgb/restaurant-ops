@@ -101,3 +101,26 @@ input[type=date] { height: 40px; border: 1px solid var(--line); border-radius: 1
 .mrow.head .sort { background: none; border: 0; padding: 6px 0; text-align: left; font: inherit; font-size: 12px; font-weight: 600; color: var(--muted); cursor: pointer; min-height: 36px; }
 .mrow.head .sort.num { text-align: right; }
 .mrow.head .sort:hover, .mrow.head .sort.on { color: var(--ink); }
+
+/* Charts */
+.chart { position: relative; width: 100%; max-width: 980px; }
+.chart-svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chart-svg .grid { stroke: #ECEAE4; stroke-width: 1; }
+.chart-svg .axis { stroke: #CFCBC2; stroke-width: 1; }
+.chart-svg .tick { fill: var(--muted); font-size: 11px; font-family: inherit; }
+.chart-svg .direct { fill: var(--ink); font-size: 12px; font-weight: 600; font-family: inherit; }
+.chart-svg .hair { stroke: #8A8F96; stroke-width: 1; }
+.chart-svg .avg { stroke: #8A8F96; stroke-width: 1.5; stroke-dasharray: 5 4; }
+.chart-svg .seg { cursor: default; }
+.chart-svg .seg:hover, .chart-svg .seg:focus { opacity: .8; outline: none; }
+.chart-svg rect:focus { outline: none; }
+.tip { position: absolute; z-index: 5; background: #fff; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 6px 18px rgba(0,0,0,.08); padding: 8px 10px; font-size: 13px; pointer-events: none; min-width: 160px; }
+.tip-title { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.tip-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; white-space: nowrap; }
+.tip-key { width: 12px; height: 3px; border-radius: 2px; flex: none; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px; }
+.lchip { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--line); background: #fff; font-size: 13px; color: var(--muted); cursor: pointer; }
+.lchip.on { color: var(--ink); font-weight: 600; }
+.lchip:disabled { cursor: default; opacity: 1; }
+.lkey { width: 12px; height: 12px; border-radius: 3px; border: 2px solid; }
+.lkey.line { height: 4px; border-width: 1px; border-radius: 2px; width: 16px; }

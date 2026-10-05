@@ -333,6 +333,12 @@ function renderMargins(me, state, m) {
   const toggle = h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Show' }),
     h('button', { class: `btn small-btn${perDay ? '' : ' dark'}`, text: 'All of it', onclick: () => again({ view: 'total' }) }),
     h('button', { class: `btn small-btn${perDay ? ' dark' : ''}`, text: 'Per day on the menu', onclick: () => again({ view: 'day' }) }));
+  const modeSwitch = h('div', { class: 'row tight' },
+    h('button', { class: `btn small-btn${state.mode === 'charts' ? '' : ' dark'}`, text: 'Table', onclick: () => again({ mode: 'table' }) }),
+    h('button', { class: `btn small-btn${state.mode === 'charts' ? ' dark' : ''}`, text: 'Charts', onclick: () => again({ mode: 'charts' }) }));
+  if (state.mode === 'charts') {
+    return show(shell(me, 'margins', [header, h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, picker), modeSwitch), early, missingNote(m.missing), ...chartsView(state, cat, m, again)]));
+  }
   const table = h('section', { class: 'card' },
     h('div', { class: 'row' }, h('div', { class: 'grow small muted', text: perDay ? 'Left over per open day the dish was on the menu: fair to new dishes and specials that weren’t there the whole time. Click a column title to sort.' : 'Left over across every plate sold in the period. Click a column title to sort.' }), toggle),
     h('div', { class: 'mrow head', role: 'row' }, MARGIN_COLUMNS.map(headCell), h('div')),
@@ -342,7 +348,208 @@ function renderMargins(me, state, m) {
   const noCard = cat.noCard.length ? h('section', { class: 'card' },
     h('h2', { text: `Selling with no recipe card: ${dollars(cat.noCardSales)} in sales not counted above` }),
     h('div', { class: 'small', text: cat.noCard.map((x) => `${x.name} ${dollars(x.netSales)}`).join(' · ') })) : null;
-  show(shell(me, 'margins', [header, picker, early, missingNote(m.missing), table, noCard]));
+  show(shell(me, 'margins', [header, h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, picker), modeSwitch), early, missingNote(m.missing), table, noCard]));
+}
+
+// ------------------------------------------------------------------ charts
+// Hand-drawn SVG (no chart library): thin lines, gaps where a dish was off the menu,
+// a crosshair with one tooltip listing every series, legends that toggle dishes.
+
+const SERIES = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300']; // validated categorical order
+const OTHER = '#b9b4aa';
+const SVGNS = 'http://www.w3.org/2000/svg';
+function s(tag, attrs = {}, ...children) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) if (v !== undefined && v !== null) el.setAttribute(k, v);
+  for (const c of children.flat()) if (c) el.append(c);
+  return el;
+}
+/** A top for the y axis whose quarter steps are round numbers (4 gridlines). */
+function niceMax(v) {
+  if (!(v > 0)) return 4;
+  const q = v / 4;
+  const p = 10 ** Math.floor(Math.log10(q));
+  return [1, 2, 2.5, 5, 10].map((x) => x * p).find((x) => x >= q) * 4;
+}
+const weekLabel = (d) => shortDate(d);
+
+function tooltipBox(wrap) {
+  const tip = h('div', { class: 'tip', role: 'status' });
+  tip.hidden = true;
+  wrap.append(tip);
+  return {
+    show(x, y, title, rows) {
+      tip.replaceChildren(h('div', { class: 'tip-title', text: title }), ...rows.map(([color, value, label]) => h('div', { class: 'tip-row' },
+        color ? (() => { const k = h('span', { class: 'tip-key' }); k.style.background = color; return k; })() : null,
+        h('b', { text: value }), h('span', { class: 'muted', text: label }))));
+      tip.hidden = false;
+      const w = wrap.clientWidth;
+      tip.style.left = `${Math.min(Math.max(x + 14, 0), w - tip.offsetWidth - 4)}px`;
+      tip.style.top = `${Math.max(y - 10, 0)}px`;
+    },
+    hide() { tip.hidden = true; },
+  };
+}
+
+/** Lines over weeks. series: [{ name, color, values: (number|null)[] }]. */
+function lineChart({ weeks, series, format, average }) {
+  const direct = series.length >= 2 && series.length <= 4;
+  const W = 760, H = 260, L = 52, R = direct ? 130 : 16, T = 14, B = 30;
+  const all = series.flatMap((x) => x.values).filter((v) => v !== null);
+  const top = niceMax(Math.max(...all, average ?? 0, 0) * 1.05);
+  const x = (i) => L + (weeks.length > 1 ? (i / (weeks.length - 1)) * (W - L - R) : (W - L - R) / 2);
+  const y = (v) => T + (1 - v / top) * (H - T - B);
+  const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart-svg', role: 'img', 'aria-label': series.map((x) => x.name).join(', ') });
+  for (let k = 0; k <= 4; k++) {
+    const v = (top / 4) * k;
+    svg.append(s('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: k ? 'grid' : 'axis' }), s('text', { x: L - 8, y: y(v) + 4, class: 'tick', 'text-anchor': 'end' }, document.createTextNode(format(v))));
+  }
+  const step = Math.max(1, Math.ceil(weeks.length / 7));
+  weeks.forEach((w, i) => { if (i % step === 0 || i === weeks.length - 1) svg.append(s('text', { x: x(i), y: H - 8, class: 'tick', 'text-anchor': 'middle' }, document.createTextNode(weekLabel(w)))); });
+  if (average !== undefined) svg.append(s('line', { x1: L, x2: W - R, y1: y(average), y2: y(average), class: 'avg' }));
+  const labels = [];
+  for (const sr of series) {
+    let run = [];
+    const flush = () => {
+      if (run.length > 1) svg.append(s('polyline', { points: run.join(' '), fill: 'none', stroke: sr.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+      if (run.length === 1) { const [cx, cy] = run[0].split(','); svg.append(s('circle', { cx, cy, r: 3, fill: sr.color })); }
+      run = [];
+    };
+    sr.values.forEach((v, i) => (v === null ? flush() : run.push(`${x(i).toFixed(1)},${y(v).toFixed(1)}`)));
+    flush();
+    const last = sr.values.length - 1 - [...sr.values].reverse().findIndex((v) => v !== null);
+    if (last >= 0 && last < sr.values.length && sr.values[last] !== null) labels.push({ name: sr.name, color: sr.color, y: y(sr.values[last]), x: x(last) });
+  }
+  // Direct labels at the right edge for up to four lines, nudged apart so they don't collide.
+  if (direct) {
+    labels.sort((a, b) => a.y - b.y);
+    for (let i = 1; i < labels.length; i++) if (labels[i].y - labels[i - 1].y < 14) labels[i].y = labels[i - 1].y + 14;
+    for (const lb of labels) svg.append(s('circle', { cx: lb.x, cy: lb.y, r: 0 }), s('text', { x: W - R + 8, y: lb.y + 4, class: 'direct' }, document.createTextNode(lb.name.length > 18 ? lb.name.slice(0, 17) + '…' : lb.name)));
+  }
+  const hair = s('line', { y1: T, y2: H - B, class: 'hair', visibility: 'hidden' });
+  const dots = s('g', { visibility: 'hidden' });
+  svg.append(hair, dots);
+  const wrap = h('div', { class: 'chart' }, svg);
+  const tip = tooltipBox(wrap);
+  const hit = s('rect', { x: L, y: T, width: W - L - R, height: H - T - B, fill: 'transparent', tabindex: 0 });
+  const at = (i) => {
+    hair.setAttribute('x1', x(i)); hair.setAttribute('x2', x(i)); hair.setAttribute('visibility', 'visible');
+    dots.replaceChildren(...series.filter((sr) => sr.values[i] !== null).map((sr) => s('circle', { cx: x(i), cy: y(sr.values[i]), r: 4, fill: sr.color, stroke: '#fff', 'stroke-width': 2 })));
+    dots.setAttribute('visibility', 'visible');
+    const box = svg.getBoundingClientRect(), wb = wrap.getBoundingClientRect();
+    const rows = series.map((sr) => [sr.color, sr.values[i] === null ? 'off the menu' : format(sr.values[i]), sr.name]).sort((a, b) => (parseFloat(String(b[1]).replace(/[^0-9.-]/g, '')) || -1) - (parseFloat(String(a[1]).replace(/[^0-9.-]/g, '')) || -1));
+    tip.show((x(i) / W) * box.width + box.left - wb.left, 8, `Week of ${weekLabel(weeks[i])}`, rows);
+  };
+  const nearest = (clientX) => {
+    const box = svg.getBoundingClientRect();
+    const px = ((clientX - box.left) / box.width) * W;
+    let best = 0;
+    weeks.forEach((_, i) => { if (Math.abs(x(i) - px) < Math.abs(x(best) - px)) best = i; });
+    return best;
+  };
+  let focusIdx = weeks.length - 1;
+  hit.addEventListener('pointermove', (e) => at((focusIdx = nearest(e.clientX))));
+  hit.addEventListener('pointerleave', () => { hair.setAttribute('visibility', 'hidden'); dots.setAttribute('visibility', 'hidden'); tip.hide(); });
+  hit.addEventListener('focus', () => at(focusIdx));
+  hit.addEventListener('blur', () => { hair.setAttribute('visibility', 'hidden'); dots.setAttribute('visibility', 'hidden'); tip.hide(); });
+  hit.addEventListener('keydown', (e) => { if (e.key === 'ArrowLeft') at((focusIdx = Math.max(0, focusIdx - 1))); if (e.key === 'ArrowRight') at((focusIdx = Math.min(weeks.length - 1, focusIdx + 1))); });
+  svg.append(hit);
+  return wrap;
+}
+
+/** Stacked bars over weeks. series: [{ name, color, values: number[] }], bottom first. */
+function stackedBars({ weeks, series, format }) {
+  const W = 760, H = 260, L = 52, R = 16, T = 14, B = 30;
+  const totals = weeks.map((_, i) => series.reduce((a, sr) => a + Math.max(0, sr.values[i] ?? 0), 0));
+  const top = niceMax(Math.max(...totals, 0) * 1.05);
+  const band = (W - L - R) / weeks.length;
+  const bw = Math.min(42, band * 0.7);
+  const y = (v) => T + (1 - v / top) * (H - T - B);
+  const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart-svg', role: 'img', 'aria-label': 'Money left after food, by week' });
+  for (let k = 0; k <= 4; k++) {
+    const v = (top / 4) * k;
+    svg.append(s('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: k ? 'grid' : 'axis' }), s('text', { x: L - 8, y: y(v) + 4, class: 'tick', 'text-anchor': 'end' }, document.createTextNode(format(v))));
+  }
+  const step = Math.max(1, Math.ceil(weeks.length / 7));
+  const wrap = h('div', { class: 'chart' }, svg);
+  const tip = tooltipBox(wrap);
+  weeks.forEach((w, i) => {
+    const cx = L + band * i + band / 2;
+    if (i % step === 0 || i === weeks.length - 1) svg.append(s('text', { x: cx, y: H - 8, class: 'tick', 'text-anchor': 'middle' }, document.createTextNode(weekLabel(w))));
+    let base = 0;
+    const segs = series.map((sr) => ({ sr, v: Math.max(0, sr.values[i] ?? 0) })).filter((g) => g.v > 0);
+    segs.forEach((g, j) => {
+      const y0 = y(base), y1 = y(base + g.v);
+      const isTop = j === segs.length - 1;
+      // 2px surface gap between segments; the top segment gets the rounded end.
+      const hgt = Math.max(0, y0 - y1 - (j ? 2 : 0));
+      const rect = s(isTop ? 'path' : 'rect', isTop
+        ? { d: roundedTop(cx - bw / 2, y1, bw, hgt, Math.min(4, hgt)), fill: g.sr.color, class: 'seg', tabindex: 0 }
+        : { x: cx - bw / 2, y: y1, width: bw, height: hgt, fill: g.sr.color, class: 'seg', tabindex: 0 });
+      const showTip = () => {
+        const box = svg.getBoundingClientRect(), wb = wrap.getBoundingClientRect();
+        tip.show((cx / W) * box.width + box.left - wb.left, ((y1 / H) * box.height), `Week of ${weekLabel(w)} · ${format(totals[i])} in all`, [[g.sr.color, format(g.v), g.sr.name]]);
+      };
+      rect.addEventListener('pointerenter', showTip); rect.addEventListener('focus', showTip);
+      rect.addEventListener('pointerleave', () => tip.hide()); rect.addEventListener('blur', () => tip.hide());
+      svg.append(rect);
+      base += g.v;
+    });
+  });
+  return wrap;
+}
+function roundedTop(x, y, w, hgt, r) {
+  return `M${x},${y + hgt} V${y + r} Q${x},${y} ${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${y + hgt} Z`;
+}
+
+function legend(items, onToggle) {
+  return h('div', { class: 'legend' }, items.map((it) => {
+    const key = h('span', { class: `lkey${it.line ? ' line' : ''}` });
+    key.style.background = it.on ? it.color : 'transparent';
+    key.style.borderColor = it.color ?? OTHER;
+    return h('button', { class: `lchip${it.on ? ' on' : ''}`, 'aria-pressed': it.on ? 'true' : 'false', disabled: !onToggle || it.fixed, onclick: () => onToggle?.(it.name) }, key, it.name);
+  }));
+}
+
+function chartsView(state, cat, m, again) {
+  // Which dishes are charted: the top four by money unless chosen; colors stick to a dish once given.
+  const live = cat.dishes;
+  const chosen = (state.charted?.[cat.name] ?? live.slice(0, 4).map((d) => d.name)).filter((n) => live.some((d) => d.name === n));
+  const colors = { ...(state.chartColors ?? {}) };
+  for (const n of chosen) if (!colors[n]) colors[n] = SERIES.find((c) => !chosen.some((o) => colors[o] === c)) ?? OTHER;
+  const toggle = (name) => {
+    const next = chosen.includes(name) ? chosen.filter((n) => n !== name) : chosen.length >= 6 ? chosen : [...chosen, name];
+    const nextColors = { ...colors };
+    if (!next.includes(name)) delete nextColors[name];
+    again({ charted: { ...(state.charted ?? {}), [cat.name]: next }, chartColors: nextColors });
+  };
+  const picked = chosen.map((n) => live.find((d) => d.name === n));
+  const money = (v) => dollars(Math.round(v));
+
+  const plates = h('section', { class: 'card' },
+    h('h2', { text: 'Plates a day, week by week' }),
+    h('div', { class: 'small muted', text: 'Plates sold per open day. Gaps are weeks a dish wasn’t on the menu. Hover or use the arrow keys for the numbers.' }),
+    legend(live.map((d) => ({ name: d.name, color: colors[d.name], on: chosen.includes(d.name), line: true })), toggle),
+    chosen.length >= 6 ? h('div', { class: 'small muted', text: 'Up to 6 dishes at a time: turn one off to add another.' }) : null,
+    picked.length ? lineChart({ weeks: m.weeks, series: picked.map((d) => ({ name: d.name, color: colors[d.name], values: d.trend?.series ?? m.weeks.map(() => null) })), format: (v) => (v === 0 ? '0' : v >= 10 || Number.isInteger(v) ? Math.round(v).toString() : v.toFixed(1)) }) : h('p', { class: 'muted', text: 'Pick a dish above.' }));
+
+  const others = live.filter((d) => !chosen.includes(d.name));
+  const stack = [...picked.map((d) => ({ name: d.name, color: colors[d.name], values: d.weeklyLeft })), ...(others.length ? [{ name: `Other ${cat.name.toLowerCase()} (${others.length})`, color: OTHER, values: m.weeks.map((_, i) => others.reduce((a, d) => a + (d.weeklyLeft?.[i] ?? 0), 0)) }] : [])];
+  const leftBars = h('section', { class: 'card' },
+    h('h2', { text: 'Money left after food, week by week' }),
+    h('div', { class: 'small muted', text: `Every ${cat.name.toLowerCase()} with a recipe card, stacked; the dishes picked above get their own color. Hover a block for its number.` }),
+    legend(stack.map((x) => ({ name: x.name, color: x.color, on: true, fixed: true }))),
+    stackedBars({ weeks: m.weeks, series: stack, format: money }));
+
+  const fc = cat.weeklyFoodCost ?? [];
+  const fcValues = fc.map((v) => (v === null ? null : v * 100));
+  const avg = (cat.foodCostShare ?? 0) * 100;
+  const foodCost = h('section', { class: 'card' },
+    h('h2', { text: `${cat.name} food cost, week by week · ${pct(cat.foodCostShare)} for the period` }),
+    h('div', { class: 'small muted', text: 'Food cost as a share of sales, on dishes with recipe cards. The dashed line is the period’s average.' }),
+    lineChart({ weeks: m.weeks, series: [{ name: 'Food cost', color: SERIES[0], values: fcValues }], format: (v) => (v === 0 ? '0%' : `${Number.isInteger(v) ? v : v.toFixed(1)}%`), average: avg }));
+
+  return [plates, leftBars, foodCost];
 }
 
 // ------------------------------------------------------------------ menu

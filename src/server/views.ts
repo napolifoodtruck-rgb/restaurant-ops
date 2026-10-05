@@ -37,6 +37,7 @@ export function marginsView(model: Model) {
   for (let end = model.today; end >= model.from; end = addDays(end, -7)) weeks.unshift({ from: addDays(end, -6) < model.from ? model.from : addDays(end, -6), to: end });
   const weekOf = (day: string) => weeks.findIndex((w) => day >= w.from && day <= w.to);
   const weekly = new Map<string, number[]>();
+  const weeklySales = new Map<string, number[]>();
   for (const l of model.sales) {
     if (!l.date || !(l.quantity > 0)) continue;
     const link = model.lookup(l.catalogId, l.name, l.date);
@@ -46,7 +47,15 @@ export function marginsView(model: Model) {
     const arr = weekly.get(link.recipeId) ?? weeks.map(() => 0);
     arr[w]! += l.quantity;
     weekly.set(link.recipeId, arr);
+    const money = weeklySales.get(link.recipeId) ?? weeks.map(() => 0);
+    money[w]! += l.netSales;
+    weeklySales.set(link.recipeId, money);
   }
+  /** Money left after food, week by week: that week's sales less its plates at the period's plate cost. */
+  const weeklyLeftOf = (recipeId: string, plateCost: number) => {
+    const q = weekly.get(recipeId), m = weeklySales.get(recipeId);
+    return q && m ? q.map((n, i) => Math.round(m[i]! - n * plateCost)) : weeks.map(() => 0);
+  };
   /**
    * Plates per open day, week by week (null for weeks the dish wasn't on the menu, or was on
    * fewer than 2 open days), and the trend: the fitted line's change across those weeks as a
@@ -109,9 +118,19 @@ export function marginsView(model: Model) {
           return n ? { daysOn: n, firstSold: sold.get(d.recipeId)!.first, leftPerDay: money(d.totalContribution / n), soldPerDay: Math.round((d.quantity / n) * 10) / 10 } : {};
         })(),
         ...(trendOf(d.recipeId) ? { trend: trendOf(d.recipeId) } : {}),
+        weeklyLeft: weeklyLeftOf(d.recipeId, d.plateCost),
         // Came off the menu during the period: its money is real, but it's not a dish to work on.
         ...((lastSold.get(d.recipeId) ?? model.today) < stillOn ? { offSince: lastSold.get(d.recipeId) } : {}),
       })),
+      // Food cost share week by week, over the dishes with cards.
+      weeklyFoodCost: weeks.map((_, i) => {
+        let sales = 0, food = 0;
+        for (const d of dishes) {
+          sales += weeklySales.get(d.recipeId)?.[i] ?? 0;
+          food += (weekly.get(d.recipeId)?.[i] ?? 0) * d.plateCost;
+        }
+        return sales > 0 ? share(food / sales)! : null;
+      }),
       // Selling but no recipe card yet: their money isn't counted above.
       noCard: missing.slice(0, 12).map((u) => ({ name: u.name, sold: Math.round(u.quantity), netSales: money(u.netSales) })),
       noCardSales: money(missing.reduce((s, u) => s + u.netSales, 0)),
