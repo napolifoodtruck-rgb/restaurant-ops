@@ -1,0 +1,22 @@
+Napoli Pizzera and Gelateria                                                                  printed 10/04/2026 08:44 PM
+Parma
+Type: Pizza
+Yields: 1 Portion
+Allergens:
+Equipment:
+Ingredients
+Item                   Type                          Yield          Quantity         Unit                            Cost
+Pizza Dough        Prep                       100%         1                Portion                    $0.38
+Pomodoro Sauce Prep                          100%          60                Gram                         $0.34
+Cheese, MozzarellaFood                        100%         2.5               Ounce                      $0.92
+Arugula, Baby      Food                        100%          0.5               Ounce                      $0.27
+Prosciutto              Food                              85%            1.75                Ounce                          $2.39
+Cheese, Grana      Food                           90%          0.75              Ounce                       $0.54
+Padano
+Oil, Olive Extra Vir- Food                         100%          0.5               Fluid Ounce                $0.11
+gin
+Ingredient Total:               $4.95
+Global Menu Price:              $20.00
+Plate Cost:               24.8%
+No Method
+Page 1 of 1

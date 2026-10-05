@@ -71,6 +71,7 @@ const sample: MarginEdgeExport = {
     { companyConceptProductId: 'garlic', productName: 'Garlic, Peeled', reportByUnit: 'Pound', latestPrice: 4.1, categories: [{ categoryId: '1450', percentAllocation: 100 }] },
     { companyConceptProductId: 'limes', productName: 'Limes, Fresh', reportByUnit: 'Pound', latestPrice: 0.74 },
     { companyConceptProductId: 'sage', productName: 'Herb, Sage', reportByUnit: 'Pound', latestPrice: 36 },
+    { companyConceptProductId: 'spinach', productName: 'Spinach, Baby', reportByUnit: 'Each', latestPrice: 5.92 },
     { companyConceptProductId: 'basil', productName: 'Basil, Fresh', reportByUnit: 'Pound', latestPrice: 12 },
     { companyConceptProductId: 'aperol', productName: 'Aperol Aperitivo', reportByUnit: 'Bottle (750 Milliliters)', latestPrice: 29.95, categories: [{ categoryId: '1456', percentAllocation: 100 }] },
     { companyConceptProductId: 'mystery', productName: 'Misc', reportByUnit: 'Other' },
@@ -81,17 +82,22 @@ const sample: MarginEdgeExport = {
   ],
   invoices: [
     {
-      orderId: 'o1', invoiceNumber: 'BS-1', invoiceDate: '2026-09-28', vendorId: 1, vendorName: 'Blue Sky Farms', orderTotal: 59.75, isCredit: false,
+      orderId: 'o1', invoiceNumber: 'BS-1', invoiceDate: '2026-09-28', vendorId: 1, vendorName: 'Blue Sky Farms', orderTotal: 76.25, isCredit: false,
       lineItems: [
         { vendorItemCode: '', vendorItemName: 'Garlic, Peeled 5 Lb', quantity: 1, unitPrice: 20.5, linePrice: 20.5, companyConceptProductId: 'garlic', packagingId: 63619 },
         { vendorItemCode: '', vendorItemName: 'Limes 40LB', quantity: 1, unitPrice: 29.75, linePrice: 29.75, companyConceptProductId: 'limes', packagingId: 63620 },
         { vendorItemCode: '', vendorItemName: 'Herb, Sage', quantity: 1, unitPrice: 9, linePrice: 9, companyConceptProductId: 'sage', packagingId: 63621 },
         { vendorItemCode: '', vendorItemName: 'Charity', quantity: 1, unitPrice: 0.5, linePrice: 0.5, companyConceptProductId: 'mystery', packagingId: 63622 },
+        { vendorItemCode: '', vendorItemName: 'Spinach, Baby Trimmed 4lb (bag)', quantity: 1, unitPrice: 16.5, linePrice: 16.5, companyConceptProductId: 'spinach', packagingId: 63623 },
       ],
     },
     {
-      orderId: 'o2', invoiceNumber: 'BS-2', invoiceDate: '2026-10-02', vendorId: 1, vendorName: 'Blue Sky Farms', orderTotal: 24,
-      lineItems: [{ vendorItemCode: '', vendorItemName: 'Basil', quantity: 2, unitPrice: 12, linePrice: 24, companyConceptProductId: 'basil', packagingId: 1 }],
+      orderId: 'o2', invoiceNumber: 'BS-2', invoiceDate: '2026-10-02', vendorId: 1, vendorName: 'Blue Sky Farms', orderTotal: 28.1,
+      lineItems: [
+        { vendorItemCode: '', vendorItemName: 'Basil', quantity: 2, unitPrice: 12, linePrice: 24, companyConceptProductId: 'basil', packagingId: 1 },
+        // The latest garlic purchase is by the pound, so nothing to calibrate and the 5 lb bag reads from its name.
+        { vendorItemCode: '', vendorItemName: 'Garlic, Peeled', quantity: 1, unitPrice: 4.1, linePrice: 4.1, companyConceptProductId: 'garlic', packagingId: 2 },
+      ],
     },
     {
       orderId: 'o3', invoiceNumber: 'E-9', invoiceDate: '2026-09-26', vendorId: 2, vendorName: 'Empire Distributors', orderTotal: 130,
@@ -105,29 +111,35 @@ const sample: MarginEdgeExport = {
   ],
 };
 
-test('prices come from pack data, item names, or the product unit, whichever checks out', () => {
+test('prices come from pack data, calibration, item names, or the product unit, whichever checks out', () => {
   const result = importMarginEdge(sample);
   const point = (productId: string) => result.prices.find((p) => p.productExternalId === productId);
 
   // Pack data (numeric id on the line, text id on the pack): a 750 ml bottle.
   assert.equal(point('aperol')?.source, 'pack');
   close(point('aperol')?.perBaseUnit, 29.95);
-  // Item name: "Limes 40LB" at $29.75 → $0.74/lb, in line with MarginEdge's $0.74.
-  assert.equal(point('limes')?.source, 'itemName');
-  close(point('limes')?.perBaseUnit, 29.75 / 40);
+  // Calibrated: the latest $29.75 limes line is a clean 40× MarginEdge's $0.74/lb, a 40 lb case.
+  assert.equal(point('limes')?.source, 'calibrated');
+  assert.deepEqual(point('limes')?.per, { amount: 40, unit: 'lb' });
+  // Calibrated: $9 sage against $36/lb is a quarter-pound bunch.
+  assert.deepEqual(point('sage')?.per, { amount: 0.25, unit: 'lb' });
+  close(point('sage')?.perBaseUnit, 36);
+  // Item name: "Garlic, Peeled 5 Lb" at $20.50 is $4.10/lb.
+  assert.equal(point('garlic')?.source, 'itemName');
   close(point('garlic')?.perBaseUnit, 4.1);
   // Product unit: basil at $12 a pound.
   assert.equal(point('basil')?.source, 'productUnit');
   close(point('basil')?.perBaseUnit, 12);
 });
 
-test('a price far from MarginEdge\'s own becomes a question, not a cost', () => {
+test('a price that fits no reading becomes a question, not a cost', () => {
   const result = importMarginEdge(sample);
-  assert.equal(result.prices.some((p) => p.productExternalId === 'sage'), false);
-  const sage = result.flags.find((f) => f.type === 'priceUnclear' && f.productExternalId === 'sage');
-  assert.deepEqual(sage, {
-    type: 'priceUnclear', invoiceExternalId: 'o1', lineNumber: 3, vendorName: 'Blue Sky Farms', description: 'Herb, Sage',
-    productExternalId: 'sage', price: 9, impliedPerUnit: 9, referencePerUnit: 36, unit: 'lb',
+  // $16.50 for a "4lb bag" of spinach against MarginEdge's $5.92 each: no clean pack size explains it.
+  assert.equal(result.prices.some((p) => p.productExternalId === 'spinach'), false);
+  const spinach = result.flags.find((f) => f.type === 'priceUnclear' && f.productExternalId === 'spinach');
+  assert.deepEqual(spinach, {
+    type: 'priceUnclear', invoiceExternalId: 'o1', lineNumber: 5, vendorName: 'Blue Sky Farms', description: 'Spinach, Baby Trimmed 4lb (bag)',
+    productExternalId: 'spinach', price: 16.5, impliedPerUnit: 16.5, referencePerUnit: 5.92, unit: 'each',
   });
 });
 

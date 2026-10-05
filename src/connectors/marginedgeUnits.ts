@@ -179,6 +179,10 @@ export function readPack(pack: { unit?: string; quantity?: number; packagingName
   if (structure.outer) candidates.push({ amount: structure.count, unit: 'each' });
   // "EA/2KG", "Case/6/1KG": one item weighs the inner size.
   if (structure.itemSize && dimensionOf(structure.itemSize.unit) === 'mass') teaches.gramsPerEach = toGrams(structure.itemSize);
+  // "Case/10LB" measured in pounds: a case holds 10 lb.
+  if (structure.outer && structure.outer !== 'each' && candidates[0] && dimensionOf(candidates[0].unit) && candidates[0].unit !== 'each') {
+    teaches.customUnits = { ...teaches.customUnits, [structure.outer]: candidates[0] };
+  }
 
   return { candidates: dedupe(candidates), teaches };
 }
@@ -207,6 +211,33 @@ export function sizeInItemName(name: string | undefined): Quantity | undefined {
 function toGrams(quantity: Quantity): number {
   const factors: Record<string, number> = { g: 1, kg: 1000, oz: 28.349523125, lb: 453.59237 };
   return quantity.amount * (factors[quantity.unit] ?? Number.NaN);
+}
+
+/** One item weighs this much (from a size like "4lb"), as a conversion fact. */
+export function gramsPerEachFrom(size: Quantity): number | undefined {
+  const grams = toGrams(size);
+  return Number.isFinite(grams) && grams > 0 ? grams : undefined;
+}
+
+/**
+ * Typical densities (g per ml) for ingredients bought by weight but measured by volume, or the
+ * reverse. Used only when nothing better is known; a chef's answer replaces them.
+ */
+const DENSITIES: [RegExp, number][] = [
+  [/\bwater\b/i, 1.0],
+  [/\bhoney\b/i, 1.42],
+  [/\b(syrup|molasses|agave)\b/i, 1.33],
+  [/\bvinegar\b/i, 1.01],
+  [/\boil\b/i, 0.92],
+  [/\b(heavy )?cream\b/i, 0.99],
+  [/\bmilk\b/i, 1.03],
+  [/\bjuice\b/i, 1.04],
+  [/\b(wine|pinot|grigio|vermouth)\b/i, 0.99],
+  [/\b(stock|broth)\b/i, 1.0],
+];
+
+export function typicalDensity(name: string): number | undefined {
+  return DENSITIES.find(([pattern]) => pattern.test(name))?.[1];
 }
 
 /** Merges facts without overwriting ones already known. */

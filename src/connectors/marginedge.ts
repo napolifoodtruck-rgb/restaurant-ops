@@ -13,8 +13,8 @@
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tryConvert, type ItemConversions, type Quantity } from '../core/units.ts';
-import { mergeConversions, parseReportUnit, readPack, sizeInItemName } from './marginedgeUnits.ts';
+import { dimensionOf, tryConvert, type ItemConversions, type Quantity } from '../core/units.ts';
+import { gramsPerEachFrom, mergeConversions, parseReportUnit, readPack, sizeInItemName, typicalDensity } from './marginedgeUnits.ts';
 
 // ---------------------------------------------------------------- MarginEdge shapes (export files)
 
@@ -148,7 +148,7 @@ export interface PricePoint {
   /** Price per one of the product's base units. */
   perBaseUnit: number;
   /** How the pack size was worked out. */
-  source: 'pack' | 'itemName' | 'productUnit';
+  source: 'pack' | 'calibrated' | 'itemName' | 'productUnit';
 }
 
 export type ImportFlag =
@@ -218,6 +218,56 @@ export function importMarginEdge(data: MarginEdgeExport): ImportResult {
     });
   }
 
+  // Typical densities where nothing better is known (syrups, vinegar, oils, dairy).
+  for (const product of products.values()) {
+    if (product.conversions.gramsPerMl === undefined) {
+      const density = typicalDensity(product.name);
+      if (density) product.conversions = mergeConversions(product.conversions, { gramsPerMl: density });
+    }
+  }
+
+  const packFor = (line: MeLineItem) => (line.packagingId !== null && line.packagingId !== undefined ? packs.get(String(line.packagingId)) : undefined);
+  const lineKey = (vendorId: Id | undefined, description: string) => `${id(vendorId) ?? '?'}|${description.toLowerCase().replace(/\s+/g, ' ').trim()}`;
+  const allLines = data.invoices.flatMap((invoice) =>
+    (invoice.lineItems ?? []).map((line) => ({ invoice, line, date: invoice.invoiceDate ?? invoice.createdDate ?? '', description: line.vendorItemName?.trim() || line.vendorItemCode || '' })),
+  );
+
+  // Item weights from names, for products counted by the piece or bag: "Spinach, Baby 4lb (bag)".
+  // Only when the price confirms the line is one product unit (the same bag MarginEdge prices).
+  for (const { line, description } of allLines) {
+    const product = products.get(id(line.companyConceptProductId) ?? '');
+    if (!product?.baseUnit || !product.referencePrice || packFor(line)) continue;
+    const ratio = money(line.unitPrice) / product.referencePrice;
+    if (ratio < 0.8 || ratio > 1.25) continue;
+    const size = sizeInItemName(description);
+    if (!size || dimensionOf(size.unit) !== 'mass') continue;
+    if (product.baseUnit === 'each') {
+      if (product.conversions.gramsPerEach === undefined) product.conversions = mergeConversions(product.conversions, { gramsPerEach: gramsPerEachFrom(size) });
+    } else if (!dimensionOf(product.baseUnit) && !product.conversions.customUnits?.[product.baseUnit]) {
+      product.conversions = mergeConversions(product.conversions, { customUnits: { [product.baseUnit]: size } });
+    }
+  }
+
+  // Calibration: MarginEdge's latest price comes from the product's most recent purchase. If that
+  // purchase's price is a clean multiple of it (a $7.50 bunch against $15/lb), MarginEdge knows a
+  // pack size we don't: 0.5 lb. Apply it to every purchase of that item from that vendor.
+  const learnedPacks = new Map<string, Quantity>();
+  const latestLine = new Map<string, (typeof allLines)[number]>();
+  for (const entry of allLines) {
+    const productId = id(entry.line.companyConceptProductId);
+    if (!productId || entry.invoice.isCredit || !(money(entry.line.unitPrice) > 0)) continue;
+    const current = latestLine.get(productId);
+    if (!current || entry.date >= current.date) latestLine.set(productId, entry);
+  }
+  for (const [productId, entry] of latestLine) {
+    const product = products.get(productId);
+    if (!product?.baseUnit || !product.referencePrice || packFor(entry.line)) continue;
+    const ratio = niceRatio(money(entry.line.unitPrice) / product.referencePrice);
+    if (ratio !== undefined && Math.abs(ratio - 1) > 0.03) {
+      learnedPacks.set(lineKey(entry.invoice.vendorId, entry.description), { amount: ratio, unit: product.baseUnit });
+    }
+  }
+
   const invoices: ImportedInvoice[] = [];
   const prices: PricePoint[] = [];
 
@@ -243,7 +293,7 @@ export function importMarginEdge(data: MarginEdgeExport): ImportResult {
 
       const product = productId ? products.get(productId) : undefined;
       if (product?.baseUnit && mathChecks && unitPrice > 0 && invoiceDate && !invoice.isCredit) {
-        const point = pricePoint(product, line, description, unitPrice);
+        const point = pricePoint(product, line, description, unitPrice, invoice.vendorId);
         if (point.ok) {
           prices.push({
             productExternalId: product.externalId,
@@ -299,20 +349,24 @@ export function importMarginEdge(data: MarginEdgeExport): ImportResult {
   };
 
   /**
-   * Works out what one purchased unit holds, trying the most specific source first:
-   * the pack record, a size in the item's name, then one product unit. The first reading
-   * that converts and lands near MarginEdge's own price is used.
+   * Works out what one purchased unit holds, trying the most specific source first: the pack
+   * record, a pack size calibrated against MarginEdge's price, a size in the item's name, then
+   * one product unit. The first reading that converts and lands near MarginEdge's own price is used.
    */
-  function pricePoint(product: ImportedProduct, line: MeLineItem, description: string, unitPrice: number):
+  function pricePoint(product: ImportedProduct, line: MeLineItem, description: string, unitPrice: number, vendorId: Id | undefined):
     | { ok: true; per: Quantity; perBaseUnit: number; source: PricePoint['source'] }
     | { ok: false; impliedPerUnit?: number } {
     const baseUnit = product.baseUnit!;
     const tries: { per: Quantity; source: PricePoint['source'] }[] = [];
-    const pack = line.packagingId !== null && line.packagingId !== undefined ? packs.get(String(line.packagingId)) : undefined;
+    const pack = packFor(line);
     for (const per of pack?.reading.candidates ?? []) tries.push({ per, source: 'pack' });
-    const fromName = pack ? undefined : sizeInItemName(description);
-    if (fromName) tries.push({ per: fromName, source: 'itemName' });
-    if (!pack) tries.push({ per: { amount: 1, unit: baseUnit }, source: 'productUnit' });
+    if (!pack) {
+      const learned = learnedPacks.get(lineKey(vendorId, description));
+      if (learned) tries.push({ per: learned, source: 'calibrated' });
+      const fromName = sizeInItemName(description);
+      if (fromName) tries.push({ per: fromName, source: 'itemName' });
+      tries.push({ per: { amount: 1, unit: baseUnit }, source: 'productUnit' });
+    }
 
     let firstImplied: number | undefined;
     for (const attempt of tries) {
@@ -327,6 +381,21 @@ export function importMarginEdge(data: MarginEdgeExport): ImportResult {
     }
     return { ok: false, impliedPerUnit: firstImplied };
   }
+}
+
+/**
+ * A ratio that is a clean pack size (within 2%): a whole number of units, or a half, third or
+ * quarter below 2 (a quarter-pound bunch, a 1.5 lb bag). "2.75 bags" is not a pack size.
+ */
+function niceRatio(ratio: number): number | undefined {
+  if (!(ratio >= 0.05) || !Number.isFinite(ratio)) return undefined;
+  const divisors = ratio < 2 ? [1, 2, 3, 4] : [1];
+  for (const divisor of divisors) {
+    const scaled = ratio * divisor;
+    const whole = Math.round(scaled);
+    if (whole >= 1 && Math.abs(scaled - whole) / scaled < 0.02) return whole / divisor;
+  }
+  return undefined;
 }
 
 /** Reads one restaurant's export folder (the files the export script writes). */
