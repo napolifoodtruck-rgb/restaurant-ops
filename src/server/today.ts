@@ -16,7 +16,7 @@ import type { Db } from './db.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, type Model } from './model.ts';
 import { gapsOf, inArea, menuView, type AreaView } from './views.ts';
-import { loadAreas } from './areas.ts';
+import { guessArea, loadAreas } from './areas.ts';
 import { view as stationDay } from './prep.ts';
 import { blendedPrices } from '../connectors/marginedge.ts';
 
@@ -34,6 +34,8 @@ export interface TodayItem {
   dollars?: number;
   go: { to: 'count' | 'review' | 'work' | 'menu' | 'performance' | 'settings'; stationId?: string; date?: string };
   button: string;
+  /** The side it's about (a station's side comes from its name: "Bar" is the bar's); none for syncs, which everyone sees. */
+  side?: 'kitchen' | 'bar';
   /** Answers that can be given right here (POST /api/answers), the likeliest first. */
   answers?: { label: string; body: Record<string, unknown> }[];
 }
@@ -64,9 +66,11 @@ async function openWeekdays(db: Db, restaurantId: string, today: string): Promis
 async function prepItems(db: Db, who: SignedIn, stations: { id: string; name: string }[], today: string, hour: number, openToday: boolean, nextOpen: string) {
   const manager = atLeast(who.roleLevel, 'chef');
   const items: TodayItem[] = [];
-  const status: { stationId: string; station: string; today?: { approved: boolean; left: number; total: number }; next: { date: string; counted: number; toCount: number; approved: boolean } }[] = [];
+  const status: { stationId: string; station: string; side: 'kitchen' | 'bar'; today?: { approved: boolean; left: number; total: number }; next: { date: string; counted: number; toCount: number; approved: boolean } }[] = [];
   const nextName = nextOpen === addDays(today, 1) ? 'tomorrow' : DAYS[weekday(nextOpen)]!;
   for (const s of stations) {
+    const side = guessArea(s.name) === 'bar' ? 'bar' as const : 'kitchen' as const;
+    const before = items.length;
     let todayStatus;
     if (openToday) {
       const v = await stationDay(db, who, s.id, today);
@@ -88,8 +92,8 @@ async function prepItems(db: Db, who: SignedIn, stations: { id: string; name: st
     const n = await stationDay(db, who, s.id, nextOpen);
     const countable = n.lines.filter((l: any) => l.kind === 'count' || l.kind === 'batch');
     const counted = countable.filter((l: any) => l.counted !== undefined).length;
-    status.push({ stationId: s.id, station: s.name, ...(todayStatus ? { today: todayStatus } : {}), next: { date: nextOpen, counted, toCount: countable.length, approved: n.status === 'approved' } });
-    if (!countable.length || n.status === 'approved') continue;
+    status.push({ stationId: s.id, station: s.name, side, ...(todayStatus ? { today: todayStatus } : {}), next: { date: nextOpen, counted, toCount: countable.length, approved: n.status === 'approved' } });
+    if (!countable.length || n.status === 'approved') { for (const it of items.slice(before)) it.side = side; continue; }
     const countDue = addDays(nextOpen, -1) < today ? today : addDays(nextOpen, -1);
     if (counted < countable.length) {
       const tonight = openToday && nextName === 'tomorrow';
@@ -100,6 +104,7 @@ async function prepItems(db: Db, who: SignedIn, stations: { id: string; name: st
       items.push({ key: `prep:review:${s.id}:${nextOpen}`, group: 'prep', label: 'Approve', tone: 'due', due: countDue,
         title: `Approve ${s.name}’s list for ${nextName}`, detail: `Counted${n.countedBy ? ` by ${n.countedBy}` : ''}. ${toMake} item${toMake === 1 ? '' : 's'} to make.`, go: { to: 'review', stationId: s.id, date: nextOpen }, button: 'Review' });
     }
+    for (const it of items.slice(before)) it.side = side;
   }
   return { items, status };
 }
@@ -138,7 +143,7 @@ export function priceMoves(model: Model, today: string, include: (category: stri
   return out.sort((x, y) => Math.abs(y.perWeek) - Math.abs(x.perWeek));
 }
 
-async function managerItems(db: Db, who: SignedIn, model: Model, today: string, view: AreaView): Promise<TodayItem[]> {
+async function managerItems(db: Db, who: SignedIn, model: Model, today: string, areaOf: AreaView['areaOf']): Promise<TodayItem[]> {
   const items: TodayItem[] = [];
 
   // Syncs that failed, or haven't run in a while.
@@ -152,53 +157,60 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string, 
   }
 
   // Dishes coming to the menu whose preps aren't on the lists yet.
-  const plans = (await db.query<{ id: string; name: string; starts_on: string }>(
-    "SELECT id, name, starts_on::text AS starts_on FROM menu_plans WHERE restaurant_id = $1 AND status = 'planned' AND starts_on <= $2 ORDER BY starts_on", [who.restaurantId, addDays(today, 21)])).rows;
+  const plans = (await db.query<{ id: string; name: string; starts_on: string; section: string | null }>(
+    "SELECT id, name, section, starts_on::text AS starts_on FROM menu_plans WHERE restaurant_id = $1 AND status = 'planned' AND starts_on <= $2 ORDER BY starts_on", [who.restaurantId, addDays(today, 21)])).rows;
   for (const p of plans) {
     const due = addDays(p.starts_on, -1) < today ? today : addDays(p.starts_on, -1);
-    items.push({ key: `plan:${p.id}`, group: 'menu', label: 'Coming up', tone: 'due', due, title: `${p.name} starts ${DAYS[weekday(p.starts_on)]}, ${shortDate(p.starts_on)}`, detail: 'Its preps aren’t on the station lists yet.', go: { to: 'menu' }, button: 'Plan preps' });
+    items.push({ key: `plan:${p.id}`, side: areaOf(p.section ?? undefined) === 'bar' ? 'bar' : 'kitchen', group: 'menu', label: 'Coming up', tone: 'due', due, title: `${p.name} starts ${DAYS[weekday(p.starts_on)]}, ${shortDate(p.starts_on)}`, detail: 'Its preps aren’t on the station lists yet.', go: { to: 'menu' }, button: 'Plan preps' });
   }
 
-  // Menu questions, the biggest sellers first, answerable here.
-  const menu = menuView(model, view);
-  const questions: (Omit<TodayItem, 'group' | 'label' | 'tone' | 'go' | 'button'> & { name: string })[] = [
-    ...menu.checks.map((c) => {
-      const answers = c.kind === 'dishChanged' && c.item && c.suggestedDate ? [{ label: `New version from ${shortDate(c.suggestedDate)}`, body: { type: 'newDish', ...c.item, from: c.suggestedDate, note: 'new version, card to come' } }, { label: 'Same dish', body: { type: 'dismiss', dedupeKey: c.dedupeKey } }]
-        : c.kind === 'newButton' && c.item ? [{ label: 'New dish, card to come', body: { type: 'newDish', ...c.item } }, { label: 'Not food', body: { type: 'notFood', ...c.item } }]
-        : [{ label: 'Ignore', body: { type: 'dismiss', dedupeKey: c.dedupeKey } }];
-      return { key: `q:${c.dedupeKey}`, name: c.title, title: c.title, dollars: c.netSales, detail: `${dollars(c.netSales)} in sales over 90 days`, answers };
-    }),
-    ...menu.linkQuestions.map((q) => {
-      const sold = q.first ? ` · sold ${shortDate(q.first)} – ${shortDate(q.last!)}` : '';
-      return q.candidates.length
-        ? { key: `q:link:${q.item.catalogId}:${q.name}`, name: q.name, title: q.candidates.length === 1 || q.type === 'confirm' ? `${q.name}: is it the ${q.candidates[0]} card?` : `${q.name}: which recipe card is it?`, dollars: q.netSales,
-            detail: `${dollars(q.netSales)} in sales over 90 days${sold}`,
-            answers: [...q.candidates.slice(0, 2).map((c, i) => ({ label: i === 0 && (q.candidates.length === 1 || q.type === 'confirm') ? `Yes, ${c}` : i === 0 ? c : `No, ${c}`, body: { type: 'link', ...q.item, recipe: c } })), { label: 'New dish, card to come', body: { type: 'newDish', ...q.item } }] }
-        : { key: `q:link:${q.item.catalogId}:${q.name}`, name: q.name, title: `${q.name} sells but has no recipe card`, dollars: q.netSales,
-            detail: `${dollars(q.netSales)} in sales over 90 days${sold}. Mark it and it stops asking; its plate cost comes with the card.`,
-            answers: [{ label: 'New dish, card to come', body: { type: 'newDish', ...q.item } }, { label: 'Not food', body: { type: 'notFood', ...q.item } }] };
-    }),
-  ].sort((a, b) => (b.dollars ?? 0) - (a.dollars ?? 0));
-  for (const { name: _, ...q } of questions.slice(0, 3)) items.push({ ...q, group: 'menu', label: 'Question', tone: 'ask', go: { to: 'menu' }, button: 'Menu' });
-  if (questions.length > 3) {
-    const rest = questions.slice(3);
-    items.push({ key: 'q:more', group: 'menu', label: 'Questions', tone: 'ask', dollars: rest[0]!.dollars, title: `${rest.length} more menu question${rest.length === 1 ? '' : 's'}`, detail: list(rest.map((q) => q.name.replace(/[.?]$/, '')), 4), go: { to: 'menu' }, button: 'Menu' });
-  }
+  // Questions, plate-cost gaps and price moves, side by side: kitchen and bar people each see theirs.
+  for (const side of ['kitchen', 'bar'] as const) {
+    const view: AreaView = { area: side, areaOf };
+    // Menu questions, the biggest sellers first, answerable here.
+    const menu = menuView(model, view);
+    const before = items.length;
+    const questions: (Omit<TodayItem, 'group' | 'label' | 'tone' | 'go' | 'button'> & { name: string })[] = [
+      ...menu.checks.map((c) => {
+        const answers = c.kind === 'dishChanged' && c.item && c.suggestedDate ? [{ label: `New version from ${shortDate(c.suggestedDate)}`, body: { type: 'newDish', ...c.item, from: c.suggestedDate, note: 'new version, card to come' } }, { label: 'Same dish', body: { type: 'dismiss', dedupeKey: c.dedupeKey } }]
+          : c.kind === 'newButton' && side === 'bar' ? [{ label: 'Got it', body: { type: 'dismiss', dedupeKey: c.dedupeKey } }]
+          : c.kind === 'newButton' && c.item ? [{ label: 'New dish, card to come', body: { type: 'newDish', ...c.item } }, { label: 'Not food', body: { type: 'notFood', ...c.item } }]
+          : [{ label: 'Ignore', body: { type: 'dismiss', dedupeKey: c.dedupeKey } }];
+        return { key: `q:${c.dedupeKey}`, name: c.title, title: c.title, dollars: c.netSales, detail: `${dollars(c.netSales)} in sales over 90 days`, answers };
+      }),
+      ...menu.linkQuestions.map((q) => {
+        const sold = q.first ? ` · sold ${shortDate(q.first)} – ${shortDate(q.last!)}` : '';
+        return q.candidates.length
+          ? { key: `q:link:${q.item.catalogId}:${q.name}`, name: q.name, title: q.candidates.length === 1 || q.type === 'confirm' ? `${q.name}: is it the ${q.candidates[0]} card?` : `${q.name}: which recipe card is it?`, dollars: q.netSales,
+              detail: `${dollars(q.netSales)} in sales over 90 days${sold}`,
+              answers: [...q.candidates.slice(0, 2).map((c, i) => ({ label: i === 0 && (q.candidates.length === 1 || q.type === 'confirm') ? `Yes, ${c}` : i === 0 ? c : `No, ${c}`, body: { type: 'link', ...q.item, recipe: c } })), { label: 'New dish, card to come', body: { type: 'newDish', ...q.item } }] }
+          : { key: `q:link:${q.item.catalogId}:${q.name}`, name: q.name, title: `${q.name} sells but has no recipe card`, dollars: q.netSales,
+              detail: `${dollars(q.netSales)} in sales over 90 days${sold}. Mark it and it stops asking; its plate cost comes with the card.`,
+              answers: [{ label: 'New dish, card to come', body: { type: 'newDish', ...q.item } }, { label: 'Not food', body: { type: 'notFood', ...q.item } }] };
+      }),
+    ].sort((a, b) => (b.dollars ?? 0) - (a.dollars ?? 0));
+    for (const { name: _, ...q } of questions.slice(0, 3)) items.push({ ...q, group: 'menu', label: 'Question', tone: 'ask', go: { to: 'menu' }, button: 'Menu' });
+    if (questions.length > 3) {
+      const rest = questions.slice(3);
+      items.push({ key: `q:more:${side}`, group: 'menu', label: 'Questions', tone: 'ask', dollars: rest[0]!.dollars, title: `${rest.length} more ${side} question${rest.length === 1 ? '' : 's'}`, detail: list(rest.map((q) => q.name.replace(/[.?]$/, '')), 4), go: { to: 'menu' }, button: 'Menu' });
+    }
 
-  // What keeps plate costs incomplete, most plates first.
-  const gaps = gapsOf(model, model.margins.dishes.filter((d) => inArea(view, d.category)));
-  for (const g of gaps.slice(0, 2)) {
-    items.push({ key: `gap:${g.key}`, group: 'costs', label: 'Plate cost', tone: 'ask',
-      title: g.kind === 'price' ? `${g.product}: no price yet` : `${g.product}: how much is one ${g.needed === 'unknownUnit' ? g.to : g.from ?? 'unit'}?`,
-      detail: `Leaves ${list(g.dishes, 2)} without a full plate cost (${g.plates.toLocaleString('en-US')} plates)`, go: { to: 'performance' }, button: 'Fill in' });
-  }
+    // What keeps plate costs incomplete, most plates first.
+    const gaps = gapsOf(model, model.margins.dishes.filter((d) => inArea(view, d.category)));
+    for (const g of gaps.slice(0, 2)) {
+      items.push({ key: `gap:${g.key}`, group: 'costs', label: 'Plate cost', tone: 'ask',
+        title: g.kind === 'price' ? `${g.product}: no price yet` : `${g.product}: how much is one ${g.needed === 'unknownUnit' ? g.to : g.from ?? 'unit'}?`,
+        detail: `Leaves ${list(g.dishes, 2)} without a full plate cost (${g.plates.toLocaleString('en-US')} plates)`, go: { to: 'performance' }, button: 'Fill in' });
+    }
 
-  // Prices that moved enough to matter.
-  for (const m of priceMoves(model, today, (c) => inArea(view, c)).slice(0, 3)) {
-    const up = m.change > 0;
-    items.push({ key: `price:${m.productId}`, group: 'costs', label: up ? 'Price up' : 'Price down', tone: up ? 'alert' : 'info', dollars: Math.abs(m.perWeek) * 13,
-      title: `${m.product} is ${up ? 'up' : 'down'} ${Math.round(Math.abs(m.change) * 100)}% in 3 months`,
-      detail: `About ${dollars(Math.abs(m.perWeek))} a week ${up ? 'more' : 'less'} at your volume · ${m.dish} ${up ? '+' : '−'}${cents(Math.abs(m.plateChange))} a plate`, go: { to: 'performance' }, button: 'See dishes' });
+    // Prices that moved enough to matter.
+    for (const m of priceMoves(model, today, (c) => inArea(view, c)).slice(0, 3)) {
+      const up = m.change > 0;
+      items.push({ key: `price:${m.productId}`, group: 'costs', label: up ? 'Price up' : 'Price down', tone: up ? 'alert' : 'info', dollars: Math.abs(m.perWeek) * 13,
+        title: `${m.product} is ${up ? 'up' : 'down'} ${Math.round(Math.abs(m.change) * 100)}% in 3 months`,
+        detail: `About ${dollars(Math.abs(m.perWeek))} a week ${up ? 'more' : 'less'} at your volume · ${m.dish} ${up ? '+' : '−'}${cents(Math.abs(m.plateChange))} a plate`, go: { to: 'performance' }, button: 'See dishes' });
+    }
+    for (const it of items.slice(before)) it.side = side;
   }
   return items;
 }
@@ -207,31 +219,42 @@ function shortDate(day: string): string {
   return new Date(`${day}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
 
-/** The last service, the week so far, the dishes earning most this week. */
-async function glance(db: Db, restaurantId: string, today: string, model: Model, week: Model, view: AreaView) {
-  const days = (await db.query<{ day: string; net: string; plates: string }>(
-    'SELECT day::text AS day, sum(net_sales) AS net, sum(quantity) AS plates FROM pos_item_sales_daily WHERE restaurant_id = $1 AND day <= $2 AND day >= $3 GROUP BY day HAVING sum(net_sales) > 0 ORDER BY day', [restaurantId, today, addDays(today, -42)])).rows
-    .map((r) => ({ day: r.day, net: Number(r.net) }));
-  const last = days[days.length - 1];
+/** The last service, the week so far, what's earning or selling most this week: for one side, or both. */
+function glance(days: { day: string; category: string; net: number }[], today: string, model: Model, week: Model, view: AreaView) {
+  const byDay = new Map<string, number>();
+  for (const d of days) if (inArea(view, d.category)) byDay.set(d.day, (byDay.get(d.day) ?? 0) + d.net);
+  const series = [...byDay].filter(([, net]) => net > 0).sort((a, b) => a[0].localeCompare(b[0])).map(([day, net]) => ({ day, net }));
+  const last = series[series.length - 1];
   let lastDay;
   if (last) {
-    const same = days.filter((d) => d.day < last.day && weekday(d.day) === weekday(last.day)).slice(-4);
+    const same = series.filter((d) => d.day < last.day && weekday(d.day) === weekday(last.day)).slice(-4);
     const usual = same.length >= 2 ? same.reduce((s, d) => s + d.net, 0) / same.length : undefined;
     lastDay = { date: last.day, netSales: Math.round(last.net), ...(usual ? { usual: Math.round(usual) } : {}) };
   }
   // Business weeks run Monday to Sunday: this week so far against the same days last week.
   const monday = addDays(today, -((weekday(today) + 6) % 7));
-  const sum = (from: string, to: string) => days.filter((d) => d.day >= from && d.day <= to).reduce((s, d) => s + d.net, 0);
+  const sum = (from: string, to: string) => series.filter((d) => d.day >= from && d.day <= to).reduce((s, d) => s + d.net, 0);
   const lastSold = last?.day ?? today;
   const weekToDate = lastSold >= monday ? { from: monday, to: lastSold, netSales: Math.round(sum(monday, lastSold)), lastWeek: Math.round(sum(addDays(monday, -7), addDays(lastSold, -7))) } : undefined;
   const lastWeek = { from: addDays(monday, -7), to: addDays(monday, -1), netSales: Math.round(sum(addDays(monday, -7), addDays(monday, -1))), before: Math.round(sum(addDays(monday, -14), addDays(monday, -8))) };
+  const dishes = model.margins.dishes.filter((d) => inArea(view, d.category));
+  const net = dishes.reduce((s, d) => s + d.netSales, 0), food = dishes.reduce((s, d) => s + d.plateCost * d.quantity, 0);
+  // Items with no costs yet (drinks) are ranked by sales instead.
+  const selling = new Map<string, { name: string; sold: number; netSales: number }>();
+  for (const l of week.sales) {
+    if (!inArea(view, l.category) || (l.date && week.lookup(l.catalogId, l.name, l.date))) continue;
+    const it = selling.get(l.name) ?? { name: l.name, sold: 0, netSales: 0 };
+    it.sold += l.quantity; it.netSales += l.netSales;
+    selling.set(l.name, it);
+  }
   return {
     ...(lastDay ? { lastDay } : {}),
     ...(weekToDate ? { weekToDate } : {}),
     lastWeek,
-    ...(model.margins.dishes.length ? { foodCost: Math.round(model.margins.totals.foodCostShare * 1000) / 1000 } : {}),
+    ...(net > 0 ? { foodCost: Math.round((food / net) * 1000) / 1000 } : {}),
     earners: week.margins.dishes.filter((d) => inArea(view, d.category)).sort((a, b) => b.totalContribution - a.totalContribution).slice(0, 3)
       .map((d) => ({ name: d.name, left: Math.round(d.totalContribution), sold: Math.round(d.quantity) })),
+    ...(view.area === 'bar' ? { sellers: [...selling.values()].sort((a, b) => b.netSales - a.netSales).slice(0, 3).map((i) => ({ name: i.name, sold: Math.round(i.sold), netSales: Math.round(i.netSales) })) } : {}),
     noCard: view.area === 'bar' ? [] : model.margins.unlinked.filter((u) => view.areaOf(u.category) === 'kitchen' && new Set(model.margins.dishes.map((d) => d.category)).has(u.category)).slice(0, 6).map((u) => ({ name: u.name, netSales: Math.round(u.netSales) })),
   };
 }
@@ -249,9 +272,12 @@ export async function todayView(db: Db, who: SignedIn, today: string, hour: numb
   if (atLeast(who.roleLevel, 'manager')) {
     const model = await getModel(db, who.restaurantId, today);
     const week = await getModel(db, who.restaurantId, today, { from: addDays(today, -6), to: today });
-    const view: AreaView = { area: who.area === 'both' ? 'all' : who.area, areaOf: await loadAreas(db, who.restaurantId) };
-    items.push(...await managerItems(db, who, model, today, view));
-    atAGlance = { area: view.area, ...await glance(db, who.restaurantId, today, model, week, view) };
+    const areaOf = await loadAreas(db, who.restaurantId);
+    items.push(...await managerItems(db, who, model, today, areaOf));
+    const days = (await db.query<{ day: string; category: string; net: string }>(
+      'SELECT day::text AS day, category, sum(net_sales) AS net FROM pos_item_sales_daily WHERE restaurant_id = $1 AND day <= $2 AND day >= $3 GROUP BY day, category', [who.restaurantId, today, addDays(today, -42)])).rows
+      .map((r) => ({ day: r.day, category: r.category, net: Number(r.net) }));
+    atAGlance = Object.fromEntries((['all', 'kitchen', 'bar'] as const).map((area) => [area, glance(days, today, model, week, { area, areaOf })]));
   }
   // Deadlines first (prep before counts on the same day), then the money behind the rest.
   const rank = (i: TodayItem) => ({ prep: 0, menu: 1, costs: 2, setup: 3 })[i.group];
@@ -262,6 +288,8 @@ export async function todayView(db: Db, who: SignedIn, today: string, hour: numb
     || rank(a) - rank(b));
   return {
     today, hour, openToday, nextOpen,
+    // Where this person's Today opens: their side, or both.
+    side: who.area === 'both' ? 'all' : who.area,
     openDays: [...open].sort(),
     items,
     prep: prep.status,

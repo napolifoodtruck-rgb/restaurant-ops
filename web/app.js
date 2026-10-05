@@ -1119,12 +1119,18 @@ async function todayScreen(me, filter = 'all') {
           : h('button', { class: 'btn small-btn dark', text: i.button, onclick: () => go(i.go) })));
     return row;
   };
-  const shown = t.items.filter((i) => filter === 'all' || i.group === filter || (filter === 'costs' && i.group === 'setup'));
-  const groups = new Set(t.items.map((i) => (i.group === 'setup' ? 'costs' : i.group)));
-  const chips = t.items.length > 4 && groups.size > 1 ? h('div', { class: 'row wrap', role: 'group', 'aria-label': 'Show' },
+  // Kitchen, bar or both: where this person works, until they switch.
+  // (On a station's iPad, that station is the side.)
+  const side = me.device?.stationId && !t.glance ? 'all' : me.todaySide ?? t.side ?? 'all';
+  const onSide = t.items.filter((i) => side === 'all' || !i.side || i.side === side);
+  const shown = onSide.filter((i) => filter === 'all' || i.group === filter || (filter === 'costs' && i.group === 'setup'));
+  const groups = new Set(onSide.map((i) => (i.group === 'setup' ? 'costs' : i.group)));
+  const sides = t.glance ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Kitchen or bar' },
+    [['all', 'All'], ['kitchen', 'Kitchen'], ['bar', 'Bar']].map(([k, label]) => h('button', { class: side === k ? 'on' : '', 'aria-pressed': String(side === k), text: label, onclick: () => { me.todaySide = k; todayScreen(me, filter); } }))) : null;
+  const chips = onSide.length > 4 && groups.size > 1 ? h('div', { class: 'row wrap', role: 'group', 'aria-label': 'Show' },
     TODAY_FILTERS.filter(([k]) => k === 'all' || groups.has(k)).map(([k, label]) => h('button', { class: `chip${filter === k ? ' on' : ''}`, 'aria-pressed': String(filter === k), text: label, onclick: () => todayScreen(me, k) }))) : null;
 
-  const need = t.items.filter((i) => i.tone !== 'info').length;
+  const need = onSide.filter((i) => i.tone !== 'info').length;
   const sub = [
     t.openToday ? null : `Closed today. Next service ${weekdayName(t.nextOpen)}.`,
     need ? `${need} thing${need === 1 ? '' : 's'} need${need === 1 ? 's' : ''} someone: deadlines first, then by dollars.` : 'Nothing needs anyone right now.',
@@ -1133,15 +1139,16 @@ async function todayScreen(me, filter = 'all') {
   show(shell(me, 'today', [
     h('header', { class: 'row wrap' },
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${longDay(t.today)} · ${me.restaurantName}` }), h('h1', { text: 'Today' }), h('div', { class: 'sub', text: sub })),
-      chips),
+      h('div', { class: 'row wrap' }, sides, chips)),
     h('div', { class: 'today' },
       h('section', { class: 'todos', 'aria-label': 'To do' }, shown.length ? shown.map(itemRow) : h('div', { class: 'card small muted', text: 'All clear.' })),
-      h('aside', { class: 'glance', 'aria-label': 'At a glance' }, glanceCards(me, t))),
+      h('aside', { class: 'glance', 'aria-label': 'At a glance' }, glanceCards(me, t, side))),
   ]));
 }
 
-function glanceCards(me, t) {
-  const g = t.glance;
+function glanceCards(me, t, side) {
+  const g = t.glance?.[side];
+  const of = side === 'all' ? '' : `${AREA_NAMES[side]} · `;
   const cards = [];
   const versus = (now, then, words) => {
     if (!then) return null;
@@ -1149,24 +1156,28 @@ function glanceCards(me, t) {
     return h('div', { class: `small ${c >= 0.03 ? 'trend-up' : c <= -0.03 ? 'trend-down' : 'trend-flat'}`, text: `${c >= 0 ? '+' : '−'}${Math.abs(Math.round(c * 100))}% ${words}` });
   };
   if (g?.lastDay) cards.push(h('div', { class: 'card tight' },
-    h('div', { class: 'small muted strong', text: `Last service · ${weekdayName(g.lastDay.date)} ${shortDate(g.lastDay.date)}` }),
+    h('div', { class: 'small muted strong', text: `${of}Last service · ${weekdayName(g.lastDay.date)} ${shortDate(g.lastDay.date)}` }),
     h('div', { class: 'big', text: dollars(g.lastDay.netSales, { exact: true }) }),
     versus(g.lastDay.netSales, g.lastDay.usual, `vs a usual ${weekdayName(g.lastDay.date)} (${dollars(g.lastDay.usual, { exact: true })})`)));
   if (g?.weekToDate) cards.push(h('div', { class: 'card tight' },
-    h('div', { class: 'small muted strong', text: `This week, through ${weekdayName(g.weekToDate.to)}` }),
+    h('div', { class: 'small muted strong', text: `${of}This week, through ${weekdayName(g.weekToDate.to)}` }),
     h('div', { class: 'big', text: dollars(g.weekToDate.netSales, { exact: true }) }),
     versus(g.weekToDate.netSales, g.weekToDate.lastWeek, 'vs the same days last week')));
   else if (g?.lastWeek?.netSales) cards.push(h('div', { class: 'card tight' },
-    h('div', { class: 'small muted strong', text: `Last week, ${shortDate(g.lastWeek.from)} – ${shortDate(g.lastWeek.to)}` }),
+    h('div', { class: 'small muted strong', text: `${of}Last week, ${shortDate(g.lastWeek.from)} – ${shortDate(g.lastWeek.to)}` }),
     h('div', { class: 'big', text: dollars(g.lastWeek.netSales, { exact: true }) }),
     versus(g.lastWeek.netSales, g.lastWeek.before, 'vs the week before')));
   if (g?.earners?.length) cards.push(h('div', { class: 'card tight' },
     h('div', { class: 'small muted strong', text: 'Earning most, last 7 days' }),
     h('div', { class: 'list compact' }, g.earners.map((d) => h('div', {}, h('span', { class: 'grow', text: d.name }), h('span', { class: 'small muted', text: `${d.sold} sold` }), h('b', { text: dollars(d.left, { exact: true }) })))),
     h('div', { class: 'small muted', text: 'What’s left after food cost.' + (g.foodCost !== undefined ? ` Food cost over 90 days: ${pct(g.foodCost)}.` : '') })));
-  if (t.prep.length) cards.push(h('div', { class: 'card tight' },
+  else if (g?.sellers?.length) cards.push(h('div', { class: 'card tight' },
+    h('div', { class: 'small muted strong', text: 'Selling most, last 7 days' }),
+    h('div', { class: 'list compact' }, g.sellers.map((d) => h('div', {}, h('span', { class: 'grow', text: d.name }), h('span', { class: 'small muted', text: `${d.sold} sold` }), h('b', { text: dollars(d.netSales, { exact: true }) })))),
+    h('div', { class: 'small muted', text: 'By sales: drinks have no costs yet.' })));
+  if (t.prep.some((s) => side === 'all' || s.side === side)) cards.push(h('div', { class: 'card tight' },
     h('div', { class: 'small muted strong', text: 'Prep' }),
-    h('div', { class: 'list compact' }, t.prep.map((s) => {
+    h('div', { class: 'list compact' }, t.prep.filter((s) => side === 'all' || s.side === side).map((s) => {
       const today = s.today;
       const now = !t.openToday ? null : !today?.total ? 'nothing today' : !today.approved ? 'not approved' : today.left ? `${today.total - today.left} of ${today.total} done` : 'done';
       const next = s.next.approved ? `${weekdayName(s.next.date)}: approved` : s.next.toCount ? `${weekdayName(s.next.date)}: ${s.next.counted ? `${s.next.counted}/${s.next.toCount} counted` : 'not counted'}` : null;
