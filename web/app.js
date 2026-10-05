@@ -160,7 +160,7 @@ function pinPad(person, device) {
 function shell(me, active, content) {
   const manager = atLeast(me.roleLevel, 'manager');
   const nav = [
-    ['today', 'Today', null], ['prep', 'Prep', null], ['menu', 'Menu', manager && menuScreen], ['margins', 'Margins', manager && marginsScreen], ['orders', 'Orders', null],
+    ['today', 'Today', null], ['prep', 'Prep', null], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['orders', 'Orders', null],
   ];
   return h('div', { class: 'shell' },
     h('nav', { class: 'rail', 'aria-label': 'Main' },
@@ -245,24 +245,39 @@ function presetRanges() {
   ];
 }
 
-function rangePicker(me, category, range, m, by) {
+function rangePicker(me, state, m) {
   const same = (a, b) => (!a && !b) || (a && b && a.from === b.from && a.to === b.to);
   const fromInput = h('input', { type: 'date', value: m.from, min: m.dataFrom, max: iso(new Date()), 'aria-label': 'From' });
   const toInput = h('input', { type: 'date', value: m.to, min: m.dataFrom, max: iso(new Date()), 'aria-label': 'To' });
   return h('div', { class: 'row wrap' },
-    presetRanges().map(([label, r]) => h('button', { class: `btn small-btn${same(r, range) ? ' dark' : ''}`, text: label, onclick: () => marginsScreen(me, category, r, by) })),
+    presetRanges().map(([label, r]) => h('button', { class: `btn small-btn${same(r, state.range) ? ' dark' : ''}`, text: label, onclick: () => marginsScreen(me, { ...state, range: r }) })),
     h('span', { class: 'row tight' }, fromInput, h('span', { class: 'muted', text: 'to' }), toInput,
-      h('button', { class: 'btn small-btn', text: 'Show', onclick: () => fromInput.value && toInput.value && marginsScreen(me, category, { from: fromInput.value, to: toInput.value }, by) })),
+      h('button', { class: 'btn small-btn', text: 'Show', onclick: () => fromInput.value && toInput.value && marginsScreen(me, { ...state, range: { from: fromInput.value, to: toInput.value } }) })),
   );
 }
 
-async function marginsScreen(me, category, range, by = 'total') {
+// Sortable columns: what each sorts by, and which way a first click goes.
+const MARGIN_COLUMNS = [
+  { key: 'name', label: 'Dish', value: (d) => d.name.toLowerCase(), first: 'asc' },
+  { key: 'price', label: 'One plate: food | left over', value: (d) => d.averagePrice, first: 'desc' },
+  { key: 'plate', label: 'Per plate', value: (d) => d.leftPerPlate, first: 'desc' },
+  { key: 'sold', label: 'Sold', value: (d, view) => (view === 'day' ? d.soldPerDay ?? 0 : d.sold), first: 'desc', num: true },
+  { key: 'left', label: (view) => (view === 'day' ? 'Left over per day on the menu' : 'Left over, all of them'), value: (d, view) => (view === 'day' ? d.leftPerDay ?? 0 : d.leftTotal), first: 'desc' },
+  { key: 'trend', label: 'Trend, plates a day', value: (d) => (d.trend?.change ?? null), first: 'desc' },
+];
+
+async function marginsScreen(me, state = {}) {
+  state = { view: 'total', sort: { key: 'left', dir: 'desc' }, ...state };
   loadingScreen(me, 'margins', 'Menu Performance');
-  const r = await api('GET', range ? `/api/margins?from=${range.from}&to=${range.to}` : '/api/margins');
-  if (!r.ok) return show(shell(me, 'margins', [h('h1', { text: 'Margins' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
-  const m = r.data;
-  const cat = m.categories.find((c) => c.name === category) ?? m.categories[0];
-  const tabs = h('div', { class: 'row' }, m.categories.map((c) => h('button', { class: `btn${c === cat ? ' dark' : ''}`, onclick: () => marginsScreen(me, c.name, range, by), text: c.name })));
+  const r = await api('GET', state.range ? `/api/margins?from=${state.range.from}&to=${state.range.to}` : '/api/margins');
+  if (!r.ok) return show(shell(me, 'margins', [h('h1', { text: 'Menu Performance' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  renderMargins(me, state, r.data);
+}
+
+function renderMargins(me, state, m) {
+  const cat = m.categories.find((c) => c.name === state.category) ?? m.categories[0];
+  const again = (changes) => renderMargins(me, { ...state, ...changes }, m);
+  const tabs = h('div', { class: 'row' }, m.categories.map((c) => h('button', { class: `btn${c === cat ? ' dark' : ''}`, onclick: () => again({ category: c.name }), text: c.name })));
   const start = m.dataFrom && m.dataFrom > m.from ? m.dataFrom : m.from;
   const days = Math.round((Date.parse(m.to) - Date.parse(start)) / 86400000) + 1;
   const early = m.dataFrom && m.from < m.dataFrom ? h('div', { class: 'note', text: `Sales are stored from ${shortDate(m.dataFrom)}, so this period starts there.` }) : null;
@@ -272,13 +287,19 @@ async function marginsScreen(me, category, range, by = 'total') {
       h('h1', { text: 'Menu Performance' }),
       h('div', { class: 'sub', text: `Food cost ${pct(m.totals.foodCostShare)} on dishes with recipe cards. ${dollars(m.totals.leftOver)} left after food in ${days} days. Costs are priced as of ${shortDate(m.to)}.` })),
     tabs);
-  const picker = rangePicker(me, cat?.name, range, m, by);
+  const picker = rangePicker(me, { ...state, category: cat?.name }, m);
   if (!cat) return show(shell(me, 'margins', [header, picker, missingNote(m.missing), h('p', { class: 'muted', text: 'No dishes with recipe cards sold in this period.' })]));
 
-  const perDay = by === 'day';
-  const trendKey = (d) => (d.offSince ? -9 : d.trend?.change ?? -8);
-  const dishes = perDay ? [...cat.dishes].sort((a, b) => (b.leftPerDay ?? 0) - (a.leftPerDay ?? 0))
-    : by === 'trend' ? [...cat.dishes].sort((a, b) => trendKey(b) - trendKey(a)) : cat.dishes;
+  const perDay = state.view === 'day';
+  const column = MARGIN_COLUMNS.find((c) => c.key === state.sort.key) ?? MARGIN_COLUMNS[4];
+  const sign = state.sort.dir === 'asc' ? 1 : -1;
+  const dishes = [...cat.dishes].sort((a, b) => {
+    const x = column.value(a, state.view), y = column.value(b, state.view);
+    if (x === null && y === null) return 0;
+    if (x === null) return 1; // no value (too new for a trend) always last
+    if (y === null) return -1;
+    return (x < y ? -1 : x > y ? 1 : 0) * sign;
+  });
   const maxPrice = Math.max(...dishes.map((d) => d.averagePrice), 1);
   const maxValue = Math.max(...dishes.map((d) => (perDay ? d.leftPerDay ?? 0 : d.leftTotal)), 1);
   const bar = (cls, width) => { const b = h('div', { class: cls }); b.style.width = `${Math.max(0, width)}px`; return b; };
@@ -300,15 +321,23 @@ async function marginsScreen(me, category, range, by = 'total') {
       h('div', {}, d.offSince ? null : perDay ? (partOfPeriod(d) ? h('span', { class: 'tag blue', text: 'New' }) : null) : h('span', { class: `tag ${roleCls}`, text: roleText })),
     );
   });
-  const toggle = h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Rank by' }),
-    h('button', { class: `btn small-btn${by === 'total' ? ' dark' : ''}`, text: 'All of it', onclick: () => marginsScreen(me, cat.name, range, 'total') }),
-    h('button', { class: `btn small-btn${perDay ? ' dark' : ''}`, text: 'Per day on the menu', onclick: () => marginsScreen(me, cat.name, range, 'day') }),
-    h('button', { class: `btn small-btn${by === 'trend' ? ' dark' : ''}`, text: 'Trend', onclick: () => marginsScreen(me, cat.name, range, 'trend') }));
+  const headCell = (c) => {
+    const active = c.key === column.key;
+    const label = typeof c.label === 'function' ? c.label(state.view) : c.label;
+    return h('button', {
+      class: `sort${active ? ' on' : ''}${c.num ? ' num' : ''}`,
+      'aria-sort': active ? (state.sort.dir === 'asc' ? 'ascending' : 'descending') : 'none',
+      onclick: () => again({ sort: { key: c.key, dir: active ? (state.sort.dir === 'asc' ? 'desc' : 'asc') : c.first } }),
+    }, label, h('span', { class: 'arrow', text: active ? (state.sort.dir === 'asc' ? ' ▲' : ' ▼') : '' }));
+  };
+  const toggle = h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Show' }),
+    h('button', { class: `btn small-btn${perDay ? '' : ' dark'}`, text: 'All of it', onclick: () => again({ view: 'total' }) }),
+    h('button', { class: `btn small-btn${perDay ? ' dark' : ''}`, text: 'Per day on the menu', onclick: () => again({ view: 'day' }) }));
   const table = h('section', { class: 'card' },
-    h('div', { class: 'row' }, h('div', { class: 'grow small muted', text: perDay ? 'Left over per open day the dish was on the menu: fair to new dishes and specials that weren’t there the whole time.' : by === 'trend' ? 'Plates sold per open day, week by week, rising first. Weeks a dish wasn’t on the menu are left out of its trend.' : 'Left over across every plate sold in the period.' }), toggle),
-    h('div', { class: 'mrow head' }, h('div', { text: 'Dish' }), h('div', { text: 'One plate: food | left over' }), h('div', { text: 'Per plate' }), h('div', { class: 'num', text: 'Sold' }), h('div', { text: perDay ? 'Left over per day on the menu' : 'Left over, all of them' }), h('div', { text: 'Trend, plates a day' }), h('div')),
+    h('div', { class: 'row' }, h('div', { class: 'grow small muted', text: perDay ? 'Left over per open day the dish was on the menu: fair to new dishes and specials that weren’t there the whole time. Click a column title to sort.' : 'Left over across every plate sold in the period. Click a column title to sort.' }), toggle),
+    h('div', { class: 'mrow head', role: 'row' }, MARGIN_COLUMNS.map(headCell), h('div')),
     rows,
-    h('div', { class: 'small muted', text: 'Price is what guests paid on average, after discounts. * part of the card still uses an estimated price. Top earners together bring in 80% of the money in the period.' }),
+    h('div', { class: 'small muted', text: 'Price is what guests paid on average, after discounts. * part of the card still uses an estimated price. Top earners together bring in 80% of the money in the period. Trend: plates per open day, week by week; weeks off the menu are left out.' }),
   );
   const noCard = cat.noCard.length ? h('section', { class: 'card' },
     h('h2', { text: `Selling with no recipe card: ${dollars(cat.noCardSales)} in sales not counted above` }),
@@ -388,7 +417,7 @@ async function home(me) {
   const signOut = h('button', { class: 'btn', onclick: async () => { await api('POST', '/api/logout'); start(); }, text: 'Sign out' });
   const header = h('header', { class: 'row' },
     h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${me.name} · ${LEVEL_NAMES[me.roleLevel] ?? me.roleLevel}` }), h('h1', { text: 'Settings' }),
-      h('div', { class: 'sub', text: manager ? 'Connections, your team and kitchen iPads. Menu and Margins are in the bar on the left.' : 'Your prep list will show up here once your station is set up.' })),
+      h('div', { class: 'sub', text: manager ? 'Connections, your team and kitchen iPads. Menu and Performance are in the bar on the left.' : 'Your prep list will show up here once your station is set up.' })),
     signOut);
   const cards = [ownPinCard(me)];
   if (manager) cards.unshift(await syncCard('square'), await syncCard('marginedge'), await importCard(), await teamCard(me), deviceCard());
