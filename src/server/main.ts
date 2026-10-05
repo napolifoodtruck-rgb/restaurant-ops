@@ -26,6 +26,8 @@ if (!url) {
 const db = await connectPg(url);
 const applied = await migrate(db, fileURLToPath(new URL('../../db/migrations', import.meta.url)));
 if (applied.length) console.log(`Applied migrations: ${applied.join(', ')}`);
+// Only one copy of the app runs, so a sync still marked running at startup was cut off by a restart.
+await db.query("UPDATE sync_runs SET status = 'failed', finished_at = now(), detail = '{\"error\": \"Interrupted by an app restart. Press Sync now to run it again.\"}' WHERE status = 'running'");
 
 const sync = {
   square: { token: process.env.SQUARE_ACCESS_TOKEN, locationId: process.env.SQUARE_LOCATION_ID || undefined, version: process.env.SQUARE_VERSION || undefined },

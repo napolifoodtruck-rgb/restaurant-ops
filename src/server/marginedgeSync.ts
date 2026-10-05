@@ -34,7 +34,14 @@ export async function runMarginEdgeSync(db: Db, api: MarginEdgeApi, restaurantId
     if (!unit) throw new Error(units.length ? `This MarginEdge key covers ${units.length} restaurants (${units.map((u) => `${u.name}: ${u.id}`).join(', ')}). Set MARGINEDGE_UNIT_ID to pick one.` : 'This MarginEdge key has no restaurants attached.');
     const previous = await storedMarginEdge(db, restaurantId);
     const from = minusDays(options.today, Math.round((options.months ?? 6) * 30.5));
-    const data = await api.unit(unit.id, { from, to: options.today, ...(previous ? { previous, refreshFrom: minusDays(options.today, 45) } : {}) });
+    // Progress shows on the Settings card while a long first sync runs.
+    let lastWrite = 0;
+    const onProgress = (step: string) => {
+      if (Date.now() - lastWrite < 5000) return;
+      lastWrite = Date.now();
+      db.query('UPDATE sync_runs SET detail = $1 WHERE id = $2', [JSON.stringify({ progress: step }), runId]).catch(() => {});
+    };
+    const data = await api.unit(unit.id, { from, to: options.today, onProgress, ...(previous ? { previous, refreshFrom: minusDays(options.today, 45) } : {}) });
     for (const part of PARTS) {
       await db.query(
         `INSERT INTO marginedge_data (restaurant_id, part, data, synced_at) VALUES ($1, $2, $3, now())

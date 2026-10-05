@@ -245,12 +245,47 @@ async function menuScreen(me) {
   const columns = sections.map((s) => h('section', { class: 'card' },
     h('div', { class: 'row' }, h('h2', { class: 'grow', text: s }), h('span', { class: 'small muted', text: String(m.current.filter((x) => x.section === s).length) })),
     h('div', { class: 'list' }, m.current.filter((x) => x.section === s).map((x) => dishRow(x, since(x.since))))));
+  const answer = async (body, row) => {
+    row.querySelectorAll('button, select').forEach((b) => (b.disabled = true));
+    const res = await api('POST', '/api/answers', body);
+    if (!res.ok) {
+      row.querySelectorAll('button, select').forEach((b) => (b.disabled = false));
+      return row.append(h('div', { class: 'error', text: res.data.error ?? 'That didn’t save.' }));
+    }
+    menuScreen(me);
+  };
+  const choices = (row, buttons) => h('div', { class: 'row wrap' }, buttons.map(([label, body, cls]) => h('button', { class: `btn small-btn${cls ? ' ' + cls : ''}`, text: label, onclick: () => answer(body, row) })));
+  const otherCard = (row, item) => {
+    const select = h('select', { 'aria-label': 'Another recipe card', onchange: () => select.value && answer({ type: 'link', ...item, recipe: select.value }, row) },
+      h('option', { value: '', text: 'Another card…' }), (m.recipes ?? []).map((r) => h('option', { value: r, text: r })));
+    return select;
+  };
+  const questionRows = [
+    ...m.checks.map((c) => {
+      const row = h('div', { class: 'ask' });
+      const buttons = [];
+      if (c.kind === 'dishChanged' && c.item) buttons.push([`Yes, new version from ${shortDate(c.suggestedDate)}`, { type: 'newDish', ...c.item, from: c.suggestedDate, note: 'new version, card to come' }, 'dark'], ['No, same dish', { type: 'dismiss', dedupeKey: c.dedupeKey }]);
+      else if (c.kind === 'newButton' && c.item) buttons.push(['New dish, card to come', { type: 'newDish', ...c.item }, 'dark'], ['Not food', { type: 'notFood', ...c.item }], ['Ignore', { type: 'dismiss', dedupeKey: c.dedupeKey }]);
+      else buttons.push(['Ignore', { type: 'dismiss', dedupeKey: c.dedupeKey }]);
+      row.append(h('div', { text: c.title }), choices(row, buttons));
+      return row;
+    }),
+    ...m.linkQuestions.map((q) => {
+      const row = h('div', { class: 'ask' });
+      const sold = q.first ? ` · sold ${shortDate(q.first)} – ${shortDate(q.last)}` : '';
+      row.append(
+        h('div', {}, h('b', { text: q.name }), h('span', { class: 'small muted', text: ` ${dollars(q.netSales)}${sold}` })),
+        h('div', { class: 'small muted', text: q.candidates.length ? 'Which recipe card is it?' : 'No recipe card matches.' }),
+        choices(row, [...q.candidates.map((c, i) => [c, { type: 'link', ...q.item, recipe: c }, i === 0 ? 'dark' : '']), ['New dish, card to come', { type: 'newDish', ...q.item }], ['Not food', { type: 'notFood', ...q.item }]]),
+      );
+      row.lastChild.append(otherCard(row, q.item));
+      return row;
+    }),
+  ];
   const todo = h('section', { class: 'card' },
     h('h2', { text: 'Needs you' }),
-    m.checks.length || m.linkQuestions.length ? h('div', { class: 'list' },
-      m.checks.map((c) => h('div', {}, h('span', { class: 'grow', text: c.title }))),
-      m.linkQuestions.map((q) => h('div', {}, h('span', { class: 'grow', text: q.candidates.length ? `“${q.name}”: is it ${q.candidates.join(' or ')}?` : `“${q.name}” has no recipe card yet` }), h('span', { class: 'small muted', text: dollars(q.netSales) })))) : h('div', { class: 'small muted', text: 'Nothing right now.' }),
-    h('div', { class: 'small muted', text: 'Answering these from here comes next.' }));
+    questionRows.length ? h('div', { class: 'asks' }, questionRows) : h('div', { class: 'small muted', text: 'Nothing right now.' }),
+    h('div', { class: 'small muted', text: 'Answers are saved to the kitchen book; margins and the menu update straight away.' }));
   const off = h('section', { class: 'card' },
     h('h2', { text: 'Came off' }),
     h('div', { class: 'list' }, m.cameOff.slice(0, 20).map((x) => dishRow(x, `${shortDate(x.from)} – ${shortDate(x.to)}`, false))));
@@ -298,7 +333,8 @@ async function syncCard(source) {
     if (!connected) lines.push(h('div', { class: 'small muted', text: `Add ${info.secret} in Render (web service → Environment). The app only reads from ${info.name}.` }));
     if (last?.status === 'ok') lines.push(h('div', { class: 'small', text: `${when(last.finished_at)}: ${info.summary(detail)}` }));
     if (last?.status === 'running') {
-      lines.push(h('div', { class: 'small muted', text: source === 'marginedge' ? 'The first MarginEdge sync reads 6 months of invoices one by one and can take 10 minutes or more.' : 'This can take a minute or two.' }));
+      if (detail.progress) lines.push(h('div', { class: 'small', text: `Working on: ${detail.progress}` }));
+      lines.push(h('div', { class: 'small muted', text: source === 'marginedge' ? 'The first MarginEdge sync reads 6 months of invoices one by one and can take 30 minutes or more. Later ones take a minute or two.' : 'This can take a minute or two.' }));
       setTimeout(draw, 5000);
     }
     if (last?.status === 'failed') lines.push(h('div', { class: 'error', text: detail.error ?? 'Unknown error' }));

@@ -19,6 +19,7 @@
  *   POST /api/book/import        load recipe cards and answers from a kitchen-book file (manager or up)
  *   GET  /api/margins            margins by category over the last 90 days (manager or up)
  *   GET  /api/menu               the menu from sales, what came off, to-dos (manager or up)
+ *   POST /api/answers            answer a menu question: link, new dish, not food, dismiss (manager or up)
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -30,7 +31,7 @@ import {
   type SignedIn, type SignInResult,
 } from './auth.ts';
 import { localDateHour, marginEdgeApiFrom, runSync, squareApiFrom, type SyncSettings } from './scheduler.ts';
-import { BOOK_KEYS, bookProblem, getModel, saveBook } from './model.ts';
+import { BOOK_KEYS, answerProblem, bookProblem, getModel, loadBook, saveBook, withAnswer, type Answer } from './model.ts';
 import { marginsView, menuView } from './views.ts';
 
 export interface AppConfig {
@@ -245,7 +246,7 @@ export function createApp(config: AppConfig) {
       return send(res, 200, { ok: true });
     }
 
-    if (path.startsWith('/api/') && ['/api/sync', '/api/book', '/api/book/import', '/api/margins', '/api/menu'].includes(path) || path.startsWith('/api/sync/')) {
+    if (path.startsWith('/api/') && ['/api/sync', '/api/book', '/api/book/import', '/api/margins', '/api/menu', '/api/answers'].includes(path) || path.startsWith('/api/sync/')) {
       const who = await signedIn(req);
       if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
       const today = async () => localDateHour((await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York').date;
@@ -287,6 +288,16 @@ export function createApp(config: AppConfig) {
 
       if (method === 'GET' && path === '/api/margins') {
         return send(res, 200, marginsView(await getModel(db, who.restaurantId, await today())));
+      }
+
+      if (method === 'POST' && path === '/api/answers') {
+        const b = await body(req);
+        const problem = answerProblem(b);
+        if (problem) throw new HttpError(400, problem);
+        const current = (await loadBook(db, who.restaurantId)).linkAnswers ?? { confirm: [], newDish: [] };
+        if (b.type === 'link' && !(await getModel(db, who.restaurantId, await today())).recipes.some((r) => r.name === b.recipe)) throw new HttpError(400, 'No recipe card by that name.');
+        await saveBook(db, who.restaurantId, 'linkAnswers', withAnswer(current, b as unknown as Answer), who.staffId);
+        return send(res, 200, { ok: true });
       }
 
       if (method === 'GET' && path === '/api/menu') {

@@ -39,8 +39,45 @@ export interface PilotImportAnswers extends ImportAnswers {
 export interface LinkAnswers {
   confirm: (PosMenuItem & { recipe: string; portion?: Quantity; from?: string; note?: string })[];
   newDish: (PosMenuItem & { from?: string; note?: string })[];
+  /** POS items confirmed as having no food cost to track (gift cards, fees, merchandise). */
+  notFood?: (PosMenuItem & { note?: string })[];
   /** Menu to-dos a manager said were false alarms, by their dedupe key. */
   dismissed?: { dedupeKey: string; note?: string }[];
+}
+
+/** One answer from a screen, folded into the kitchen book. */
+export type Answer =
+  | { type: 'link'; catalogId: string; itemName: string; variationName?: string; recipe: string; from?: string }
+  | { type: 'newDish'; catalogId: string; itemName: string; variationName?: string; from?: string; note?: string }
+  | { type: 'notFood'; catalogId: string; itemName: string; variationName?: string }
+  | { type: 'dismiss'; dedupeKey: string; note?: string };
+
+export function answerProblem(a: any): string | undefined {
+  if (!a || typeof a !== 'object') return 'Missing answer.';
+  if (a.type === 'dismiss') return typeof a.dedupeKey === 'string' && a.dedupeKey ? undefined : 'Missing which to-do.';
+  if (!['link', 'newDish', 'notFood'].includes(a.type)) return 'Unknown answer.';
+  if (typeof a.catalogId !== 'string' || typeof a.itemName !== 'string' || !a.itemName) return 'Missing which item.';
+  if (a.type === 'link' && (typeof a.recipe !== 'string' || !a.recipe)) return 'Missing which recipe.';
+  if (a.from !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(a.from)) return 'Dates are YYYY-MM-DD.';
+  return undefined;
+}
+
+/** The link answers with one more answer folded in. Later answers about the same item replace earlier ones. */
+export function withAnswer(current: LinkAnswers, a: Answer): LinkAnswers {
+  const next: LinkAnswers = { confirm: [...current.confirm], newDish: [...current.newDish], notFood: [...(current.notFood ?? [])], dismissed: [...(current.dismissed ?? [])] };
+  if (a.type === 'dismiss') {
+    if (!next.dismissed!.some((d) => d.dedupeKey === a.dedupeKey)) next.dismissed!.push({ dedupeKey: a.dedupeKey, ...(a.note ? { note: a.note } : {}) });
+    return next;
+  }
+  const item = { catalogId: a.catalogId, itemName: a.itemName, ...(a.variationName ? { variationName: a.variationName } : {}) };
+  const same = (x: PosMenuItem & { from?: string }) => x.catalogId === a.catalogId && x.itemName === a.itemName && (x.variationName ?? '') === (a.variationName ?? '') && (x.from ?? '') === ((a as any).from ?? '');
+  next.confirm = next.confirm.filter((x) => !same(x));
+  next.newDish = next.newDish.filter((x) => !same(x));
+  next.notFood = next.notFood!.filter((x) => !same(x));
+  if (a.type === 'link') next.confirm.push({ ...item, recipe: a.recipe, ...(a.from ? { from: a.from } : {}) });
+  if (a.type === 'newDish') next.newDish.push({ ...item, ...(a.from ? { from: a.from } : {}), ...(a.note ? { note: a.note } : {}) });
+  if (a.type === 'notFood') next.notFood!.push(item);
+  return next;
 }
 
 export interface KitchenBook {
@@ -197,6 +234,7 @@ async function buildModel(db: Db, restaurantId: string, today: string, days: num
   }
   state = applyLinks(state, matchMenu(soldItems, recipes, state).newLinks);
   for (const a of linkAnswers.newDish) state = markNewDish(state, a, a.from);
+  for (const a of linkAnswers.notFood ?? []) state = confirmLink(state, a, null);
   const lookup = linkLookup(state);
   const linkQuestions = matchMenu(soldItems, recipes, state).questions;
 
@@ -214,8 +252,17 @@ async function buildModel(db: Db, restaurantId: string, today: string, days: num
     date: String(r['ItemSales.reporting_day.day']).slice(0, 10),
     quantity: Number(r['ItemSales.modifier_net_quantity'] ?? 0),
   }));
-  const dismissed = new Set((linkAnswers.dismissed ?? []).map((d) => d.dedupeKey));
-  const checks = menuChecks({ entries, sales, modifiers: modifierLines, lookup, recipeName, today }).filter((c) => !dismissed.has(c.dedupeKey));
+  // To-dos already answered: dismissed ones (a key also covers its dated variants), and new
+  // buttons already marked as new dishes awaiting a card.
+  const dismissed = (linkAnswers.dismissed ?? []).map((d) => d.dedupeKey);
+  const awaiting = new Set(linkAnswers.newDish.map((d) => d.catalogId));
+  const checks = menuChecks({ entries, sales, modifiers: modifierLines, lookup, recipeName, today })
+    // Entries are rebuilt from sales each time, so a quiet dish is keyed by its recipe.
+    .map((c) => (c.kind === 'notSelling' && c.recipeId ? { ...c, dedupeKey: `menu:quiet:${c.recipeId}` } : c))
+    .filter((c) => !dismissed.some((d) => c.dedupeKey === d || c.dedupeKey.startsWith(`${d}:`)))
+    .filter((c) => !(c.kind === 'newButton' && c.catalogId && awaiting.has(c.catalogId)))
+    // A dish change already answered: a version on that button starts within a week of the suggested day.
+    .filter((c) => !(c.kind === 'dishChanged' && c.catalogId && c.suggestedDate && [...linkAnswers.confirm, ...linkAnswers.newDish].some((v) => v.catalogId === c.catalogId && v.from && Math.abs(Date.parse(v.from) - Date.parse(c.suggestedDate!)) <= 7 * 86_400_000)));
 
   return { today, from, missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks };
 }

@@ -4,6 +4,7 @@
 
 import type { Model } from './model.ts';
 import { onMenu } from '../core/menu.ts';
+import { posName } from '../core/menuLinks.ts';
 
 const money = (v: number) => Math.round(v * 100) / 100;
 const share = (v: number | undefined) => (v === undefined ? undefined : Math.round(v * 1000) / 1000);
@@ -63,8 +64,19 @@ export function marginsView(model: Model) {
   };
 }
 
+/** The POS item behind a sales name ("Add A Side (Arugula)" → item and variation), for answers. */
+function posItemOf(model: Model) {
+  return (catalogId: string, name: string) => {
+    const m = name.match(/^(.*) \((.*)\)$/);
+    const known = model.menuItems.find((x) => x.catalogId === catalogId);
+    if (known && posName(known) === name) return { catalogId, itemName: known.itemName, ...(known.variationName ? { variationName: known.variationName } : {}) };
+    return m ? { catalogId, itemName: m[1]!, variationName: m[2]! } : { catalogId, itemName: name };
+  };
+}
+
 /** The menu as sales show it today, what came off, and what needs a manager. */
 export function menuView(model: Model) {
+  const posItem = posItemOf(model);
   const today = model.today;
   const recent = addDays(today, -7);
   const categoryOf = new Map<string, string>();
@@ -116,10 +128,25 @@ export function menuView(model: Model) {
     missing: model.missing,
     current: current.sort(order),
     cameOff: cameOff.sort((a, b) => b.to.localeCompare(a.to)),
-    checks: model.checks.map((c) => ({ kind: c.kind, title: c.title, netSales: money(c.netSales), suggestedDate: c.suggestedDate })),
+    checks: model.checks.map((c) => {
+      const span = c.catalogId ? model.spans.filter((sp) => sp.catalogId === c.catalogId).sort((a, b) => b.last.localeCompare(a.last))[0] : undefined;
+      const item = span ? posItem(span.catalogId, span.name) : undefined;
+      return { kind: c.kind, title: c.title, dedupeKey: c.dedupeKey, netSales: money(c.netSales), suggestedDate: c.suggestedDate, ...(item ? { item } : {}) };
+    }),
     linkQuestions: model.linkQuestions
       .filter((q) => foodSections.has(q.item.category ?? ''))
       .slice(0, 10)
-      .map((q) => ({ type: q.type, name: q.posName, netSales: money(q.netSales), candidates: q.candidates.slice(0, 3).map((c) => c.name) })),
+      .map((q) => {
+        const span = model.spans.filter((sp) => sp.catalogId === q.item.catalogId && sp.name === q.posName)[0];
+        return {
+          type: q.type,
+          name: q.posName,
+          netSales: money(q.netSales),
+          candidates: q.candidates.slice(0, 3).map((c) => c.name),
+          item: { catalogId: q.item.catalogId, itemName: q.item.itemName, ...(q.item.variationName ? { variationName: q.item.variationName } : {}) },
+          ...(span ? { first: span.first, last: span.last } : {}),
+        };
+      }),
+    recipes: model.recipes.filter((r) => r.kind === 'dish').map((r) => r.name).sort((a, b) => a.localeCompare(b)),
   };
 }

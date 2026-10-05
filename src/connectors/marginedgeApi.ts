@@ -86,8 +86,10 @@ export class MarginEdgeApi {
    * Everything for one restaurant. With `previous`, invoices dated before `refreshFrom` are
    * kept from it and only newer ones fetched; pack sizes already known are kept.
    */
-  async unit(unitId: string, options: { from: string; to: string; previous?: MarginEdgeExport; refreshFrom?: string }): Promise<MarginEdgeExport> {
+  async unit(unitId: string, options: { from: string; to: string; previous?: MarginEdgeExport; refreshFrom?: string; onProgress?: (step: string) => void }): Promise<MarginEdgeExport> {
     const restaurantUnitId = unitId;
+    const progress = options.onProgress ?? (() => {});
+    progress('Products and vendors');
     const categories = await this.getAll('/categories', 'categories', { restaurantUnitId });
     const products = await this.getAll('/products', 'products', { restaurantUnitId });
     const vendors = await this.getAll('/vendors', 'vendors', { restaurantUnitId });
@@ -95,7 +97,9 @@ export class MarginEdgeApi {
     const knownPacks = new Map((options.previous?.vendorItems ?? []).filter((v: any) => v.packagings).map((v: any) => [`${v.vendorId}|${v.vendorItemCode}`, v.packagings]));
     const vendorItems: any[] = [];
     for (const vendor of vendors) vendorItems.push(...(await this.getAll(`/vendors/${encodeURIComponent(vendor.vendorId)}/vendorItems`, 'vendorItems', { restaurantUnitId })));
+    let n = 0;
     for (const item of vendorItems) {
+      if (++n % 25 === 0) progress(`Pack sizes: ${n} of ${vendorItems.length} vendor items`);
       if (!item.vendorItemCode) continue;
       const known = knownPacks.get(`${item.vendorId}|${item.vendorItemCode}`);
       if (known) { item.packagings = known; continue; }
@@ -113,6 +117,7 @@ export class MarginEdgeApi {
     });
     const fresh: any[] = [];
     for (const window of monthWindows(fetchFrom, options.to)) {
+      progress(`Invoices from ${window.startDate} (${fresh.length} so far)`);
       for (const summary of await this.getAll('/orders', 'orders', { restaurantUnitId, ...window })) {
         try {
           fresh.push({ ...summary, ...(await this.get(`/orders/${encodeURIComponent(summary.orderId)}`, { restaurantUnitId })) });
