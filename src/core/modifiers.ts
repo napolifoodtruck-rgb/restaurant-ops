@@ -301,6 +301,20 @@ export interface ModifierCosts {
   modifiers: ModifierSummary[];
   /** Most used first. */
   questions: ModifierQuestion[];
+  /**
+   * Add-on portions taken from the dishes that use the ingredient rather than asked,
+   * most used first: a list to glance over and correct, not questions to answer.
+   */
+  assumed: (ModifierQuestion & { proposal: (Ingredient | ShareOfDish)[] })[];
+}
+
+export interface ModifierCostOptions {
+  /**
+   * Use the proposed portion for add-ons instead of asking (default true). The amount on
+   * the dishes that feature an ingredient is right nearly every time, so it is applied
+   * and listed for review; only what can't be proposed is asked.
+   */
+  assumeUsualPortions?: boolean;
 }
 
 /**
@@ -311,8 +325,12 @@ export function modifierCosts(
   book: RecipeBook,
   sales: readonly ModifierSaleLine[],
   dishFor: (catalogId: string, itemName: string) => string | undefined,
-  answers: ModifierAnswers,
+  given: ModifierAnswers,
+  options: ModifierCostOptions = {},
 ): ModifierCosts {
+  const assume = options.assumeUsualPortions ?? true;
+  const answers: ModifierAnswers = { ...given, adds: { ...given.adds } };
+  const assumed = new Map<string, ModifierCosts['assumed'][number]>();
   const byItem = new Map<string, number>();
   const usage = emptyUsage();
   const summaries = new Map<string, ModifierSummary>();
@@ -335,7 +353,15 @@ export function modifierCosts(
       summary.complete = false;
       continue;
     }
-    const result = resolveModifier(book, dishId, line.modifier, answers);
+    let result = resolveModifier(book, dishId, line.modifier, answers);
+    if ('question' in result && assume && result.question.type === 'portion' && Array.isArray(result.question.proposal)) {
+      const proposal = result.question.proposal;
+      answers.adds[key] = proposal;
+      assumed.set(key, { ...result.question, proposal, uses: 0 });
+      result = resolveModifier(book, dishId, line.modifier, answers);
+    }
+    const guess = assumed.get(key);
+    if (guess) guess.uses += line.quantity;
     if ('question' in result) {
       summary.complete = false;
       const q = result.question;
@@ -366,5 +392,6 @@ export function modifierCosts(
     usage,
     modifiers: [...summaries.values()].sort((a, b) => b.uses - a.uses),
     questions: [...questions.values()].sort((a, b) => b.uses - a.uses),
+    assumed: [...assumed.values()].sort((a, b) => b.uses - a.uses),
   };
 }

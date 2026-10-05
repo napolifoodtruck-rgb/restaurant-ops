@@ -128,12 +128,17 @@ test('modifier costs add up per dish and feed the margins', () => {
   ];
   const dishFor = (id: string) => ({ 'V-MARG': 'margherita', 'V-CAL': 'calabria' })[id];
 
-  // Nothing answered yet: the add-on and the crust are questions, most used first.
-  const before = modifierCosts(book, sales, dishFor, emptyModifierAnswers());
-  assert.deepEqual(before.questions.map((q) => [q.modifier.name, q.type, q.uses]), [
+  // Nothing answered yet, asking about everything: the add-on and the crust are questions, most used first.
+  const asking = modifierCosts(book, sales, dishFor, emptyModifierAnswers(), { assumeUsualPortions: false });
+  assert.deepEqual(asking.questions.map((q) => [q.modifier.name, q.type, q.uses]), [
     ['++ Extra Mozzarella', 'portion', 10],
     ['Gluten Sensitive Crust', 'what', 7],
   ]);
+  // By default the add-on portion is taken from the dishes and listed for review; only the crust is asked.
+  const before = modifierCosts(book, sales, dishFor, emptyModifierAnswers());
+  assert.deepEqual(before.questions.map((q) => q.modifier.name), ['Gluten Sensitive Crust']);
+  assert.deepEqual(before.assumed.map((a) => [a.modifier.name, a.uses, a.proposal]), [['++ Extra Mozzarella', 10, [{ item: { kind: 'product', id: 'mozz' }, share: 0.5 }]]]);
+  close(before.byItem.get('V-MARG|margherita'), 10 * 0.5625);
   close(before.byItem.get('V-CAL|calabria'), -4 * (0.8 / 16) * 12); // no chorizo saves $0.60 a plate
 
   // Answered: extra mozzarella is 3 oz; the gluten-free crust replaces the dough.
@@ -145,7 +150,7 @@ test('modifier costs add up per dish and feed the margins', () => {
   assert.equal(after.questions.length, 0);
   // Waiting on a recipe: not costed and not asked again.
   const waiting = modifierCosts(book, sales, dishFor, { ...emptyModifierAnswers(), waiting: { [modifierKey(gf)]: 'card not in yet' } });
-  assert.deepEqual(waiting.questions.map((q) => q.modifier.name), ['++ Extra Mozzarella']);
+  assert.deepEqual(waiting.questions.map((q) => q.modifier.name), []);
   assert.equal(waiting.modifiers.find((m) => m.key === modifierKey(gf))?.complete, false);
   // Margherita: 10 × 1.5 oz mozzarella ($0.5625) + 5 × (crust $3 − dough $0.40).
   close(after.byItem.get('V-MARG|margherita'), 10 * 0.5625 + 5 * 2.6);
