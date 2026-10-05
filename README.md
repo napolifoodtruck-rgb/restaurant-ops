@@ -33,6 +33,9 @@ Back-of-house foundation:
 | `src/server/db.ts` | Database interface (driver kept at the edge: `pg` in production) and the migration runner over `db/migrations`. |
 | `src/server/auth.ts` | Sign-ins: PIN on an enrolled iPad for the kitchen, email and password for managers; scrypt hashes, hashed session and device tokens, 5-try lockout. |
 | `src/server/app.ts` | JSON API on node:http: health, first-owner setup, sign-in and out, iPad enrollment, PINs. |
+| `src/connectors/squareApi.ts` | Square REST client, read-only by construction: locations, catalog, team and job titles, Reporting API queries with paging and retries. |
+| `src/server/squareSync.ts` | Nightly copy from Square into the database: location, catalog, team (job titles become role levels to confirm), item and modifier sales by day; recent days are refreshed. |
+| `src/server/scheduler.ts` | Runs the sync after 4 am in the restaurant's time zone, from inside the web app. |
 | `src/server/main.ts` | Starts the app: connect, migrate, listen. |
 | `render.yaml` | Render Blueprint: web service plus PostgreSQL. Secrets are entered in the Render dashboard. |
 | `db/migrations/` | PostgreSQL schema, applied in order at startup (`0001_schema.sql` is the base; later files add to it) for restaurants, staff, stations and roles, vendors, products, invoices, price history, recipes and breakdowns, menus, POS links with components, modifier effects, prep batches and timed prep tasks, counts, waste, to-do items and questions. Built for many restaurants: every reference includes the restaurant. |

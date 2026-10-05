@@ -14,7 +14,7 @@ const db = startTestDb();
 test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for tests (or running as root)' }, async (t) => {
   t.after(() => db!.close());
   const migrations = fileURLToPath(new URL('../db/migrations', import.meta.url));
-  assert.deepEqual(await migrate(db!, migrations), ['0001_schema.sql', '0002_logins.sql']);
+  assert.deepEqual(await migrate(db!, migrations), ['0001_schema.sql', '0002_logins.sql', '0003_pos_data.sql']);
   assert.deepEqual(await migrate(db!, migrations), []); // each applied once
 
   const server = createServer(createApp({ db: db!, setupToken: 'setup-secret', secureCookies: false }));

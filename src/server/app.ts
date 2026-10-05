@@ -10,6 +10,8 @@
  *   POST /api/logout
  *   GET  /api/me
  *   POST /api/staff/:id/pin      { pin } yourself, or a manager for anyone
+ *   GET  /api/sync               last syncs (manager or up)
+ *   POST /api/sync/square        start a Square sync now (manager or up)
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -19,6 +21,8 @@ import {
   atLeast, deviceFor, hashSecret, newToken, passwordProblem, pinProblem, sessionFor, signInWithPassword, signInWithPin, signOut,
   type SignedIn, type SignInResult,
 } from './auth.ts';
+import { runSquareSync } from './squareSync.ts';
+import { localDateHour, squareApiFrom, type SquareSettings } from './scheduler.ts';
 
 export interface AppConfig {
   db: Db;
@@ -26,6 +30,7 @@ export interface AppConfig {
   setupToken?: string;
   /** Secure cookies (true everywhere but local development). */
   secureCookies: boolean;
+  square?: SquareSettings;
 }
 
 const SESSION_COOKIE = 'ops_session';
@@ -196,6 +201,27 @@ export function createApp(config: AppConfig) {
       const r = await db.query('UPDATE staff SET pin_hash = $1, failed_logins = 0, locked_until = NULL WHERE id = $2 AND restaurant_id = $3 RETURNING id', [await hashSecret(pin), staffId, who.restaurantId]);
       if (!r.rows.length) throw new HttpError(404, 'No such person.');
       return send(res, 200, { ok: true });
+    }
+
+    if (method === 'GET' && path === '/api/sync') {
+      const who = await signedIn(req);
+      if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
+      const { rows } = await db.query('SELECT source, started_at, finished_at, status, detail FROM sync_runs WHERE restaurant_id = $1 ORDER BY started_at DESC LIMIT 20', [who.restaurantId]);
+      return send(res, 200, { squareConnected: Boolean(squareApiFrom(config.square ?? {})), runs: rows });
+    }
+
+    if (method === 'POST' && path === '/api/sync/square') {
+      const who = await signedIn(req);
+      if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
+      const api = squareApiFrom(config.square ?? {});
+      if (!api) throw new HttpError(409, 'Square isn’t connected yet: add SQUARE_ACCESS_TOKEN in Render.');
+      const running = await db.query("SELECT 1 FROM sync_runs WHERE restaurant_id = $1 AND source = 'square' AND status = 'running' AND started_at > now() - interval '2 hours'", [who.restaurantId]);
+      if (running.rows.length) throw new HttpError(409, 'A Square sync is already running.');
+      const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+      // Runs in the background; GET /api/sync shows how it went.
+      runSquareSync(db, api, who.restaurantId, { today: localDateHour(tz).date, ...(config.square?.locationId ? { locationId: config.square.locationId } : {}) })
+        .catch((err) => console.error(`Square sync failed: ${(err as Error).message}`));
+      return send(res, 202, { started: true });
     }
 
     throw new HttpError(404, 'Not found.');
