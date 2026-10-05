@@ -17,7 +17,7 @@
  *   POST /api/sync/:source       start a Square or MarginEdge sync now (manager or up)
  *   GET  /api/book               which parts of the kitchen book are loaded (manager or up)
  *   POST /api/book/import        load recipe cards and answers from a kitchen-book file (manager or up)
- *   GET  /api/margins            margins by category over the last 90 days (manager or up)
+ *   GET  /api/margins            margins by category, last 90 days or ?from=&to= (manager or up)
  *   GET  /api/menu               the menu from sales, what came off, to-dos (manager or up)
  *   POST /api/answers            answer a menu question: link, new dish, not food, dismiss (manager or up)
  */
@@ -287,7 +287,18 @@ export function createApp(config: AppConfig) {
       }
 
       if (method === 'GET' && path === '/api/margins') {
-        return send(res, 200, marginsView(await getModel(db, who.restaurantId, await today())));
+        const now = await today();
+        const from = url.searchParams.get('from');
+        const to = url.searchParams.get('to');
+        let range: { from: string; to: string } | undefined;
+        if (from || to) {
+          const day = /^\d{4}-\d{2}-\d{2}$/;
+          if (!from || !to || !day.test(from) || !day.test(to) || Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to))) throw new HttpError(400, 'Dates are YYYY-MM-DD, both from and to.');
+          if (from > to) throw new HttpError(400, 'The start date is after the end date.');
+          if (Date.parse(to) - Date.parse(from) > 400 * 86_400_000) throw new HttpError(400, 'Pick a period of 400 days or less.');
+          range = { from, to: to > now ? now : to };
+        }
+        return send(res, 200, marginsView(await getModel(db, who.restaurantId, now, range)));
       }
 
       if (method === 'POST' && path === '/api/answers') {

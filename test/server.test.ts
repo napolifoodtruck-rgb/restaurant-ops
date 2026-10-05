@@ -100,6 +100,10 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.equal(margins.status, 200);
   assert.deepEqual(margins.json.missing, ['marginedge', 'square']);
   assert.equal((await call('GET', '/api/menu', { cookies: ownerSession })).status, 200);
+  const september = await call('GET', '/api/margins?from=2026-09-01&to=2026-09-30', { cookies: ownerSession });
+  assert.deepEqual([september.status, september.json.from, september.json.to], [200, '2026-09-01', '2026-09-30']);
+  assert.equal((await call('GET', '/api/margins?from=2026-09-30&to=2026-09-01', { cookies: ownerSession })).status, 400);
+  assert.equal((await call('GET', '/api/margins?from=Sept', { cookies: ownerSession })).status, 400);
   assert.equal((await call('POST', '/api/sync/square', { cookies: ownerSession })).status, 409); // not connected in this test
 
   // Nothing secret is stored in the clear.

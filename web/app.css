@@ -89,3 +89,4 @@ input:focus-visible, button:focus-visible { outline: 3px solid #9DBDE6; outline-
 .row.wrap { flex-wrap: wrap; gap: 8px; }
 .btn.small-btn { height: 40px; padding: 0 12px; font-size: 14px; }
 select { height: 40px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; background: #fff; font-size: 14px; max-width: 220px; }
+input[type=date] { height: 40px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; background: #fff; font-size: 14px; }

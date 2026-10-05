@@ -123,8 +123,11 @@ export async function saveBook(db: Db, restaurantId: string, key: BookKey, value
 // ---------------------------------------------------------------- the model
 
 export interface Model {
+  /** Last day of the period (today, unless a past range was asked for). */
   today: string;
   from: string;
+  /** First day any sales are stored for. */
+  dataFrom?: string;
   missing: string[];
   book: RecipeBook;
   recipes: Recipe[];
@@ -143,7 +146,7 @@ export interface Model {
 
 const cache = new Map<string, { stamp: string; model: Promise<Model> }>();
 export function invalidate(restaurantId: string): void {
-  cache.delete(restaurantId);
+  for (const key of cache.keys()) if (key.startsWith(`${restaurantId}|`)) cache.delete(key);
 }
 
 function minusDays(day: string, n: number): string {
@@ -152,24 +155,33 @@ function minusDays(day: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** The model over the last `days` days up to `today`, cached until data changes. */
-export async function getModel(db: Db, restaurantId: string, today: string, days = 90): Promise<Model> {
+/**
+ * The model for a period: the last 90 days up to `today` by default, or `range`. Costs are
+ * priced as of the period's last day, so a past month shows what its plates cost then.
+ * Cached until data changes.
+ */
+export async function getModel(db: Db, restaurantId: string, today: string, range?: { from: string; to: string }): Promise<Model> {
+  const to = range?.to ?? today;
+  const from = range?.from ?? minusDays(today, 89);
+  const key = `${restaurantId}|${from}|${to}`;
   const stamp = (await db.query<{ stamp: string }>(
-    `SELECT concat_ws('|', $2::text, $3::text,
+    `SELECT concat_ws('|',
        (SELECT max(finished_at)::text FROM sync_runs WHERE restaurant_id = $1 AND status = 'ok'),
        (SELECT max(updated_at)::text FROM kitchen_book WHERE restaurant_id = $1)) AS stamp`,
-    [restaurantId, today, days],
+    [restaurantId],
   )).rows[0]!.stamp;
-  const hit = cache.get(restaurantId);
+  const hit = cache.get(key);
   if (hit && hit.stamp === stamp) return hit.model;
-  const model = buildModel(db, restaurantId, today, days);
-  cache.set(restaurantId, { stamp, model });
-  model.catch(() => cache.delete(restaurantId));
+  // A handful of periods per restaurant is plenty; drop the oldest beyond that.
+  const mine = [...cache.keys()].filter((k) => k.startsWith(`${restaurantId}|`));
+  if (mine.length >= 8) cache.delete(mine[0]!);
+  const model = buildModel(db, restaurantId, from, to);
+  cache.set(key, { stamp, model });
+  model.catch(() => cache.delete(key));
   return model;
 }
 
-async function buildModel(db: Db, restaurantId: string, today: string, days: number): Promise<Model> {
-  const from = minusDays(today, days - 1);
+async function buildModel(db: Db, restaurantId: string, from: string, today: string): Promise<Model> {
   const missing: string[] = [];
   const bookData = await loadBook(db, restaurantId);
   const me = await storedMarginEdge(db, restaurantId);
@@ -209,6 +221,7 @@ async function buildModel(db: Db, restaurantId: string, today: string, days: num
   const categoryNames = Object.fromEntries(catalog.filter((o: any) => o.type === 'CATEGORY').map((o: any) => [o.id, o.category_data?.name ?? o.id]));
   const menuItems = squareMenuItems(catalog, categoryNames);
   const itemRows = await storedItemSales(db, restaurantId, from, today);
+  const dataFrom = (await db.query<{ day: string | null }>('SELECT min(day)::text AS day FROM pos_item_sales_daily WHERE restaurant_id = $1', [restaurantId])).rows[0]?.day ?? undefined;
   if (!itemRows.length) missing.push('square');
   const sales = squareItemSales(itemRows, menuItems);
 
@@ -264,5 +277,5 @@ async function buildModel(db: Db, restaurantId: string, today: string, days: num
     // A dish change already answered: a version on that button starts within a week of the suggested day.
     .filter((c) => !(c.kind === 'dishChanged' && c.catalogId && c.suggestedDate && [...linkAnswers.confirm, ...linkAnswers.newDish].some((v) => v.catalogId === c.catalogId && v.from && Math.abs(Date.parse(v.from) - Date.parse(c.suggestedDate!)) <= 7 * 86_400_000)));
 
-  return { today, from, missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks };
+  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks };
 }

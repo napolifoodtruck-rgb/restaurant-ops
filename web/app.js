@@ -191,20 +191,51 @@ function missingNote(missing) {
 
 const ROLE = { earner: ['Top earner', 'ok'], sellMore: ['Sell more', 'blue'], minor: ['Small', ''] };
 
-async function marginsScreen(me, category) {
+const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function presetRanges() {
+  const now = new Date();
+  const back = (n) => { const d = new Date(now); d.setDate(d.getDate() - n); return iso(d); };
+  const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const lastMonthEnd = new Date(firstOfMonth); lastMonthEnd.setDate(0);
+  const lastMonthStart = new Date(lastMonthEnd.getFullYear(), lastMonthEnd.getMonth(), 1);
+  return [
+    ['Last 7 days', { from: back(6), to: iso(now) }],
+    ['Last 30 days', { from: back(29), to: iso(now) }],
+    ['Last 90 days', null],
+    ['This month', { from: iso(firstOfMonth), to: iso(now) }],
+    [lastMonthStart.toLocaleDateString(undefined, { month: 'long' }), { from: iso(lastMonthStart), to: iso(lastMonthEnd) }],
+  ];
+}
+
+function rangePicker(me, category, range, m) {
+  const same = (a, b) => (!a && !b) || (a && b && a.from === b.from && a.to === b.to);
+  const fromInput = h('input', { type: 'date', value: m.from, min: m.dataFrom, max: iso(new Date()), 'aria-label': 'From' });
+  const toInput = h('input', { type: 'date', value: m.to, min: m.dataFrom, max: iso(new Date()), 'aria-label': 'To' });
+  return h('div', { class: 'row wrap' },
+    presetRanges().map(([label, r]) => h('button', { class: `btn small-btn${same(r, range) ? ' dark' : ''}`, text: label, onclick: () => marginsScreen(me, category, r) })),
+    h('span', { class: 'row tight' }, fromInput, h('span', { class: 'muted', text: 'to' }), toInput,
+      h('button', { class: 'btn small-btn', text: 'Show', onclick: () => fromInput.value && toInput.value && marginsScreen(me, category, { from: fromInput.value, to: toInput.value }) })),
+  );
+}
+
+async function marginsScreen(me, category, range) {
   loadingScreen(me, 'margins', 'Where the money comes from');
-  const r = await api('GET', '/api/margins');
+  const r = await api('GET', range ? `/api/margins?from=${range.from}&to=${range.to}` : '/api/margins');
   if (!r.ok) return show(shell(me, 'margins', [h('h1', { text: 'Margins' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const m = r.data;
   const cat = m.categories.find((c) => c.name === category) ?? m.categories[0];
-  const tabs = h('div', { class: 'row' }, m.categories.map((c) => h('button', { class: `btn${c === cat ? ' dark' : ''}`, onclick: () => marginsScreen(me, c.name), text: c.name })));
+  const tabs = h('div', { class: 'row' }, m.categories.map((c) => h('button', { class: `btn${c === cat ? ' dark' : ''}`, onclick: () => marginsScreen(me, c.name, range), text: c.name })));
+  const start = m.dataFrom && m.dataFrom > m.from ? m.dataFrom : m.from;
+  const days = Math.round((Date.parse(m.to) - Date.parse(start)) / 86400000) + 1;
+  const early = m.dataFrom && m.from < m.dataFrom ? h('div', { class: 'note', text: `Sales are stored from ${shortDate(m.dataFrom)}, so this period starts there.` }) : null;
   const header = h('header', { class: 'row' },
     h('div', { class: 'grow' },
       h('div', { class: 'kicker', text: `${cat ? cat.name + ' · ' : ''}${shortDate(m.from)} – ${shortDate(m.to)} · prices from Square, costs from MarginEdge` }),
       h('h1', { text: 'Where the money comes from' }),
-      h('div', { class: 'sub', text: `Food cost ${pct(m.totals.foodCostShare)} on dishes with recipe cards. ${dollars(m.totals.leftOver)} left after food in 90 days.` })),
+      h('div', { class: 'sub', text: `Food cost ${pct(m.totals.foodCostShare)} on dishes with recipe cards. ${dollars(m.totals.leftOver)} left after food in ${days} days. Costs are priced as of ${shortDate(m.to)}.` })),
     tabs);
-  if (!cat) return show(shell(me, 'margins', [header, missingNote(m.missing), h('p', { class: 'muted', text: 'No dishes with recipe cards have sold yet.' })]));
+  const picker = rangePicker(me, cat?.name, range, m);
+  if (!cat) return show(shell(me, 'margins', [header, picker, missingNote(m.missing), h('p', { class: 'muted', text: 'No dishes with recipe cards sold in this period.' })]));
 
   const maxPrice = Math.max(...cat.dishes.map((d) => d.averagePrice), 1);
   const maxTotal = Math.max(...cat.dishes.map((d) => d.leftTotal), 1);
@@ -229,7 +260,7 @@ async function marginsScreen(me, category) {
   const noCard = cat.noCard.length ? h('section', { class: 'card' },
     h('h2', { text: `Selling with no recipe card: ${dollars(cat.noCardSales)} in sales not counted above` }),
     h('div', { class: 'small', text: cat.noCard.map((x) => `${x.name} ${dollars(x.netSales)}`).join(' · ') })) : null;
-  show(shell(me, 'margins', [header, missingNote(m.missing), table, noCard]));
+  show(shell(me, 'margins', [header, picker, early, missingNote(m.missing), table, noCard]));
 }
 
 // ------------------------------------------------------------------ menu

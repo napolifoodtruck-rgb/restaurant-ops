@@ -58,6 +58,7 @@ export function marginsView(model: Model) {
   return {
     from: model.from,
     to: model.today,
+    dataFrom: model.dataFrom,
     missing: model.missing,
     totals: { netSales: money(t.netSales), foodCostShare: share(t.foodCostShare), leftOver: money(t.contribution), coverage: share(model.margins.coverage) },
     categories,
