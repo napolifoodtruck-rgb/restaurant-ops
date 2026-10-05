@@ -65,6 +65,7 @@ export interface SignedIn {
   jobTitle: string | null;
   roleLevel: RoleLevel;
   method: 'pin' | 'password';
+  restaurantName: string;
 }
 
 export type SignInResult = { ok: true; token: string; expiresAt: Date; who: SignedIn } | { ok: false; reason: 'wrong' | 'locked'; lockedUntil?: Date };
@@ -79,10 +80,12 @@ interface StaffRow {
   failed_logins: number;
   locked_until: Date | null;
   role_level: RoleLevel | null;
+  restaurant_name: string;
 }
 
-const STAFF_SELECT = `SELECT s.id, s.restaurant_id, s.display_name, s.job_title, s.pin_hash, s.password_hash, s.failed_logins, s.locked_until, j.role_level
-  FROM staff s LEFT JOIN job_title_permissions j ON j.restaurant_id = s.restaurant_id AND j.job_title = s.job_title`;
+const STAFF_SELECT = `SELECT s.id, s.restaurant_id, s.display_name, s.job_title, s.pin_hash, s.password_hash, s.failed_logins, s.locked_until, j.role_level, r.name AS restaurant_name
+  FROM staff s JOIN restaurants r ON r.id = s.restaurant_id
+  LEFT JOIN job_title_permissions j ON j.restaurant_id = s.restaurant_id AND j.job_title = s.job_title`;
 
 async function attempt(db: Db, row: StaffRow | undefined, secret: string, method: 'pin' | 'password', deviceId: string | null, now: Date): Promise<SignInResult> {
   if (!row) {
@@ -101,7 +104,7 @@ async function attempt(db: Db, row: StaffRow | undefined, secret: string, method
   const { token, hash } = newToken();
   const expiresAt = new Date(now.getTime() + (method === 'pin' ? PIN_SESSION_HOURS * 3_600_000 : PASSWORD_SESSION_DAYS * 86_400_000));
   await db.query('INSERT INTO sessions (token_hash, restaurant_id, staff_id, device_id, method, expires_at) VALUES ($1, $2, $3, $4, $5, $6)', [hash, row.restaurant_id, row.id, deviceId, method, expiresAt]);
-  return { ok: true, token, expiresAt, who: { staffId: row.id, restaurantId: row.restaurant_id, name: row.display_name, jobTitle: row.job_title, roleLevel: row.role_level ?? 'line', method } };
+  return { ok: true, token, expiresAt, who: { staffId: row.id, restaurantId: row.restaurant_id, name: row.display_name, jobTitle: row.job_title, roleLevel: row.role_level ?? 'line', method, restaurantName: row.restaurant_name } };
 }
 const DUMMY = hashSecret('not-a-real-secret');
 
@@ -123,7 +126,7 @@ export async function sessionFor(db: Db, token: string | undefined, now = new Da
     [tokenHash(token), now],
   );
   const r = rows[0];
-  return r && { staffId: r.id, restaurantId: r.restaurant_id, name: r.display_name, jobTitle: r.job_title, roleLevel: r.role_level ?? 'line', method: r.method };
+  return r && { staffId: r.id, restaurantId: r.restaurant_id, name: r.display_name, jobTitle: r.job_title, roleLevel: r.role_level ?? 'line', method: r.method, restaurantName: r.restaurant_name };
 }
 
 export async function signOut(db: Db, token: string | undefined): Promise<void> {

@@ -36,6 +36,7 @@ Back-of-house foundation:
 | `src/connectors/squareApi.ts` | Square REST client, read-only by construction: locations, catalog, team and job titles, Reporting API queries with paging and retries. |
 | `src/server/squareSync.ts` | Nightly copy from Square into the database: location, catalog, team (job titles become role levels to confirm), item and modifier sales by day; recent days are refreshed. |
 | `src/server/scheduler.ts` | Runs the sync after 4 am in the restaurant's time zone, from inside the web app. |
+| `web/` | The web app: first-time setup, manager sign-in, kitchen iPad name-and-PIN sign-in, Settings (Square sync, team PINs, iPad setup). Plain modules, no build step. |
 | `src/server/main.ts` | Starts the app: connect, migrate, listen. |
 | `render.yaml` | Render Blueprint: web service plus PostgreSQL. Secrets are entered in the Render dashboard. |
 | `db/migrations/` | PostgreSQL schema, applied in order at startup (`0001_schema.sql` is the base; later files add to it) for restaurants, staff, stations and roles, vendors, products, invoices, price history, recipes and breakdowns, menus, POS links with components, modifier effects, prep batches and timed prep tasks, counts, waste, to-do items and questions. Built for many restaurants: every reference includes the restaurant. |

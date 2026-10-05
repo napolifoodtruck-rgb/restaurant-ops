@@ -1,7 +1,9 @@
 /**
  * The web app: a small JSON API on node:http. Screens come later; this is what they call.
  *
+ *   GET  /, /app.js, /app.css     the web app (web/)
  *   GET  /health                 for Render's health check
+ *   GET  /api/setup              whether first-time setup is open
  *   POST /api/setup              first owner and restaurant, once, with SETUP_TOKEN
  *   POST /api/login/password     { email, password }
  *   POST /api/devices            { name } (manager or up): enroll this iPad
@@ -10,12 +12,14 @@
  *   POST /api/logout
  *   GET  /api/me
  *   POST /api/staff/:id/pin      { pin } yourself, or a manager for anyone
+ *   GET  /api/staff              the team with roles and whether each has a PIN (manager or up)
  *   GET  /api/sync               last syncs (manager or up)
  *   POST /api/sync/square        start a Square sync now (manager or up)
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import type { Db } from './db.ts';
 import {
   atLeast, deviceFor, hashSecret, newToken, passwordProblem, pinProblem, sessionFor, signInWithPassword, signInWithPin, signOut,
@@ -95,6 +99,14 @@ function signInReply(res: ServerResponse, result: SignInResult, secure: boolean)
   send(res, 200, { me: result.who }, { 'set-cookie': cookie(SESSION_COOKIE, result.token, result.expiresAt, secure) });
 }
 
+const WEB_FILES: Record<string, { file: string; type: string }> = {
+  '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
+  '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
+  '/app.css': { file: 'app.css', type: 'text/css; charset=utf-8' },
+};
+const WEB_DIR = new URL('../../web/', import.meta.url);
+const CSP = "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+
 function sameSecret(a: string, b: string): boolean {
   const x = Buffer.from(a), y = Buffer.from(b);
   return x.length === y.length && timingSafeEqual(x, y);
@@ -127,6 +139,31 @@ export function createApp(config: AppConfig) {
         try { host = new URL(origin).host; } catch {}
         if (host !== req.headers.host) throw new HttpError(403, 'Cross-site request.');
       }
+    }
+
+    const web = WEB_FILES[path];
+    if (method === 'GET' && web) {
+      const content = await readFile(new URL(web.file, WEB_DIR));
+      res.writeHead(200, { 'content-type': web.type, 'cache-control': 'no-cache', 'content-security-policy': CSP, 'x-content-type-options': 'nosniff', 'referrer-policy': 'same-origin' });
+      res.end(content);
+      return;
+    }
+
+    if (method === 'GET' && path === '/api/setup') {
+      const { rows } = await db.query<{ n: string }>('SELECT count(*) AS n FROM restaurants');
+      return send(res, 200, { open: Boolean(config.setupToken) && Number(rows[0]?.n) === 0 });
+    }
+
+    if (method === 'GET' && path === '/api/staff') {
+      const who = await signedIn(req);
+      if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
+      const { rows } = await db.query<{ id: string; display_name: string; job_title: string | null; role_level: string | null; has_pin: boolean; has_email: boolean }>(
+        `SELECT s.id, s.display_name, s.job_title, j.role_level, s.pin_hash IS NOT NULL AS has_pin, s.email IS NOT NULL AS has_email
+           FROM staff s LEFT JOIN job_title_permissions j ON j.restaurant_id = s.restaurant_id AND j.job_title = s.job_title
+          WHERE s.restaurant_id = $1 AND s.active ORDER BY s.display_name`,
+        [who.restaurantId],
+      );
+      return send(res, 200, { staff: rows.map((r) => ({ id: r.id, name: r.display_name, jobTitle: r.job_title, roleLevel: r.role_level ?? 'line', hasPin: r.has_pin, hasEmail: r.has_email })) });
     }
 
     if (method === 'GET' && path === '/health') {
