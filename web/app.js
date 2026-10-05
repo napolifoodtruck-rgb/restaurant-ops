@@ -48,6 +48,14 @@ function show(...nodes) { fill(app, ...nodes); }
 
 const ACCESS_NAMES = { staff: 'Staff', manager: 'Manager', admin: 'Administrator', owner: 'Account owner' };
 const canAdminister = (me) => me.access === 'owner' || me.access === 'admin';
+const AREA_NAMES = { kitchen: 'Kitchen', bar: 'Bar', both: 'Kitchen and bar', none: 'Neither' };
+/** The side of the menu showing: the one picked last, else where this person works. */
+const sideOf = (me) => me.side ?? (me.area === 'bar' ? 'bar' : 'kitchen');
+function sideSwitch(me, redraw) {
+  const side = sideOf(me);
+  return h('div', { class: 'seg', role: 'group', 'aria-label': 'Kitchen or bar' },
+    ['kitchen', 'bar'].map((a) => h('button', { class: side === a ? 'on' : '', 'aria-pressed': String(side === a), text: AREA_NAMES[a], onclick: () => { me.side = a; redraw(); } })));
+}
 const LEVELS = ['line', 'lead', 'sous', 'chef', 'manager', 'owner'];
 const atLeast = (level, needed) => LEVELS.indexOf(level) >= LEVELS.indexOf(needed);
 
@@ -309,23 +317,25 @@ const MARGIN_COLUMNS = [
 async function marginsScreen(me, state = {}) {
   state = { view: 'total', sort: { key: 'left', dir: 'desc' }, ...state };
   loadingScreen(me, 'margins', 'Menu Performance');
-  const r = await api('GET', state.range ? `/api/margins?from=${state.range.from}&to=${state.range.to}` : '/api/margins');
+  const r = await api('GET', `/api/margins?area=${sideOf(me)}${state.range ? `&from=${state.range.from}&to=${state.range.to}` : ''}`);
   if (!r.ok) return show(shell(me, 'margins', [h('h1', { text: 'Menu Performance' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   renderMargins(me, state, r.data);
 }
 
 function renderMargins(me, state, m) {
+  const salesCat = m.salesOnly?.find((c) => c.name === state.category) ?? (!m.categories.length ? m.salesOnly?.[0] : undefined);
+  if (salesCat) return renderSalesOnly(me, state, m, salesCat);
   const cat = m.categories.find((c) => c.name === state.category) ?? m.categories[0];
   const again = (changes) => renderMargins(me, { ...state, ...changes }, m);
-  const tabs = h('div', { class: 'row' }, m.categories.map((c) => h('button', { class: `btn${c === cat ? ' dark' : ''}`, onclick: () => again({ category: c.name }), text: c.name })));
+  const tabs = categoryTabs(me, state, m, cat?.name, again);
   const start = m.dataFrom && m.dataFrom > m.from ? m.dataFrom : m.from;
   const days = Math.round((Date.parse(m.to) - Date.parse(start)) / 86400000) + 1;
   const early = m.dataFrom && m.from < m.dataFrom ? h('div', { class: 'note', text: `Sales are stored from ${shortDate(m.dataFrom)}, so this period starts there.` }) : null;
-  const header = h('header', { class: 'row' },
+  const header = h('header', { class: 'row wrap' },
     h('div', { class: 'grow' },
       h('div', { class: 'kicker', text: `${cat ? cat.name + ' · ' : ''}${shortDate(m.from)} – ${shortDate(m.to)} · prices from Square, costs from MarginEdge` }),
       h('h1', { text: 'Menu Performance' }),
-      h('div', { class: 'sub', text: `Food cost ${pct(m.totals.foodCostShare)} on dishes with recipe cards. ${dollars(m.totals.leftOver)} left after food in ${days} days. Costs are priced as of ${shortDate(m.to)}.` })),
+      h('div', { class: 'sub', text: `Food cost ${pct(m.totals.foodCostShare)} on ${sideOf(me) === 'bar' ? 'drinks' : 'dishes'} with recipe cards. ${dollars(m.totals.leftOver)} left after food in ${days} days. Costs are priced as of ${shortDate(m.to)}.` })),
     tabs);
   const picker = rangePicker(me, { ...state, category: cat?.name }, m);
   if (!cat) return show(shell(me, 'margins', [header, picker, missingNote(m.missing), h('p', { class: 'muted', text: 'No dishes with recipe cards sold in this period.' })]));
@@ -391,6 +401,40 @@ function renderMargins(me, state, m) {
     h('h2', { text: `Selling with no recipe card: ${dollars(cat.noCardSales)} in sales not counted above` }),
     h('div', { class: 'small', text: cat.noCard.map((x) => `${x.name} ${dollars(x.netSales)}`).join(' · ') })) : null;
   show(shell(me, 'margins', [header, h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, picker), modeSwitch), early, missingNote(m.missing), gapsCard(me, state, cat), table, noCard]));
+}
+
+function categoryTabs(me, state, m, current, again) {
+  const names = [...m.categories.map((c) => c.name), ...(m.salesOnly ?? []).map((c) => c.name)];
+  return h('div', { class: 'row wrap' }, sideSwitch(me, () => marginsScreen(me, { ...state, category: undefined })),
+    names.map((n) => h('button', { class: `btn small-btn${n === current ? ' dark' : ''}`, onclick: () => again({ category: n }), text: n })));
+}
+
+/** Categories with sales but no costs yet (drinks, until they're linked to what they pour from). */
+function renderSalesOnly(me, state, m, cat) {
+  const again = (changes) => renderMargins(me, { ...state, ...changes }, m);
+  const sortKey = state.salesSort ?? 'netSales';
+  const cols = [['name', 'Item'], ['sold', 'Sold'], ['soldPerDay', 'Per day on'], ['averagePrice', 'Avg price'], ['netSales', 'Sales'], ['salesPerDay', 'Sales per day on']];
+  const items = [...cat.items].sort((a, b) => (sortKey === 'name' ? a.name.localeCompare(b.name) : b[sortKey] - a[sortKey]));
+  const max = Math.max(...items.map((i) => i[sortKey === 'salesPerDay' ? 'salesPerDay' : 'netSales']), 1);
+  const bar = (v) => { const b = h('div', { class: 'total' }); b.style.width = `${Math.max(2, (v / max) * 140)}px`; return b; };
+  const perDayView = sortKey === 'salesPerDay';
+  const header = h('header', { class: 'row wrap' },
+    h('div', { class: 'grow' },
+      h('div', { class: 'kicker', text: `${cat.name} · ${shortDate(m.from)} – ${shortDate(m.to)} · sales from Square` }),
+      h('h1', { text: 'Menu Performance' }),
+      h('div', { class: 'sub', text: `${dollars(cat.netSales)} in sales. Costs come once each ${sideOf(me) === 'bar' ? 'drink is linked to the bottle, keg or recipe it pours from' : 'item has a recipe card'}.` })),
+    categoryTabs(me, state, m, cat.name, again));
+  const table = h('section', { class: 'card' },
+    h('div', { class: 'srow head' }, cols.map(([k, label]) => h('button', { class: `sort${sortKey === k ? ' on' : ''}${k === 'name' ? '' : ' num'}`, text: label + (sortKey === k ? ' ▼' : ''), onclick: () => again({ salesSort: k }) }))),
+    items.map((i) => h('div', { class: `srow${i.offSince ? ' off' : ''}` },
+      h('div', {}, h('div', { class: 'name', text: i.name }), i.offSince ? h('div', { class: 'small muted', text: `last sold ${shortDate(i.offSince)}` }) : i.daysOn < m.openDays ? h('div', { class: 'small muted', text: `on ${i.daysOn} of ${m.openDays} days` }) : null),
+      h('div', { class: 'num', text: qty(i.sold) }),
+      h('div', { class: 'num small muted', text: `${i.soldPerDay}/day` }),
+      h('div', { class: 'num', text: dollars(i.averagePrice, { cents: true }) }),
+      h('div', { class: 'row tight num-end' }, perDayView ? null : bar(i.netSales), h('b', { text: dollars(i.netSales) })),
+      h('div', { class: 'row tight num-end' }, perDayView ? bar(i.salesPerDay) : null, h('span', { text: dollars(i.salesPerDay) })))),
+    h('div', { class: 'small muted', text: 'Per day on: open days from an item’s first sale to its last (or today, if it’s still selling), so a new bottle or a seasonal cocktail is compared fairly.' }));
+  show(shell(me, 'margins', [header, rangePicker(me, { ...state, category: cat.name }, m), table]));
 }
 
 const UNIT_CHOICES = ['lb', 'oz', 'g', 'kg', 'gal', 'qt', 'pt', 'cup', 'floz', 'l', 'ml', 'each'];
@@ -915,12 +959,12 @@ async function prepImportCard() {
 
 async function menuScreen(me) {
   loadingScreen(me, 'menu', 'Menu');
-  const r = await api('GET', '/api/menu');
+  const r = await api('GET', `/api/menu?area=${sideOf(me)}`);
   if (!r.ok) return show(shell(me, 'menu', [h('h1', { text: 'Menu' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const m = r.data;
   const since = (d) => (d <= m.from ? `before ${shortDate(m.from)}` : `since ${shortDate(d)}`);
   const sections = [...new Set(m.current.map((x) => x.section))];
-  const dishRow = (x, right, flagCard = true) => h('div', {}, h('span', { class: 'grow', text: x.name }), x.hasCard || !flagCard ? null : h('span', { class: 'tag warn', text: 'needs card' }), h('span', { class: 'small muted nowrap', text: right }));
+  const dishRow = (x, right, flagCard = m.cards) => h('div', {}, h('span', { class: 'grow', text: x.name }), x.hasCard || !flagCard ? null : h('span', { class: 'tag warn', text: 'needs card' }), h('span', { class: 'small muted nowrap', text: right }));
   const columns = sections.map((s) => h('section', { class: 'card' },
     h('div', { class: 'row' }, h('h2', { class: 'grow', text: s }), h('span', { class: 'small muted', text: String(m.current.filter((x) => x.section === s).length) })),
     h('div', { class: 'list' }, m.current.filter((x) => x.section === s).map((x) => dishRow(x, since(x.since))))));
@@ -968,10 +1012,12 @@ async function menuScreen(me) {
   const off = h('section', { class: 'card' },
     h('h2', { text: 'Came off' }),
     h('div', { class: 'list' }, m.cameOff.slice(0, 20).map((x) => dishRow(x, `${shortDate(x.from)} – ${shortDate(x.to)}`, false))));
-  const coming = atLeast(me.roleLevel, 'chef') ? await comingUpCard(me) : null;
+  const coming = atLeast(me.roleLevel, 'chef') && sideOf(me) === 'kitchen' ? await comingUpCard(me) : null;
   show(shell(me, 'menu', [
-    h('header', {}, h('div', { class: 'kicker', text: `What’s selling · from Square sales since ${shortDate(m.from)}` }), h('h1', { text: 'Menu' }),
-      h('div', { class: 'sub', text: 'Dates come from the first and last day each dish sold. Seasonal versions on one button are kept apart.' })),
+    h('header', { class: 'row wrap' },
+      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[sideOf(me)]} · what’s selling, from Square sales since ${shortDate(m.from)}` }), h('h1', { text: sideOf(me) === 'bar' ? 'Bar menu' : 'Menu' }),
+        h('div', { class: 'sub', text: 'Dates come from the first and last day each item sold. Seasonal versions on one button are kept apart.' })),
+      sideSwitch(me, () => menuScreen(me))),
     missingNote(m.missing),
     coming,
     h('div', { class: 'grid' }, columns, todo, off),
@@ -1143,7 +1189,7 @@ async function home(me) {
       h('div', { class: 'sub', text: manager ? 'Connections, your team and kitchen iPads. Menu and Performance are in the bar on the left.' : 'Your prep list will show up here once your station is set up.' })),
     signOut);
   const cards = [ownPinCard(me)];
-  if (manager) cards.unshift(await syncCard('square'), await syncCard('marginedge'), await importCard(), await prepImportCard(), await teamCard(me), await deviceCard());
+  if (manager) cards.unshift(await syncCard('square'), await syncCard('marginedge'), await importCard(), await prepImportCard(), await teamCard(me), await areasCard(), await deviceCard());
   show(shell(me, 'settings', [header, h('div', { class: 'grid' }, cards)]));
 }
 
@@ -1250,6 +1296,7 @@ function personRow(p, me, admin) {
     fill(row, 
       h('div', { class: 'grow' }, h('div', { text: p.name }), h('div', { class: 'small muted', text: [p.jobTitle, p.email].filter(Boolean).join(' · ') })),
       h('span', { class: `tag${p.access === 'staff' ? '' : ' blue'}`, text: ACCESS_NAMES[p.access] ?? p.access }),
+      p.area && p.area !== 'both' ? h('span', { class: 'tag', text: AREA_NAMES[p.area] }) : null,
       signIn ? h('span', { class: `tag ${signIn[1]}`, text: signIn[0] }) : null,
       p.hasPin ? h('span', { class: 'tag ok', text: 'PIN set' }) : h('span', { class: 'tag', text: 'No PIN' }),
       canPin || canChange ? h('button', { class: 'btn', text: 'Change', onclick: () => personForm(row, p, { canPin, canChange }, draw) }) : null,
@@ -1265,6 +1312,8 @@ function personForm(container, p, { canPin, canChange }, done) {
   const result = h('div');
   const access = canChange ? h('select', { 'aria-label': `Access for ${p.name}` },
     [['staff', 'Staff'], ['manager', 'Manager'], ['admin', 'Administrator']].map(([v, t]) => h('option', { value: v, text: t, selected: p.access === v ? true : undefined }))) : null;
+  const area = canChange ? h('select', { 'aria-label': `Where ${p.name} works` },
+    [['both', 'Kitchen and bar'], ['kitchen', 'Kitchen'], ['bar', 'Bar']].map(([v, t]) => h('option', { value: v, text: t, selected: (p.area ?? 'both') === v ? true : undefined }))) : null;
   const pin = canPin ? h('input', { inputmode: 'numeric', pattern: '[0-9]*', maxlength: '6', autocomplete: 'off', 'aria-label': `New PIN for ${p.name}`, placeholder: p.hasPin ? 'new PIN (optional)' : 'PIN, 4–6 digits' }) : null;
   const email = canChange ? h('input', { type: 'email', autocomplete: 'off', 'aria-label': `Email for ${p.name}`, placeholder: 'email for sign-in', value: p.email ?? '' }) : null;
   const emailRow = email ? h('div', {},
@@ -1273,6 +1322,13 @@ function personForm(container, p, { canPin, canChange }, done) {
   const showEmail = () => { if (emailRow) emailRow.hidden = (access?.value ?? p.access) === 'staff'; };
   access?.addEventListener('change', showEmail);
 
+  const saveArea = async () => {
+    if (!area || area.value === (p.area ?? 'both')) return true;
+    const a = await api('POST', `/api/staff/${p.id}/area`, { area: area.value });
+    if (!a.ok) { err.textContent = a.data.error ?? 'That didn’t work.'; return false; }
+    p.area = area.value;
+    return true;
+  };
   const saveAccess = async () => {
     if (!access || access.value === p.access) return true;
     if (access.value === 'staff' && p.emailSignIn === 'on' && !confirmText(`${p.name} won’t be able to sign in with email any more. Their PIN still works.`)) return false;
@@ -1303,7 +1359,7 @@ function personForm(container, p, { canPin, canChange }, done) {
   const form = h('form', { class: 'grow', onsubmit: async (e) => {
       e.preventDefault();
       err.textContent = '';
-      if (!(await saveAccess())) return;
+      if (!(await saveAccess()) || !(await saveArea())) return;
       if (pin?.value) {
         const r = await api('POST', `/api/staff/${p.id}/pin`, { pin: pin.value });
         if (!r.ok) return (err.textContent = r.data.error ?? 'That didn’t work.');
@@ -1312,7 +1368,7 @@ function personForm(container, p, { canPin, canChange }, done) {
       done();
     } },
     h('div', {}, h('div', { text: p.name }), h('div', { class: 'small muted', text: p.jobTitle ?? '' })),
-    h('div', { class: 'row wrap' }, access, pin ? h('div', { class: 'grow' }, pin) : h('div', { class: 'grow' }), h('button', { class: 'btn dark', type: 'submit', text: 'Save' }), h('button', { class: 'btn', type: 'button', onclick: done, text: 'Done' })),
+    h('div', { class: 'row wrap' }, access, area, pin ? h('div', { class: 'grow' }, pin) : h('div', { class: 'grow' }), h('button', { class: 'btn dark', type: 'submit', text: 'Save' }), h('button', { class: 'btn', type: 'button', onclick: done, text: 'Done' })),
     emailRow, err, result);
   fill(container, form);
   showEmail();
@@ -1349,6 +1405,28 @@ function ownPinCard(me) {
     } })),
   );
   draw();
+  return box;
+}
+
+// Which POS categories are kitchen and which bar.
+async function areasCard() {
+  const box = h('section', { class: 'card', 'aria-label': 'Kitchen and bar' });
+  const r = await api('GET', '/api/areas');
+  const cats = r.data.categories ?? [];
+  const err = h('div', { class: 'error' });
+  fill(box,
+    h('h2', { text: 'Kitchen and bar' }),
+    h('div', { class: 'small muted', text: 'Which side of the menu each Square category belongs to. Menu, Performance and Today open on the side each person works (set under Team), and anyone can switch.' }),
+    cats.length ? h('div', { class: 'list' }, cats.map((c) => {
+      const pick = h('select', { 'aria-label': `Side for ${c.category}`, disabled: r.data.canEdit ? undefined : true },
+        [['kitchen', 'Kitchen'], ['bar', 'Bar'], ['none', 'Neither']].map(([v, t]) => h('option', { value: v, text: t, selected: c.area === v ? true : undefined })));
+      pick.addEventListener('change', async () => {
+        const s = await api('POST', '/api/areas', { category: c.category, area: pick.value });
+        err.textContent = s.ok ? '' : s.data.error ?? 'That didn’t save.';
+      });
+      return h('div', {}, h('div', { class: 'grow' }, h('div', { text: c.category }), h('div', { class: 'small muted', text: `${dollars(c.netSales)} in 120 days` })), pick);
+    })) : h('div', { class: 'small muted', text: 'Categories show up here after the first Square sync.' }),
+    err);
   return box;
 }
 

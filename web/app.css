@@ -98,9 +98,9 @@ input[type=date] { height: 40px; border: 1px solid var(--line); border-radius: 1
 .trend-up { color: var(--green); font-weight: 700; }
 .trend-down { color: var(--accent); font-weight: 700; }
 .trend-flat { color: var(--muted); font-weight: 600; }
-.mrow.head .sort { background: none; border: 0; padding: 6px 0; text-align: left; font: inherit; font-size: 12px; font-weight: 600; color: var(--muted); cursor: pointer; min-height: 36px; }
-.mrow.head .sort.num { text-align: right; }
-.mrow.head .sort:hover, .mrow.head .sort.on { color: var(--ink); }
+:is(.mrow, .srow).head .sort { background: none; border: 0; padding: 6px 0; text-align: left; font: inherit; font-size: 12px; font-weight: 600; color: var(--muted); cursor: pointer; min-height: 36px; }
+:is(.mrow, .srow).head .sort.num { text-align: right; }
+:is(.mrow, .srow).head .sort:hover, .mrow.head .sort.on { color: var(--ink); }
 
 /* Charts */
 .chart { position: relative; width: 100%; max-width: 980px; }
@@ -184,3 +184,15 @@ input[type=checkbox] { width: 20px; height: 20px; }
 .todo .todo-label { align-self: start; padding-top: 3px; }
 header.row.wrap > .grow { flex: 1 1 280px; }
 @media (max-width: 1000px) { .todo.has-answers .todo-actions { grid-column: auto; } }
+
+/* Kitchen | Bar */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--card); }
+.seg button { height: 40px; padding: 0 16px; border: 0; background: none; font-size: 14px; font-weight: 600; color: var(--muted); cursor: pointer; }
+.seg button.on { background: var(--ink); color: #fff; }
+.srow { display: grid; grid-template-columns: minmax(160px, 1.6fr) 70px 80px 90px minmax(150px, 1fr) minmax(130px, 1fr); gap: 14px; align-items: center; padding: 10px 0; border-top: 1px solid var(--soft); }
+.srow.head { border-top: 0; padding-top: 0; }
+.srow .name { font-weight: 600; font-size: 15px; }
+.srow .num { text-align: right; }
+.srow .num-end { justify-content: flex-end; }
+.srow.off { opacity: .55; }
+@media (max-width: 800px) { .srow { grid-template-columns: 1fr 1fr 1fr; } .srow.head { display: none; } }

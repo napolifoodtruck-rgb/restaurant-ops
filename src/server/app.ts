@@ -16,6 +16,8 @@
  *   POST /api/staff/:id/pin      { pin } yourself; a manager for staff; an admin for anyone but the owner
  *   GET  /api/staff              the team with access, PINs and email sign-in (manager or up)
  *   POST /api/staff/:id/access   { access: staff|manager|admin } (owner or admin; never the owner)
+ *   POST /api/staff/:id/area     { area: kitchen|bar|both } yourself, or an admin for anyone
+ *   GET|POST /api/areas          which categories are kitchen and which bar: see areas.ts
  *   POST /api/staff/:id/invite   { email } (owner or admin): a one-time link to set a password
  *   GET  /api/invites/:token     whose invite this is
  *   POST /api/invites/:token     { password }: set it and sign in
@@ -46,6 +48,7 @@ import { marginsView, menuView } from './views.ts';
 import { prepRoutes } from './prep.ts';
 import { planRoutes } from './plans.ts';
 import { todayView } from './today.ts';
+import { areaFor, areaRoutes, loadAreas } from './areas.ts';
 
 export interface AppConfig {
   db: Db;
@@ -128,8 +131,8 @@ export function createApp(config: AppConfig) {
       const who = await signedIn(req);
       if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
       const admin = canAdminister(who);
-      const { rows } = await db.query<{ id: string; display_name: string; job_title: string | null; access: string; has_pin: boolean; email: string | null; has_password: boolean; invite_until: Date | null }>(
-        `SELECT s.id, s.display_name, s.job_title, s.access, s.pin_hash IS NOT NULL AS has_pin, s.email, s.password_hash IS NOT NULL AS has_password,
+      const { rows } = await db.query<{ id: string; display_name: string; job_title: string | null; access: string; area: string; has_pin: boolean; email: string | null; has_password: boolean; invite_until: Date | null }>(
+        `SELECT s.id, s.display_name, s.job_title, s.access, s.area, s.pin_hash IS NOT NULL AS has_pin, s.email, s.password_hash IS NOT NULL AS has_password,
                 (SELECT max(i.expires_at) FROM invites i WHERE i.staff_id = s.id AND i.used_at IS NULL AND i.expires_at > now()) AS invite_until
            FROM staff s WHERE s.restaurant_id = $1 AND s.active
           ORDER BY CASE s.access WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'manager' THEN 2 ELSE 3 END, s.display_name`,
@@ -138,7 +141,7 @@ export function createApp(config: AppConfig) {
       return send(res, 200, {
         canSetAccess: admin,
         staff: rows.map((r) => ({
-          id: r.id, name: r.display_name, jobTitle: r.job_title, access: r.access, hasPin: r.has_pin,
+          id: r.id, name: r.display_name, jobTitle: r.job_title, access: r.access, area: r.area, hasPin: r.has_pin,
           // Email sign-in: set up (password chosen), invited (link out, not used yet) or neither.
           emailSignIn: r.access === 'staff' ? null : r.has_password ? 'on' : r.invite_until ? 'invited' : 'off',
           ...(admin && r.access !== 'staff' && r.email ? { email: r.email } : {}),
@@ -312,6 +315,23 @@ export function createApp(config: AppConfig) {
       return send(res, 200, { ok: true });
     }
 
+    const areaPath = path.match(/^\/api\/staff\/([0-9a-f-]{36})\/area$/);
+    if (method === 'POST' && areaPath) {
+      const who = await signedIn(req);
+      if (areaPath[1] !== who.staffId && !canAdminister(who)) throw new HttpError(403, 'Only the account owner or an administrator sets where someone works.');
+      const b = await body(req);
+      if (!['kitchen', 'bar', 'both'].includes(String(b.area))) throw new HttpError(400, 'Kitchen, bar or both.');
+      const r = await db.query('UPDATE staff SET area = $1 WHERE id = $2 AND restaurant_id = $3 RETURNING id', [b.area, areaPath[1], who.restaurantId]);
+      if (!r.rows.length) throw new HttpError(404, 'No such person.');
+      return send(res, 200, { ok: true });
+    }
+
+    if (path === '/api/areas') {
+      const who = await signedIn(req);
+      const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+      if (await areaRoutes(db, req, res, path, method, who, localDateHour(tz).date)) return;
+    }
+
     const invitePost = path.match(/^\/api\/staff\/([0-9a-f-]{36})\/invite$/);
     if (method === 'POST' && invitePost) {
       const who = await signedIn(req);
@@ -386,7 +406,8 @@ export function createApp(config: AppConfig) {
           if (Date.parse(to) - Date.parse(from) > 400 * 86_400_000) throw new HttpError(400, 'Pick a period of 400 days or less.');
           range = { from, to: to > now ? now : to };
         }
-        return send(res, 200, marginsView(await getModel(db, who.restaurantId, now, range)));
+        const area = areaFor(who, url.searchParams.get('area'));
+        return send(res, 200, marginsView(await getModel(db, who.restaurantId, now, range), { area, areaOf: await loadAreas(db, who.restaurantId) }));
       }
 
       if (method === 'POST' && path === '/api/answers') {
@@ -411,7 +432,8 @@ export function createApp(config: AppConfig) {
       }
 
       if (method === 'GET' && path === '/api/menu') {
-        return send(res, 200, menuView(await getModel(db, who.restaurantId, await today())));
+        const area = areaFor(who, url.searchParams.get('area'));
+        return send(res, 200, menuView(await getModel(db, who.restaurantId, await today()), { area, areaOf: await loadAreas(db, who.restaurantId) }));
       }
     }
 

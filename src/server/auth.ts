@@ -69,6 +69,8 @@ export const ACCESS: readonly Access[] = ['staff', 'manager', 'admin', 'owner'];
 export interface SignedIn {
   staffId: string;
   access: Access;
+  /** The side of the menu they work: where screens open for them. */
+  area: 'kitchen' | 'bar' | 'both';
   restaurantId: string;
   name: string;
   jobTitle: string | null;
@@ -90,16 +92,17 @@ interface StaffRow {
   locked_until: Date | null;
   role_level: RoleLevel | null;
   access: Access;
+  area: 'kitchen' | 'bar' | 'both';
   restaurant_name: string;
 }
 
 // What a person may do in the kitchen follows their access; running the team is checked on access itself.
-const STAFF_SELECT = `SELECT s.id, s.restaurant_id, s.display_name, s.job_title, s.pin_hash, s.password_hash, s.failed_logins, s.locked_until, s.access,
+const STAFF_SELECT = `SELECT s.id, s.restaurant_id, s.display_name, s.job_title, s.pin_hash, s.password_hash, s.failed_logins, s.locked_until, s.access, s.area,
     CASE s.access WHEN 'owner' THEN 'owner' WHEN 'staff' THEN 'line' ELSE 'manager' END AS role_level, r.name AS restaurant_name
   FROM staff s JOIN restaurants r ON r.id = s.restaurant_id`;
 
 function signedInFrom(r: StaffRow, method: 'pin' | 'password'): SignedIn {
-  return { staffId: r.id, access: r.access, restaurantId: r.restaurant_id, name: r.display_name, jobTitle: r.job_title, roleLevel: r.role_level ?? 'line', method, restaurantName: r.restaurant_name };
+  return { staffId: r.id, access: r.access, area: r.area, restaurantId: r.restaurant_id, name: r.display_name, jobTitle: r.job_title, roleLevel: r.role_level ?? 'line', method, restaurantName: r.restaurant_name };
 }
 
 /** The owner and administrators run the team: who has which access, PINs, invites. */

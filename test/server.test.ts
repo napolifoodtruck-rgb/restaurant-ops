@@ -233,6 +233,14 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.deepEqual(cookToday.prep.map((p: any) => p.station), ['Expo']);
   assert.ok(cookToday.items.every((i: any) => i.group === 'prep'));
 
+  // Kitchen and bar: categories guessed by name, changed by an admin; people work one side or both.
+  assert.equal((await call('POST', '/api/areas', { body: { category: 'Gelato', area: 'bar' }, cookies: marcoOnExpo })).status, 403);
+  assert.equal((await call('POST', '/api/areas', { body: { category: 'Gelato', area: 'bar' }, cookies: ownerSession })).status, 200);
+  assert.equal((await call('GET', '/api/menu?area=bar', { cookies: ownerSession })).json.cards, false);
+  assert.equal((await call('POST', `/api/staff/${cookId}/area`, { body: { area: 'bar' }, cookies: ownerSession })).status, 200);
+  assert.equal((await call('GET', '/api/me', { cookies: marcoOnExpo })).json.me.area, 'bar');
+  assert.equal((await call('POST', `/api/staff/${ownerId}/area`, { body: { area: 'kitchen' }, cookies: marcoOnExpo })).status, 403);
+
   // Nothing secret is stored in the clear.
   const stored = await db!.query<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = $1', [cookId]);
   assert.match(stored.rows[0]!.pin_hash, /^scrypt\$/);

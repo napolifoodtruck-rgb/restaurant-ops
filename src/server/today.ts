@@ -15,7 +15,8 @@
 import type { Db } from './db.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, type Model } from './model.ts';
-import { gapsOf, menuView } from './views.ts';
+import { gapsOf, inArea, menuView, type AreaView } from './views.ts';
+import { loadAreas } from './areas.ts';
 import { view as stationDay } from './prep.ts';
 import { blendedPrices } from '../connectors/marginedge.ts';
 
@@ -108,7 +109,7 @@ async function prepItems(db: Db, who: SignedIn, stations: { id: string; name: st
  * 90 days ago, weighed by how much the menu uses (last 90 days of plates). Only moves of 8%
  * or more that change food cost by $5 a week or more.
  */
-export function priceMoves(model: Model, today: string) {
+export function priceMoves(model: Model, today: string, include: (category: string) => boolean = () => true) {
   const now = blendedPrices(model.imported.prices, today);
   const before = blendedPrices(model.imported.prices, addDays(today, -90));
   const recent = new Set(model.imported.prices.filter((p) => p.date.slice(0, 10) > addDays(today, -60)).map((p) => p.productExternalId));
@@ -116,7 +117,7 @@ export function priceMoves(model: Model, today: string) {
   const days = Math.max(1, (Date.parse(`${today}T12:00:00Z`) - Date.parse(`${model.from}T12:00:00Z`)) / 86_400_000 + 1);
   const use = new Map<string, { amount: number; dishes: Map<string, number> }>();
   for (const d of model.margins.dishes) {
-    if (!(d.quantity > 0)) continue;
+    if (!(d.quantity > 0) || !include(d.category)) continue;
     for (const l of d.cost.lines) {
       const u = use.get(l.productId) ?? { amount: 0, dishes: new Map() };
       u.amount += l.amount * d.quantity;
@@ -137,7 +138,7 @@ export function priceMoves(model: Model, today: string) {
   return out.sort((x, y) => Math.abs(y.perWeek) - Math.abs(x.perWeek));
 }
 
-async function managerItems(db: Db, who: SignedIn, model: Model, today: string): Promise<TodayItem[]> {
+async function managerItems(db: Db, who: SignedIn, model: Model, today: string, view: AreaView): Promise<TodayItem[]> {
   const items: TodayItem[] = [];
 
   // Syncs that failed, or haven't run in a while.
@@ -159,7 +160,7 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string):
   }
 
   // Menu questions, the biggest sellers first, answerable here.
-  const menu = menuView(model);
+  const menu = menuView(model, view);
   const questions: (Omit<TodayItem, 'group' | 'label' | 'tone' | 'go' | 'button'> & { name: string })[] = [
     ...menu.checks.map((c) => {
       const answers = c.kind === 'dishChanged' && c.item && c.suggestedDate ? [{ label: `New version from ${shortDate(c.suggestedDate)}`, body: { type: 'newDish', ...c.item, from: c.suggestedDate, note: 'new version, card to come' } }, { label: 'Same dish', body: { type: 'dismiss', dedupeKey: c.dedupeKey } }]
@@ -185,7 +186,7 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string):
   }
 
   // What keeps plate costs incomplete, most plates first.
-  const gaps = gapsOf(model, model.margins.dishes);
+  const gaps = gapsOf(model, model.margins.dishes.filter((d) => inArea(view, d.category)));
   for (const g of gaps.slice(0, 2)) {
     items.push({ key: `gap:${g.key}`, group: 'costs', label: 'Plate cost', tone: 'ask',
       title: g.kind === 'price' ? `${g.product}: no price yet` : `${g.product}: how much is one ${g.needed === 'unknownUnit' ? g.to : g.from ?? 'unit'}?`,
@@ -193,7 +194,7 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string):
   }
 
   // Prices that moved enough to matter.
-  for (const m of priceMoves(model, today).slice(0, 3)) {
+  for (const m of priceMoves(model, today, (c) => inArea(view, c)).slice(0, 3)) {
     const up = m.change > 0;
     items.push({ key: `price:${m.productId}`, group: 'costs', label: up ? 'Price up' : 'Price down', tone: up ? 'alert' : 'info', dollars: Math.abs(m.perWeek) * 13,
       title: `${m.product} is ${up ? 'up' : 'down'} ${Math.round(Math.abs(m.change) * 100)}% in 3 months`,
@@ -207,7 +208,7 @@ function shortDate(day: string): string {
 }
 
 /** The last service, the week so far, the dishes earning most this week. */
-async function glance(db: Db, restaurantId: string, today: string, model: Model, week: Model) {
+async function glance(db: Db, restaurantId: string, today: string, model: Model, week: Model, view: AreaView) {
   const days = (await db.query<{ day: string; net: string; plates: string }>(
     'SELECT day::text AS day, sum(net_sales) AS net, sum(quantity) AS plates FROM pos_item_sales_daily WHERE restaurant_id = $1 AND day <= $2 AND day >= $3 GROUP BY day HAVING sum(net_sales) > 0 ORDER BY day', [restaurantId, today, addDays(today, -42)])).rows
     .map((r) => ({ day: r.day, net: Number(r.net) }));
@@ -229,9 +230,9 @@ async function glance(db: Db, restaurantId: string, today: string, model: Model,
     ...(weekToDate ? { weekToDate } : {}),
     lastWeek,
     ...(model.margins.dishes.length ? { foodCost: Math.round(model.margins.totals.foodCostShare * 1000) / 1000 } : {}),
-    earners: [...week.margins.dishes].sort((a, b) => b.totalContribution - a.totalContribution).slice(0, 3)
+    earners: week.margins.dishes.filter((d) => inArea(view, d.category)).sort((a, b) => b.totalContribution - a.totalContribution).slice(0, 3)
       .map((d) => ({ name: d.name, left: Math.round(d.totalContribution), sold: Math.round(d.quantity) })),
-    noCard: model.margins.unlinked.filter((u) => new Set(model.margins.dishes.map((d) => d.category)).has(u.category)).slice(0, 6).map((u) => ({ name: u.name, netSales: Math.round(u.netSales) })),
+    noCard: view.area === 'bar' ? [] : model.margins.unlinked.filter((u) => view.areaOf(u.category) === 'kitchen' && new Set(model.margins.dishes.map((d) => d.category)).has(u.category)).slice(0, 6).map((u) => ({ name: u.name, netSales: Math.round(u.netSales) })),
   };
 }
 
@@ -248,8 +249,9 @@ export async function todayView(db: Db, who: SignedIn, today: string, hour: numb
   if (atLeast(who.roleLevel, 'manager')) {
     const model = await getModel(db, who.restaurantId, today);
     const week = await getModel(db, who.restaurantId, today, { from: addDays(today, -6), to: today });
-    items.push(...await managerItems(db, who, model, today));
-    atAGlance = await glance(db, who.restaurantId, today, model, week);
+    const view: AreaView = { area: who.area === 'both' ? 'all' : who.area, areaOf: await loadAreas(db, who.restaurantId) };
+    items.push(...await managerItems(db, who, model, today, view));
+    atAGlance = { area: view.area, ...await glance(db, who.restaurantId, today, model, week, view) };
   }
   // Deadlines first (prep before counts on the same day), then the money behind the rest.
   const rank = (i: TodayItem) => ({ prep: 0, menu: 1, costs: 2, setup: 3 })[i.group];
