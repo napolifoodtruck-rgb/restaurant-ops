@@ -44,6 +44,7 @@ Back-of-house foundation:
 | `web/` | The web app: first-time setup, manager sign-in, kitchen iPad name-and-PIN sign-in, Settings (Square sync, team PINs, iPad setup). Plain modules, no build step. |
 | `src/server/prep.ts` | Prep lists over HTTP: nightly count, chef review and approval, next-day check-offs, cleaning checklists, editing lists, importing them. |
 | `src/server/http.ts` | Small HTTP helpers shared by the routes. |
+| `src/server/plans.ts` | Dishes coming to the menu, planned before they sell: their preps join station lists the day before the start, the replaced dish's own preps come off. |
 | `src/server/main.ts` | Starts the app: connect, migrate, listen. |
 | `render.yaml` | Render Blueprint: web service plus PostgreSQL. Secrets are entered in the Render dashboard. |
 | `db/migrations/` | PostgreSQL schema, applied in order at startup (`0001_schema.sql` is the base; later files add to it) for restaurants, staff, stations and roles, vendors, products, invoices, price history, recipes and breakdowns, menus, POS links with components, modifier effects, prep batches and timed prep tasks, counts, waste, to-do items and questions. Built for many restaurants: every reference includes the restaurant. |

@@ -155,6 +155,18 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   await call('POST', `/api/prep/${pizza}/${day}/done`, { body: { itemId: pizzaItem.id, state: 'undo' }, cookies: cookAgain });
   assert.equal((await call('GET', `/api/prep/${bulkSt}/${day}`, { cookies: ownerSession })).json.lines[0].onHand.amount, 5); // undo puts it back
 
+  // A dish coming to the menu: its prep joins the pizza list the day before it starts.
+  assert.equal((await call('POST', '/api/plans', { body: { name: 'Winter Funghi', startsOn: '2026-10-20' }, cookies: cookAgain })).status, 403);
+  const planId = (await call('POST', '/api/plans', { body: { name: 'Winter Funghi', startsOn: '2026-10-20' }, cookies: ownerSession })).json.id;
+  const plans = (await call('GET', '/api/plans', { cookies: ownerSession })).json.plans;
+  assert.deepEqual(plans.map((x: any) => [x.name, x.status]), [['Winter Funghi', 'planned']]);
+  assert.deepEqual((await call('POST', `/api/plans/${planId}/apply`, { body: { add: [{ recipeName: 'Mushroom Blend', stationId: pizza, unit: '1/6 pan', par: 3 }], end: [pizzaItem.id] }, cookies: ownerSession })).json, { added: 1, ended: 1 });
+  const pizzaList = async (d: string) => (await call('GET', `/api/prep/${pizza}/${d}`, { cookies: ownerSession })).json.lines.map((l: any) => l.name);
+  assert.deepEqual(await pizzaList('2026-10-18'), ['Spinach Panna']);
+  assert.deepEqual(await pizzaList('2026-10-19'), ['Spinach Panna', 'Mushroom Blend']); // the day before: both
+  assert.deepEqual(await pizzaList('2026-10-20'), ['Mushroom Blend']); // the replaced dish's own prep is off
+  assert.equal((await call('POST', `/api/plans/${planId}/apply`, { body: {}, cookies: ownerSession })).status, 409);
+
   // Nothing secret is stored in the clear.
   const stored = await db!.query<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = $1', [cookId]);
   assert.match(stored.rows[0]!.pin_hash, /^scrypt\$/);

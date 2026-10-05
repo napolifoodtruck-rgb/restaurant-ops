@@ -801,6 +801,13 @@ async function prepEdit(me, stationId) {
     const batchYield = h('input', { inputmode: 'decimal', class: 'amount', value: it.batchYield ?? '', placeholder: '?', 'aria-label': 'One batch makes' });
     bulkUnit.addEventListener('change', async () => { if (await save(`/api/prep/items/${it.id}`, { bulkUnit: bulkUnit.value })) again(); });
     batchYield.addEventListener('change', () => save(`/api/prep/items/${it.id}`, { batchYield: batchYield.value.trim() === '' ? null : Number(batchYield.value) }));
+    const recipeSelect = h('select', { 'aria-label': 'Recipe card' }, h('option', { value: '', text: 'No recipe card' }), (s.recipes ?? []).map((r) => h('option', { value: r.name, text: r.name, selected: it.recipeName === r.name ? true : undefined })));
+    recipeSelect.addEventListener('change', async () => { if (await save(`/api/prep/items/${it.id}`, { recipeName: recipeSelect.value || null })) again(); });
+    const recipeRow = h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: 'Recipe card:' }), recipeSelect,
+      it.recipeSuggestion ? h('button', { class: 'btn small-btn blue', text: `${it.recipeSuggestion}?`, onclick: async () => { if (await save(`/api/prep/items/${it.id}`, { recipeName: it.recipeSuggestion })) again(); } }) : null);
+    const dated = it.activeFrom || it.activeUntil ? h('div', { class: 'row tight wrap' },
+      h('span', { class: 'tag blue', text: [it.activeFrom ? `on the list from ${shortDate(it.activeFrom)}` : '', it.activeUntil ? `last day ${shortDate(it.activeUntil)}` : ''].filter(Boolean).join(' · ') }),
+      h('button', { class: 'link', text: 'Clear dates', onclick: async () => { if (await save(`/api/prep/items/${it.id}`, { activeFrom: null, activeUntil: null })) again(); } })) : null;
     const bulkFields = it.kind === 'batch' ? h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: 'Kept in' }), bulkUnit, h('span', { class: 'small muted', text: 'one batch makes' }), batchYield, h('span', { class: 'small muted', text: it.bulkUnit ?? '' })) : null;
     const base = (n) => n.replace(/\(.*?\)/g, '').trim().toLowerCase().replace(/s$/, '');
     const likely = !it.sourceItemId && others.find((b) => base(b.name) === base(it.name));
@@ -810,7 +817,7 @@ async function prepEdit(me, stationId) {
     return h('div', { class: 'editrow' },
       h('div', { class: 'row tight' }, h('button', { class: 'btn small-btn', 'aria-label': 'Move up', text: '↑', onclick: () => move(s.items, i, -1, 'items') }), h('button', { class: 'btn small-btn', 'aria-label': 'Move down', text: '↓', onclick: () => move(s.items, i, 1, 'items') })),
       h('div', { class: 'grow editfields' }, h('div', { class: 'row tight wrap' }, name, unit, par, kind),
-        h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: days.length ? 'Only on:' : 'Every day · or only on:' }), dayChips), link, bulkFields),
+        h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: days.length ? 'Only on:' : 'Every day · or only on:' }), dayChips), link, bulkFields, recipeRow, dated),
       h('button', { class: 'link', text: 'Remove', onclick: async () => { if (await save(`/api/prep/items/${it.id}`, { active: false })) again(); } }));
   };
   const checkRow = (c, i, list) => {
@@ -916,12 +923,73 @@ async function menuScreen(me) {
   const off = h('section', { class: 'card' },
     h('h2', { text: 'Came off' }),
     h('div', { class: 'list' }, m.cameOff.slice(0, 20).map((x) => dishRow(x, `${shortDate(x.from)} – ${shortDate(x.to)}`, false))));
+  const coming = atLeast(me.roleLevel, 'chef') ? await comingUpCard(me) : null;
   show(shell(me, 'menu', [
     h('header', {}, h('div', { class: 'kicker', text: `What’s selling · from Square sales since ${shortDate(m.from)}` }), h('h1', { text: 'Menu' }),
       h('div', { class: 'sub', text: 'Dates come from the first and last day each dish sold. Seasonal versions on one button are kept apart.' })),
     missingNote(m.missing),
+    coming,
     h('div', { class: 'grid' }, columns, todo, off),
   ]));
+}
+
+// Dishes coming to the menu: plan ahead, see what prep it means, apply to the station lists.
+async function comingUpCard(me) {
+  const box = h('section', { class: 'card', 'aria-label': 'Coming up' });
+  const r = await api('GET', '/api/plans');
+  if (!r.ok) return null;
+  const p = r.data;
+  const err = h('div', { class: 'error' });
+  const name = h('input', { type: 'text', placeholder: 'Dish name', 'aria-label': 'Dish name' });
+  const starts = h('input', { type: 'date', 'aria-label': 'Starts on', min: p.today });
+  const card = h('select', { 'aria-label': 'Recipe card' }, h('option', { value: '', text: 'No recipe card yet' }), p.dishCards.map((n) => h('option', { value: n, text: n })));
+  const replaces = h('select', { 'aria-label': 'Replaces' }, h('option', { value: '', text: 'Adds to the menu' }), p.currentDishes.map((n) => h('option', { value: n, text: `Replaces ${n}` })));
+  const form = h('div', { class: 'row wrap' }, name, starts, card, replaces, h('button', { class: 'btn dark', text: 'Plan it', onclick: async () => {
+      const res = await api('POST', '/api/plans', { name: name.value, startsOn: starts.value, recipeName: card.value, replaces: replaces.value });
+      if (!res.ok) return (err.textContent = res.data.error ?? 'Not saved.');
+      menuScreen(me);
+    } }));
+  const planRows = p.plans.map((plan) => {
+    const row = h('div', { class: 'ask' });
+    const head = h('div', {}, h('b', { text: plan.name }), h('span', { class: 'small muted', text: ` · starts ${shortDate(plan.startsOn)}${plan.replaces ? ` · replaces ${plan.replaces}` : ''}${plan.recipeName ? '' : ' · no recipe card yet'}` }),
+      plan.status === 'applied' ? h('span', { class: 'tag ok', text: 'On the prep lists' }) : null);
+    row.append(head);
+    if (plan.status !== 'planned') return row;
+    const pr = plan.proposal;
+    const adds = [];
+    const lines = pr.preps.map((x) => {
+      if (x.onStations.length) return h('div', { class: 'small', text: `✓ ${x.recipe}: already on ${x.onStations.map((o) => `${o.station} (${o.item})`).join(', ')}` });
+      const on = h('input', { type: 'checkbox', checked: true, 'aria-label': `Add ${x.recipe}` });
+      const st = h('select', { 'aria-label': 'Station' }, p.stations.map((s) => h('option', { value: s.id, text: s.name, selected: s.id === pr.likelyStation ? true : undefined })));
+      const unit = h('input', { type: 'text', class: 'unit-in', placeholder: 'unit', 'aria-label': 'Unit' });
+      const par = h('input', { inputmode: 'decimal', class: 'amount', placeholder: 'par', 'aria-label': 'Par' });
+      adds.push(() => (on.checked ? { recipeName: x.recipe, stationId: st.value, unit: unit.value, par: par.value } : null));
+      return h('div', { class: 'row tight wrap' }, on, h('span', { text: `Add ${x.recipe} to` }), st, unit, par);
+    });
+    const ends = [];
+    const endLines = (pr.replaced?.exclusive ?? []).flatMap((x) => x.items.map((it) => {
+      const on = h('input', { type: 'checkbox', checked: true, 'aria-label': `End ${it.item}` });
+      ends.push(() => (on.checked ? it.id : null));
+      return h('div', { class: 'row tight' }, on, h('span', { text: `Take ${it.item} off ${it.station} (only ${pr.replaced.name} used it)` }));
+    }));
+    const note = pr.replaced?.soldPerDay ? h('div', { class: 'small muted', text: `${pr.replaced.name} sold ${pr.replaced.soldPerDay} a day: a fair first guess for the new dish’s pars.` }) : null;
+    row.append(...[
+      lines.length ? h('div', { class: 'stack' }, lines) : h('div', { class: 'small muted', text: plan.recipeName ? 'Its recipe card uses no preps.' : 'Add its recipe card to see the prep it needs; you can still add preps by hand under Prep → Edit list.' }),
+      endLines.length ? h('div', { class: 'stack' }, endLines) : null, note,
+      h('div', { class: 'row tight' },
+        h('button', { class: 'btn small-btn dark', text: 'Put on the prep lists', onclick: async () => {
+          const res = await api('POST', `/api/plans/${plan.id}/apply`, { add: adds.map((f) => f()).filter(Boolean), end: ends.map((f) => f()).filter(Boolean) });
+          if (!res.ok) return row.append(h('div', { class: 'error', text: res.data.error ?? 'Not applied.' }));
+          menuScreen(me);
+        } }),
+        h('button', { class: 'link', text: 'Cancel plan', onclick: async () => { await api('POST', `/api/plans/${plan.id}`, { cancel: true }); menuScreen(me); } })),
+      h('div', { class: 'small muted', text: `New preps go on the lists from ${shortDate(new Date(Date.parse(plan.startsOn) - 86400000).toISOString().slice(0, 10))}, the day before it starts.` })].filter(Boolean));
+    return row;
+  });
+  box.append(h('h2', { text: 'Coming up' }),
+    h('div', { class: 'small muted', text: 'Plan a dish before it sells: its preps join the station lists the day before it starts, and the old dish’s own preps come off.' }),
+    form, err, planRows.length ? h('div', { class: 'asks' }, planRows) : null);
+  return box;
 }
 
 // ------------------------------------------------------------------ settings

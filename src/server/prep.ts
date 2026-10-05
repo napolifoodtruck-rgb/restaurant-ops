@@ -20,6 +20,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
+import { getModel } from './model.ts';
+import { nameSimilarity } from '../core/menuLinks.ts';
 import { batchSuggestion, dayLines, dayShare, onHandFrom, weekdayOf, type BulkOnHand, type StationItem, type StationNeed } from '../core/stationLists.ts';
 
 const UUID = '[0-9a-f-]{36}';
@@ -31,7 +33,7 @@ function addDays(day: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-interface ItemRow { id: string; name: string; unit: string | null; kind: StationItem['kind']; par: string | null; weekdays: number[] | null; recipe_name: string | null; note: string | null; sort_order: number; source_item_id: string | null; per_batch: string | null; bulk_unit: string | null; batch_yield: string | null; holds: string | null }
+interface ItemRow { id: string; name: string; unit: string | null; kind: StationItem['kind']; par: string | null; weekdays: number[] | null; recipe_name: string | null; note: string | null; sort_order: number; source_item_id: string | null; per_batch: string | null; bulk_unit: string | null; batch_yield: string | null; holds: string | null; active_from: string | null; active_until: string | null }
 const toItem = (r: ItemRow): StationItem & { note?: string; recipeName?: string; sourceItemId?: string; bulkUnit?: string; batchYield?: number; holds?: number } => ({
   id: r.id, name: r.name, kind: r.kind,
   ...(r.unit ? { unit: r.unit } : {}),
@@ -43,6 +45,8 @@ const toItem = (r: ItemRow): StationItem & { note?: string; recipeName?: string;
   ...(r.bulk_unit ? { bulkUnit: r.bulk_unit } : {}),
   ...(r.batch_yield !== null && r.batch_yield !== undefined ? { batchYield: Number(r.batch_yield) } : {}),
   ...(r.holds !== null && r.holds !== undefined ? { holds: Number(r.holds) } : {}),
+  ...(r.active_from ? { activeFrom: String(r.active_from).slice(0, 10) } : {}),
+  ...(r.active_until ? { activeUntil: String(r.active_until).slice(0, 10) } : {}),
 });
 type Item = ReturnType<typeof toItem>;
 const arr = (v: unknown) => (typeof v === 'string' ? JSON.parse(v) : v);
@@ -54,7 +58,7 @@ async function station(db: Db, restaurantId: string, id: string) {
 }
 
 async function items(db: Db, restaurantId: string, stationId: string) {
-  return (await db.query<ItemRow>('SELECT id, name, unit, kind, par, weekdays, recipe_name, note, sort_order, source_item_id, per_batch, bulk_unit, batch_yield, holds FROM station_items WHERE restaurant_id = $1 AND station_id = $2 AND active ORDER BY sort_order, name', [restaurantId, stationId])).rows.map((r) => toItem({ ...r, weekdays: arr(r.weekdays) }));
+  return (await db.query<ItemRow>('SELECT id, name, unit, kind, par, weekdays, recipe_name, note, sort_order, source_item_id, per_batch, bulk_unit, batch_yield, holds, active_from::text AS active_from, active_until::text AS active_until FROM station_items WHERE restaurant_id = $1 AND station_id = $2 AND active ORDER BY sort_order, name', [restaurantId, stationId])).rows.map((r) => toItem({ ...r, weekdays: arr(r.weekdays) }));
 }
 
 async function listFor(db: Db, restaurantId: string, stationId: string, date: string) {
@@ -103,7 +107,7 @@ async function bulkSuggestions(db: Db, restaurantId: string, batchItems: Item[],
   const out = new Map<string, ReturnType<typeof batchSuggestion>>();
   if (!batchItems.length) return out;
   const linked = (await db.query<ItemRow & { station_id: string; station_name: string }>(
-    `SELECT i.id, i.name, i.unit, i.kind, i.par, i.weekdays, i.recipe_name, i.note, i.sort_order, i.source_item_id, i.per_batch, i.bulk_unit, i.batch_yield, i.holds, i.station_id, s.name AS station_name
+    `SELECT i.id, i.name, i.unit, i.kind, i.par, i.weekdays, i.recipe_name, i.note, i.sort_order, i.source_item_id, i.per_batch, i.bulk_unit, i.batch_yield, i.holds, i.active_from::text AS active_from, i.active_until::text AS active_until, i.station_id, s.name AS station_name
        FROM station_items i JOIN stations s ON s.id = i.station_id
       WHERE i.restaurant_id = $1 AND i.active AND i.source_item_id = ANY(string_to_array($2, ',')::uuid[])`,
     [restaurantId, batchItems.map((b) => b.id).join(',')])).rows;
@@ -232,6 +236,11 @@ function itemFields(b: Record<string, unknown>, partial: boolean): Record<string
     if (n === 0) throw new HttpError(400, `${what} holds more than 0.`);
     out[col] = n;
   }
+  for (const [key, col] of [['activeFrom', 'active_from'], ['activeUntil', 'active_until']] as const) {
+    if (b[key] === undefined) continue;
+    if (b[key] !== null && !(typeof b[key] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b[key] as string))) throw new HttpError(400, 'Dates are YYYY-MM-DD.');
+    out[col] = b[key];
+  }
   if (b.bulkUnit !== undefined) out.bulk_unit = typeof b.bulkUnit === 'string' && b.bulkUnit.trim() ? b.bulkUnit.trim() : null;
   if (b.active === false) out.active = false;
   return out;
@@ -332,7 +341,17 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     const checklist = (await db.query('SELECT id, name, frequency, weekday FROM station_checklist WHERE restaurant_id = $1 AND station_id = $2 AND active ORDER BY frequency, sort_order, name', [who.restaurantId, st.id])).rows;
     const batchItems = (await db.query<{ id: string; name: string; station: string; bulk_unit: string | null }>(
       "SELECT i.id, i.name, s.name AS station, i.bulk_unit FROM station_items i JOIN stations s ON s.id = i.station_id WHERE i.restaurant_id = $1 AND i.active AND i.kind = 'batch' ORDER BY s.sort_order, i.sort_order", [who.restaurantId])).rows;
-    return send(res, 200, { station: st, items: await items(db, who.restaurantId, st.id), checklist, batchItems }), true;
+    // Recipe cards to tie items to, with a best guess by name for items not tied yet.
+    const model = await getModel(db, who.restaurantId, today);
+    const recipes = model.recipes.map((r) => ({ name: r.name, kind: r.kind })).sort((a, b) => a.name.localeCompare(b.name));
+    const list = (await items(db, who.restaurantId, st.id)).map((it) => {
+      if (it.recipeName) return it;
+      const plain = it.name.replace(/\(.*?\)/g, ' ').replace(/\bGF\b/gi, 'gluten free');
+      // Station items are preps, not dishes: only prep cards are offered, and only close matches.
+      const best = model.recipes.filter((r) => r.kind === 'prep').map((r) => ({ name: r.name, score: nameSimilarity(plain, r.name) })).sort((a, b) => b.score - a.score)[0];
+      return best && best.score >= 0.7 ? { ...it, recipeSuggestion: best.name } : it;
+    });
+    return send(res, 200, { station: st, items: list, checklist, batchItems, recipes }), true;
   }
 
   if ((m = path.match(new RegExp(`^/api/prep/(${UUID})/(items|checklist)$`))) && method === 'POST') {

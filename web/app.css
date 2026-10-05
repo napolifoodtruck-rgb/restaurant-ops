@@ -149,3 +149,5 @@ input.amount { width: 90px; height: 40px; border: 1px solid var(--line); border-
 .editrow .unit-in { min-width: 120px; width: 130px; }
 .row.wrap.tight { flex-wrap: wrap; }
 .countrow .grow, .reviewrow .grow, .workrow .grow, .editrow .grow { flex: 1; min-width: 0; }
+.stack { display: flex; flex-direction: column; gap: 6px; }
+input[type=checkbox] { width: 20px; height: 20px; }

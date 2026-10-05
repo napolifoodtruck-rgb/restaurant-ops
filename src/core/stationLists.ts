@@ -16,6 +16,9 @@ export interface StationItem {
   par?: number;
   /** Only on these weekdays (0 = Sunday). */
   weekdays?: number[];
+  /** On the list from / until these days (a new dish's preps, a retired dish's). */
+  activeFrom?: string;
+  activeUntil?: string;
 }
 
 export interface DaySales {
@@ -78,6 +81,7 @@ export function dayLines(items: readonly StationItem[], date: string, share: { s
   const out: DayLine[] = [];
   for (const item of items) {
     if (item.weekdays?.length && !item.weekdays.includes(weekday)) continue;
+    if ((item.activeFrom && date < item.activeFrom) || (item.activeUntil && date > item.activeUntil)) continue;
     if (item.kind !== 'count' || item.par === undefined) {
       out.push({ item });
       continue;

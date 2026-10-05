@@ -21,6 +21,7 @@
  *   GET  /api/menu               the menu from sales, what came off, to-dos (manager or up)
  *   POST /api/answers            answer a menu question: link, new dish, not food, dismiss (manager or up)
  *   /api/prep/…                  station prep lists: see prep.ts
+ *   /api/plans/…                 dishes coming to the menu: see plans.ts
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -36,6 +37,7 @@ import { localDateHour, marginEdgeApiFrom, runSync, squareApiFrom, type SyncSett
 import { BOOK_KEYS, PRODUCT_ANSWERS, answerProblem, bookProblem, getModel, loadBook, saveBook, withAnswer, withProductAnswer, type Answer } from './model.ts';
 import { marginsView, menuView } from './views.ts';
 import { prepRoutes } from './prep.ts';
+import { planRoutes } from './plans.ts';
 
 export interface AppConfig {
   db: Db;
@@ -278,6 +280,12 @@ export function createApp(config: AppConfig) {
       if (method === 'GET' && path === '/api/menu') {
         return send(res, 200, menuView(await getModel(db, who.restaurantId, await today())));
       }
+    }
+
+    if (path.startsWith('/api/plans')) {
+      const who = await signedIn(req);
+      const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+      if (await planRoutes(db, req, res, path, method, who, localDateHour(tz).date)) return;
     }
 
     if (path.startsWith('/api/prep')) {
