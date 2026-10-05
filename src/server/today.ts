@@ -17,12 +17,13 @@ import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, type Model } from './model.ts';
 import { gapsOf, inArea, menuView, posItemOf, type AreaView } from './views.ts';
 import { guessArea, loadAreas } from './areas.ts';
+import { ordersDue } from './orders.ts';
 import { view as stationDay } from './prep.ts';
 import { blendedPrices } from '../connectors/marginedge.ts';
 
 export interface TodayItem {
   key: string;
-  group: 'prep' | 'menu' | 'costs' | 'setup';
+  group: 'prep' | 'orders' | 'menu' | 'costs' | 'setup';
   /** Short label down the left: "Count", "Question", "Price". */
   label: string;
   tone: 'due' | 'ask' | 'alert' | 'info';
@@ -32,7 +33,7 @@ export interface TodayItem {
   due?: string;
   /** Money behind it, for ordering the rest. */
   dollars?: number;
-  go: { to: 'count' | 'review' | 'work' | 'menu' | 'performance' | 'settings' | 'cards' | 'drafts'; stationId?: string; date?: string };
+  go: { to: 'count' | 'review' | 'work' | 'menu' | 'performance' | 'settings' | 'cards' | 'drafts' | 'order' | 'orders'; stationId?: string; date?: string; vendorId?: string; side?: 'kitchen' | 'bar' };
   button: string;
   /** The side it's about (a station's side comes from its name: "Bar" is the bar's); none for syncs, which everyone sees. */
   side?: 'kitchen' | 'bar';
@@ -40,6 +41,7 @@ export interface TodayItem {
   answers?: { label: string; body: Record<string, unknown> }[];
 }
 
+const clock = (t: string) => { const [hh, mm] = t.split(':').map(Number); return `${((hh! + 11) % 12) + 1}${mm ? `:${String(mm).padStart(2, '0')}` : ''} ${hh! < 12 ? 'am' : 'pm'}`; };
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const SERVICE_HOUR = 17;
 
@@ -286,13 +288,27 @@ export async function todayView(db: Db, who: SignedIn, today: string, hour: numb
     const week = await getModel(db, who.restaurantId, today, { from: addDays(today, -6), to: today });
     const areaOf = await loadAreas(db, who.restaurantId);
     items.push(...await managerItems(db, who, model, today, areaOf));
+    // Orders due soon that no manager has approved yet: one item per vendor with a cutoff set,
+    // one item for the vendors delivering soon whose cutoff nobody has set yet.
+    const dueSoon = await ordersDue(db, who, today);
+    for (const v of dueSoon.filter((x) => x.deadline)) {
+      const when = `due ${v.deadline!.date === today ? 'today' : DAYS[weekday(v.deadline!.date)]} by ${clock(v.deadline!.time)}`;
+      items.push({ key: `order:${v.vendorId}:${v.next}`, side: v.side, group: 'orders', label: 'Order', tone: 'due', due: v.deadline!.date, dollars: v.spendPerWeek,
+        title: `${v.name}: order for ${DAYS[weekday(v.next!)]}’s delivery`, detail: `${v.draft ? 'Draft started · ' : ''}${when}`, go: { to: 'order', vendorId: v.vendorId }, button: v.draft ? 'Review' : 'Start order' });
+    }
+    for (const side of ['kitchen', 'bar'] as const) {
+      const unset = dueSoon.filter((x) => !x.deadline && x.side === side && x.next! <= addDays(today, 2));
+      if (!unset.length) continue;
+      items.push({ key: `orders:unset:${side}`, side, group: 'orders', label: 'Orders', tone: 'due', due: addDays(unset.map((x) => x.next!).sort()[0]!, -1) < today ? today : addDays(unset.map((x) => x.next!).sort()[0]!, -1), dollars: unset.reduce((a, x) => a + x.spendPerWeek, 0),
+        title: `${unset.length} ${side} vendor${unset.length === 1 ? ' delivers' : 's deliver'} in the next two days`, detail: `${list(unset.map((x) => `${x.name} (${DAYS[weekday(x.next!)]!.slice(0, 3)})`), 3)}. Set when each order is due and they’ll each get a reminder.`, go: { to: 'orders', side }, button: 'Orders' });
+    }
     const days = (await db.query<{ day: string; category: string; net: string }>(
       'SELECT day::text AS day, category, sum(net_sales) AS net FROM pos_item_sales_daily WHERE restaurant_id = $1 AND day <= $2 AND day >= $3 GROUP BY day, category', [who.restaurantId, today, addDays(today, -42)])).rows
       .map((r) => ({ day: r.day, category: r.category, net: Number(r.net) }));
     atAGlance = Object.fromEntries((['all', 'kitchen', 'bar'] as const).map((area) => [area, glance(days, today, model, week, { area, areaOf })]));
   }
   // Deadlines first (prep before counts on the same day), then the money behind the rest.
-  const rank = (i: TodayItem) => ({ prep: 0, menu: 1, costs: 2, setup: 3 })[i.group];
+  const rank = (i: TodayItem) => ({ prep: 0, orders: 1, menu: 2, costs: 3, setup: 4 })[i.group];
   items.sort((a, b) => (a.due ? 0 : 1) - (b.due ? 0 : 1)
     || (a.due && b.due ? a.due.localeCompare(b.due) : 0)
     || (a.tone === 'alert' && a.group === 'setup' ? -1 : 0) - (b.tone === 'alert' && b.group === 'setup' ? -1 : 0)

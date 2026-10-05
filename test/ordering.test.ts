@@ -74,3 +74,21 @@ test('orders are drafts until a manager approves them', () => {
   assert.match(email.body, /- 2 × 50 lb bag {2}Flour, Pizza/);
   assert.throws(() => approveOrder(draftOrder('produce', '2026-10-06', []), 'm', 'now'), OrderError);
 });
+
+test('use comes from what was bought, spread over the week by how busy each day is', async () => {
+  const { purchaseRates, weekdayWeights, estimateOnHand } = await import('../src/core/ordering.ts');
+  // 56 lb bought over 8 weeks: 1 lb a day.
+  const rates = purchaseRates([{ productId: 'flour', date: '2026-09-01', amount: 28 }, { productId: 'flour', date: '2026-09-20', amount: 28 }, { productId: 'flour', date: '2026-06-01', amount: 500 }], '2026-10-05');
+  assert.equal(rates.get('flour'), 1);
+  // Open Tuesday to Saturday, Fridays twice a Tuesday: closed days get nothing, the week adds up to 7.
+  const sales = [];
+  for (let d = new Date('2026-08-10T12:00:00Z'); d < new Date('2026-10-05T12:00:00Z'); d.setUTCDate(d.getUTCDate() + 1)) {
+    const w = d.getUTCDay();
+    if (w >= 2 && w <= 6) sales.push({ date: d.toISOString().slice(0, 10), netSales: w === 5 ? 2000 : 1000 });
+  }
+  const weights = weekdayWeights(sales);
+  assert.deepEqual(weights.map((x) => Math.round(x * 100) / 100), [0, 0, 1.17, 1.17, 1.17, 2.33, 1.17]);
+  // On hand without a count: the delivery less a day's use a day since.
+  assert.equal(estimateOnHand({ date: '2026-10-01', amount: 10 }, () => 2, '2026-10-03'), 4);
+  assert.equal(estimateOnHand({ date: '2026-10-01', amount: 10 }, () => 2, '2026-10-09'), 0);
+});

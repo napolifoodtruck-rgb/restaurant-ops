@@ -273,6 +273,19 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   const tidied = (await db!.query<{ value: any }>("SELECT value FROM kitchen_book WHERE key = 'linkAnswers'")).rows[0]!.value;
   assert.deepEqual((typeof tidied === 'string' ? JSON.parse(tidied) : tidied).confirm.filter((c: any) => c.catalogId === 'V-LEM').map((c: any) => c.recipe), ['Lemonade']);
 
+  // Orders: managers only; never marked sent before a manager approves; no vendors without invoices.
+  assert.equal((await call('GET', '/api/orders', { cookies: marcoOnExpo })).status, 403);
+  assert.deepEqual((await call('GET', '/api/orders', { cookies: ownerSession })).json.vendors, []);
+  const orderId = (await db!.query<{ id: string }>("INSERT INTO orders (restaurant_id, vendor_id, vendor_name, delivery, lines) VALUES ($1, 'v1', 'Produce Co', '2026-10-08', '[{\"productId\":\"p\",\"packs\":2}]') RETURNING id", [restaurantId])).rows[0]!.id;
+  assert.equal((await call('POST', `/api/orders/${orderId}/sent`, { cookies: ownerSession })).status, 409); // not approved yet
+  assert.equal((await call('POST', `/api/orders/${orderId}/approve`, { cookies: ownerSession })).status, 200);
+  assert.equal((await call('POST', `/api/orders/${orderId}/approve`, { cookies: ownerSession })).status, 409);
+  assert.equal((await call('POST', `/api/orders/${orderId}/sent`, { cookies: ownerSession })).status, 200);
+  assert.equal((await call('POST', `/api/orders/${orderId}/reopen`, { cookies: ownerSession })).status, 409); // sent is final
+  assert.equal((await call('POST', '/api/orders/vendor/v1/settings', { body: { weekdays: [4], cutoffDaysBefore: 1, cutoffTime: '14:00', method: 'email', contact: 'orders@produce.example' }, cookies: ownerSession })).status, 200);
+  const configured = (await call('GET', '/api/orders', { cookies: ownerSession })).json.vendors;
+  assert.deepEqual(configured.map((v: any) => [v.vendorId, v.weekdays, v.cutoff, v.method]), [['v1', [4], { daysBefore: 1, time: '14:00' }, 'email']]);
+
   // The recipe book: anyone can read it, by side and section; costs are for managers.
   const bookForCook = (await call('GET', '/api/recipes', { cookies: marcoOnExpo })).json;
   assert.deepEqual(bookForCook.bar.map((s: any) => [s.section, s.cards.map((c: any) => c.name)]), [['Drinks', ['House Soda', 'Lemonade']], ['Bar preps', ['Lemon Juice', 'Simple Syrup 1:1']]]);

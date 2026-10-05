@@ -215,3 +215,45 @@ export function orderEmail(draft: OrderDraft, restaurant: string, productName: (
     body: [`Hello,`, ``, `Please deliver on ${draft.delivery}:`, ``, ...lines, ``, `Thank you,`, restaurant].join('\n'),
   };
 }
+
+// ---------------------------------------------------------------- use, from what's bought
+
+/**
+ * How fast each product goes, from what's been bought lately: over a couple of months, what's
+ * bought is what's used (waste and staff meals included, which recipes miss). Base units a day.
+ */
+export function purchaseRates(purchases: readonly { productId: string; date: string; amount: number }[], today: string, days = 56): Map<string, number> {
+  const since = addDays(today, -days);
+  const out = new Map<string, number>();
+  for (const p of purchases) if (p.date > since && p.date <= today) out.set(p.productId, (out.get(p.productId) ?? 0) + p.amount / days);
+  return out;
+}
+
+/**
+ * How much of a week's use falls on each weekday, from daily sales: busy days count more,
+ * closed days nothing. Seven weights that add up to 7 (all 1 with no sales history).
+ */
+export function weekdayWeights(sales: readonly { date: string; netSales: number }[]): number[] {
+  const sum = [0, 0, 0, 0, 0, 0, 0], n = [0, 0, 0, 0, 0, 0, 0];
+  const days = new Set<string>();
+  for (const s of sales) if (s.netSales > 0) days.add(s.date);
+  if (days.size < 14) return [1, 1, 1, 1, 1, 1, 1];
+  const byDay = new Map<string, number>();
+  for (const s of sales) byDay.set(s.date, (byDay.get(s.date) ?? 0) + s.netSales);
+  const first = [...days].sort()[0]!, last = [...days].sort().pop()!;
+  for (let d = first; d <= last; d = addDays(d, 1)) { const w = weekdayOf(d); sum[w]! += Math.max(0, byDay.get(d) ?? 0); n[w]!++; }
+  const avg = sum.map((s, i) => (n[i] ? s / n[i]! : 0));
+  const total = avg.reduce((a, b) => a + b, 0);
+  return total > 0 ? avg.map((a) => (a / total) * 7) : [1, 1, 1, 1, 1, 1, 1];
+}
+
+/**
+ * On hand without a count: the last delivery, less what's been used since. Rough, which is
+ * why an estimate orders with a wider safety margin and a count replaces it.
+ */
+export function estimateOnHand(last: { date: string; amount: number } | undefined, dailyUse: (date: string) => number, today: string): number {
+  if (!last) return 0;
+  let left = last.amount;
+  for (let d = last.date; d <= today; d = addDays(d, 1)) left -= dailyUse(d);
+  return Math.max(0, left);
+}

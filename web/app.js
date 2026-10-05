@@ -209,7 +209,7 @@ function pinPad(person, device) {
 function shell(me, active, content) {
   const manager = atLeast(me.roleLevel, 'manager');
   const nav = [
-    ['today', 'Today', todayScreen], ['prep', 'Prep', prepHome], ['recipes', 'Recipes', recipesScreen], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['orders', 'Orders', null],
+    ['today', 'Today', todayScreen], ['prep', 'Prep', prepHome], ['recipes', 'Recipes', recipesScreen], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['orders', 'Orders', manager && ordersScreen],
   ];
   return h('div', { class: 'shell' },
     h('nav', { class: 'rail', 'aria-label': 'Main' },
@@ -1491,7 +1491,7 @@ async function draftsScreen(me, pours = {}) {
 
 // ------------------------------------------------------------------ today
 
-const TODAY_FILTERS = [['all', 'All'], ['prep', 'Prep'], ['menu', 'Menu'], ['costs', 'Costs']];
+const TODAY_FILTERS = [['all', 'All'], ['prep', 'Prep'], ['orders', 'Orders'], ['menu', 'Menu'], ['costs', 'Costs']];
 const TONE_CLASS = { due: 'due', ask: 'ask', alert: 'alert', info: 'info' };
 const longDay = (d) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 const weekdayName = (d) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long' });
@@ -1504,7 +1504,7 @@ async function todayScreen(me, filter = 'all') {
   const go = (g) => ({
     count: () => prepCount(me, g.stationId, g.date), review: () => prepReview(me, g.stationId, g.date), work: () => prepWork(me, g.stationId, g.date),
     menu: () => menuScreen(me), performance: () => marginsScreen(me), settings: () => home(me),
-    cards: () => cardsScreen(me), drafts: () => draftsScreen(me),
+    cards: () => cardsScreen(me), drafts: () => draftsScreen(me), order: () => orderScreen(me, g.vendorId), orders: () => { if (g.side) me.side = g.side; ordersScreen(me); },
   })[g.to]?.();
   const answer = async (row, body) => {
     row.querySelectorAll('button').forEach((b) => (b.disabled = true));
@@ -1595,6 +1595,158 @@ function glanceCards(me, t, side) {
     h('div', { class: 'small', text: g.noCard.map((d) => d.name).join(' · ') }),
     h('div', { class: 'small muted', text: 'Their food cost isn’t counted until a card is in.' })));
   return cards;
+}
+
+// ------------------------------------------------------------------ orders
+
+const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const clock12 = (t) => { if (!t) return ''; const [hh, mm] = t.split(':').map(Number); return `${((hh + 11) % 12) + 1}${mm ? `:${String(mm).padStart(2, '0')}` : ''} ${hh < 12 ? 'am' : 'pm'}`; };
+const dueText = (d, today) => !d ? 'No order cutoff set' : `Due ${d.date === today ? 'today' : weekdayName(d.date)} by ${clock12(d.time)}`;
+const STATUS_TAG = { draft: ['Draft', 'warn'], approved: ['Approved, not sent', 'blue'], sent: ['Sent', 'ok'] };
+
+async function ordersScreen(me) {
+  loadingScreen(me, 'orders', 'Orders');
+  const side = sideOf(me);
+  const r = await api('GET', `/api/orders?area=${side}`);
+  if (!r.ok) return show(shell(me, 'orders', [h('h1', { text: 'Orders' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const { vendors, recent, today } = r.data;
+  const active = vendors.filter((v) => v.active), paused = vendors.filter((v) => !v.active);
+  const vendorCard = (v) => {
+    const [tag, cls] = v.order ? STATUS_TAG[v.order.status] : ['Not started', ''];
+    return h('section', { class: 'card' },
+      h('div', { class: 'row' }, h('h2', { class: 'grow', text: v.name }), h('span', { class: `tag ${cls}`, text: tag })),
+      h('div', { class: 'small muted', text: `Delivers ${v.weekdays.map((d) => WD[d]).join(', ')}${v.source === 'confirmed' ? '' : ' (from invoices)'} · about ${dollars(v.spendPerWeek)} a week` }),
+      h('div', { class: 'row' },
+        h('div', { class: 'grow' }, h('div', { class: 'strong', text: v.next ? `Next: ${weekdayName(v.next)}, ${shortDate(v.next)}` : 'No delivery coming up' }),
+          h('div', { class: `small${v.deadline && v.deadline.date <= today ? ' warn-text' : ' muted'}`, text: dueText(v.deadline, today) })),
+        v.order?.total ? h('span', { class: 'small muted', text: dollars(v.order.total) }) : null,
+        v.next ? h('button', { class: `btn${v.order ? '' : ' dark'}`, text: v.order ? 'Open' : 'Start order', onclick: () => orderScreen(me, v.vendorId) }) : null));
+  };
+  show(shell(me, 'orders', [
+    h('header', { class: 'row wrap' },
+      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[side]} · ${dayName(today)}` }), h('h1', { text: 'Orders' }),
+        h('div', { class: 'sub', text: 'Drafted from what you’ve been buying, weighted to your busy days, less what’s on hand. A manager approves each order before it goes out; the app never sends one by itself.' })),
+      sideSwitch(me, () => ordersScreen(me))),
+    active.length ? h('div', { class: 'grid' }, active.map(vendorCard)) : h('div', { class: 'card small muted', text: 'No vendors with regular deliveries yet. They appear after a few weeks of invoices.' }),
+    recent.length ? h('section', { class: 'card' }, h('h2', { text: 'Recent orders' }),
+      h('div', { class: 'list' }, recent.map((o) => h('div', {},
+        h('div', { class: 'grow' }, h('div', { text: `${o.vendorName} · ${weekdayName(o.delivery)} ${shortDate(o.delivery)}` }),
+          h('div', { class: 'small muted', text: o.status === 'sent' ? `Sent by ${o.sentBy ?? ''} ${when(o.sentAt)}` : `Approved by ${o.approvedBy ?? ''} ${when(o.approvedAt)}, not sent yet` })),
+        o.total ? h('span', { class: 'small', text: dollars(o.total) }) : null,
+        h('button', { class: 'btn small-btn', text: 'Open', onclick: () => orderScreen(me, o.vendorId, o.delivery) }))))) : null,
+    paused.length ? h('div', { class: 'small muted', text: `Not ordering from: ${paused.map((v) => v.name).join(', ')}` }) : null,
+  ]));
+}
+
+/** One vendor's order for one delivery: lines to review, then approve, then send. */
+async function orderScreen(me, vendorId, delivery) {
+  loadingScreen(me, 'orders', 'Order');
+  const r = await api('GET', `/api/orders/vendor/${encodeURIComponent(vendorId)}${delivery ? `?delivery=${delivery}` : ''}`);
+  if (!r.ok) return show(shell(me, 'orders', [h('h1', { text: 'Order' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' }), h('button', { class: 'btn', text: '← Orders', onclick: () => ordersScreen(me) })]));
+  const d = r.data;
+  const v = d.vendor;
+  const order = d.order;
+  const status = order?.status ?? 'new';
+  const editable = status === 'new' || status === 'draft';
+  // Lines: the saved order's, then everything else the vendor sells you, suggestions first.
+  const saved = new Map((order?.lines ?? []).map((l) => [l.productId, l]));
+  const lines = d.draft.map((l) => { const s = saved.get(l.productId); return { ...l, packs: s ? s.packs : status === 'new' ? l.suggested : 0, onHandInput: s?.onHand !== undefined && !s.onHandEstimated ? s.onHand : '' }; });
+  const err = h('div', { class: 'error', role: 'alert' });
+  const totalBox = h('div', { class: 'order-total' });
+  const drawTotal = () => {
+    const on = lines.filter((l) => l.packs > 0);
+    const total = on.reduce((s, l) => s + l.packs * (l.packPrice ?? 0), 0);
+    fill(totalBox, h('div', { class: 'grow' }, h('div', { class: 'big', text: dollars(total, { exact: true }) }), h('div', { class: 'small muted', text: `${on.length} item${on.length === 1 ? '' : 's'}${v.minimum && total < v.minimum ? ` · below the ${dollars(v.minimum)} minimum` : ''}` })));
+  };
+  const lineRow = (l) => {
+    const cost = h('div', { class: 'num', text: l.packs ? dollars(l.packs * l.packPrice, { cents: true }) : '' });
+    const packs = editable ? stepper(l.packs, 1, (val) => { l.packs = Math.max(0, Math.round(Number(val) || 0)); cost.textContent = l.packs ? dollars(l.packs * l.packPrice, { cents: true }) : ''; drawTotal(); }, `Packs of ${l.name}`) : h('div', { class: 'strong', text: `${l.packs}` });
+    const onHand = editable ? h('input', { inputmode: 'decimal', class: 'short', value: l.onHandInput === '' ? '' : String(l.onHandInput), placeholder: qty(l.onHand), 'aria-label': `On hand, ${l.name}`, title: 'What you counted. Blank uses the estimate.' }) : null;
+    onHand?.addEventListener('change', () => { l.onHandInput = onHand.value.trim() === '' ? '' : Number(onHand.value); });
+    return h('div', { class: `orow${l.packs ? '' : ' zero'}` },
+      h('div', {}, h('div', { class: 'strong', text: l.name }), h('div', { class: 'small muted', text: l.reason })),
+      h('div', { class: 'small', text: `${l.packLabel} · ${dollars(l.packPrice, { cents: true })}` }),
+      onHand ? h('div', { class: 'row tight' }, onHand, h('span', { class: 'small muted', text: l.unit })) : h('div', { class: 'small muted', text: l.onHandInput !== '' ? `${qty(l.onHandInput)} ${l.unit} counted` : '' }),
+      h('div', { class: 'row tight' }, packs, l.suggested && l.suggested !== l.packs ? h('span', { class: 'small muted', text: `suggested ${l.suggested}` }) : null),
+      cost);
+  };
+  const body = () => ({ delivery: d.delivery, lines: lines.filter((l) => l.packs > 0 || l.onHandInput !== '').map((l) => ({ productId: l.productId, packs: l.packs, suggested: l.suggested, ...(l.onHandInput !== '' ? { onHand: l.onHandInput } : {}) })) });
+  const save = async () => { const res = await api('POST', `/api/orders/vendor/${encodeURIComponent(vendorId)}`, body()); if (!res.ok) { err.textContent = res.data.error ?? 'Not saved.'; return null; } return res.data.order; };
+  const act = async (action, id) => { const res = await api('POST', `/api/orders/${id}/${action}`); if (!res.ok) { err.textContent = res.data.error ?? 'That didn’t work.'; return false; } return true; };
+
+  const suggestedLines = lines.filter((l) => l.packs > 0 || l.suggested > 0);
+  const otherLines = lines.filter((l) => !(l.packs > 0 || l.suggested > 0));
+  const others = h('details', { class: 'others' }, h('summary', { text: `Everything else from ${v.name} (${otherLines.length})` }), h('div', { class: 'olist' }, otherLines.map(lineRow)));
+  const head = h('div', { class: 'orow head' }, h('div', { text: 'Product' }), h('div', { text: 'Pack' }), h('div', { text: editable ? 'On hand' : '' }), h('div', { text: 'Order' }), h('div', { class: 'num', text: 'Cost' }));
+
+  // Approved: the order as it goes out, and how to send it.
+  let sendBox = null;
+  if (order && (status === 'approved' || status === 'sent')) {
+    const items = order.lines.filter((l) => l.packs > 0);
+    const subject = `${d.restaurant} order for ${weekdayName(d.delivery)} ${shortDate(d.delivery)}`;
+    const text = [`Hi,`, ``, `${d.restaurant} order for delivery ${weekdayName(d.delivery)}, ${shortDate(d.delivery)}:`, ``, ...items.map((l) => `${l.packs} × ${l.packLabel}  ${l.name}`), ``, `Thank you!`].join('\n');
+    const copy = h('button', { class: 'btn', text: 'Copy order', onclick: async () => { try { await navigator.clipboard.writeText(text); copy.textContent = 'Copied'; } catch { pre.focus(); } } });
+    const email = v.contact && v.contact.includes('@') ? h('a', { class: 'btn', href: `mailto:${encodeURIComponent(v.contact)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(text)}`, text: 'Email it' }) : null;
+    const textMsg = v.contact && /\d{3}.*\d{4}/.test(v.contact) && v.method === 'text' ? h('a', { class: 'btn', href: `sms:${v.contact.replace(/[^\d+]/g, '')}?&body=${encodeURIComponent(text)}`, text: 'Text it' }) : null;
+    const pre = h('pre', { class: 'order-text', tabindex: '0', text });
+    sendBox = h('section', { class: 'card' },
+      h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: status === 'sent' ? `Sent ${when(order.sentAt)} by ${order.sentBy ?? ''}` : `Approved by ${order.approvedBy ?? ''}: ready to send` }),
+        status === 'approved' ? h('button', { class: 'link', text: 'Reopen to change', onclick: async () => { if (await act('reopen', order.id)) orderScreen(me, vendorId, d.delivery); } }) : null),
+      h('div', { class: 'small muted', text: v.method ? `${v.name} takes orders by ${v.method}${v.contact ? `: ${v.contact}` : ''}.` : 'Add how this vendor takes orders under Vendor settings.' }),
+      pre,
+      h('div', { class: 'row wrap' }, email, textMsg, copy, h('button', { class: 'btn', text: 'Print', onclick: () => window.print() }),
+        status === 'approved' ? h('button', { class: 'btn dark', text: 'Mark as sent', onclick: async () => { if (await act('sent', order.id)) orderScreen(me, vendorId, d.delivery); } }) : null));
+  }
+
+  const settingsBox = vendorSettings(me, d, () => orderScreen(me, vendorId, d.delivery));
+  const deliveries = h('div', { class: 'row wrap' }, h('span', { class: 'small muted', text: 'Delivery:' }), d.upcoming.map((x) => h('button', { class: `btn small-btn${x === d.delivery ? ' dark' : ''}`, text: `${WD[new Date(`${x}T12:00:00`).getDay()]} ${shortDate(x)}`, onclick: () => orderScreen(me, vendorId, x) })));
+  const [tag, cls] = STATUS_TAG[status] ?? ['New', ''];
+  drawTotal();
+  show(shell(me, 'orders', [
+    h('header', { class: 'row wrap' },
+      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `Order · ${v.name}` }), h('h1', { text: `${weekdayName(d.delivery)}, ${shortDate(d.delivery)}` }),
+        h('div', { class: 'sub', text: `${dueText(d.deadline, d.today)} · covers use until ${weekdayName(d.following)}’s delivery` })),
+      h('span', { class: `tag ${cls}`, text: tag }), h('button', { class: 'btn', text: '← Orders', onclick: () => ordersScreen(me) })),
+    deliveries,
+    sendBox,
+    h('section', { class: 'card' },
+      h('h2', { text: editable ? 'To order' : 'Ordered' }),
+      editable ? h('div', { class: 'small muted', text: 'Count what’s on hand to sharpen the suggestions; blank uses the estimate from recent deliveries.' }) : null,
+      h('div', { class: 'olist' }, head, (editable ? suggestedLines : lines.filter((l) => l.packs > 0)).map(lineRow)),
+      editable && otherLines.length ? others : null,
+      err,
+      h('div', { class: 'row wrap order-foot' }, totalBox,
+        editable ? h('button', { class: 'btn', text: 'Update suggestions', title: 'Saves the counts and works the suggestions out again', onclick: async () => { if (await save()) orderScreen(me, vendorId, d.delivery); } }) : null,
+        editable ? h('button', { class: 'btn', text: 'Save draft', onclick: async () => { if (await save()) orderScreen(me, vendorId, d.delivery); } }) : null,
+        editable ? h('button', { class: 'btn dark', text: 'Approve order', onclick: async () => { const o = await save(); if (o && await act('approve', o.id)) orderScreen(me, vendorId, d.delivery); } }) : null,
+        order && status !== 'sent' ? h('button', { class: 'link danger', text: 'Cancel order', onclick: async () => { if (confirmText('Cancel this order?') && await act('cancel', order.id)) ordersScreen(me); } }) : null)),
+    settingsBox,
+  ]));
+}
+
+/** Delivery days (learned, confirmed here), when orders are due, how they're sent. */
+function vendorSettings(me, d, done) {
+  const v = d.vendor;
+  const days = new Set(v.weekdays);
+  const err = h('span', { class: 'error' });
+  const dayButtons = h('div', { class: 'seg' }, WD.map((w, i) => { const b = h('button', { class: days.has(i) ? 'on' : '', text: w, 'aria-pressed': String(days.has(i)), onclick: () => { days.has(i) ? days.delete(i) : days.add(i); b.classList.toggle('on'); } }); return b; }));
+  const before = h('select', { 'aria-label': 'Days before delivery' }, h('option', { value: '', text: 'No cutoff' }), [0, 1, 2, 3].map((n) => h('option', { value: String(n), text: n === 0 ? 'Same day' : n === 1 ? 'Day before' : `${n} days before`, selected: v.cutoff?.daysBefore === n ? true : undefined })));
+  const time = h('input', { type: 'time', value: v.cutoff?.time ?? '14:00', 'aria-label': 'Order by' });
+  const method = h('select', { 'aria-label': 'How orders are sent' }, h('option', { value: '', text: 'How they take orders…' }), ['email', 'text', 'phone', 'portal', 'rep', 'in person'].map((m) => h('option', { value: m, text: m[0].toUpperCase() + m.slice(1), selected: v.method === m ? true : undefined })));
+  const contact = h('input', { type: 'text', value: v.contact ?? '', placeholder: 'Email, phone or rep name', 'aria-label': 'Contact' });
+  const minimum = h('input', { inputmode: 'decimal', class: 'short', value: v.minimum ?? '', placeholder: '$', 'aria-label': 'Order minimum' });
+  const active = h('input', { type: 'checkbox', checked: v.active ? true : undefined, 'aria-label': 'Order from this vendor' });
+  return h('details', { class: 'card settings' }, h('summary', {}, h('span', { class: 'strong', text: 'Vendor settings' }), h('span', { class: 'small muted', text: ` · learned from invoices: delivers ${v.learned.map((x) => WD[x]).join(', ') || '—'}` })),
+    h('div', { class: 'stack' },
+      h('div', { class: 'row wrap' }, h('span', { class: 'small strong', text: 'Delivers' }), dayButtons),
+      h('div', { class: 'row wrap' }, h('span', { class: 'small strong', text: 'Order due' }), before, h('span', { class: 'small muted', text: 'by' }), time),
+      h('div', { class: 'row wrap' }, method, h('div', { class: 'grow' }, contact), h('span', { class: 'small strong', text: 'Minimum' }), minimum),
+      h('label', { class: 'inline' }, active, 'Order from this vendor'),
+      h('div', { class: 'row' }, h('button', { class: 'btn dark', text: 'Save settings', onclick: async () => {
+        const res = await api('POST', `/api/orders/vendor/${encodeURIComponent(v.vendorId)}/settings`, { weekdays: [...days], cutoffDaysBefore: before.value === '' ? null : Number(before.value), cutoffTime: time.value, method: method.value || null, contact: contact.value, minimum: minimum.value, active: active.checked });
+        if (!res.ok) return (err.textContent = res.data.error ?? 'Not saved.');
+        done();
+      } }), err)));
 }
 
 // ------------------------------------------------------------------ settings
