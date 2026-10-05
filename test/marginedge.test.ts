@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { importMarginEdge, latestPrices, type MarginEdgeExport } from '../src/connectors/marginedge.ts';
+import { blendedPrices, importMarginEdge, latestPrices, type MarginEdgeExport } from '../src/connectors/marginedge.ts';
 import { packNameStructure, parseReportUnit, readPack, sizeInItemName, sizeInPackName, unitWord } from '../src/connectors/marginedgeUnits.ts';
 import { RecipeBook } from '../src/core/recipes.ts';
 import { convert } from '../src/core/units.ts';
@@ -173,6 +173,48 @@ test('when a pack size changes, the pack bought last says what a bottle is', () 
   // Either way the price per ml is the invoice's: $33.27 for 750 ml.
   const latest = latestPrices(result.prices).get('saba');
   close(latest!.price / convert(latest!.per, 'ml', result.products[0]!.conversions), 33.27 / 750);
+});
+
+test("managers' answers: one ingredient across brands, pack sizes MarginEdge didn't know", () => {
+  const line = (code: string, name: string, product: string, price: number, quantity = 1, packagingId?: number) => ({ vendorItemCode: code, vendorItemName: name, companyConceptProductId: product, unitPrice: price, quantity, linePrice: price * quantity, ...(packagingId ? { packagingId } : {}) });
+  const data = {
+    restaurantUnit: { id: 1, name: 'Test' },
+    categories: [{ categoryId: 'c', categoryName: 'Food', categoryType: 'FOOD' }],
+    products: [
+      { companyConceptProductId: 'mozz', productName: 'Cheese, Mozzarella', reportByUnit: 'Pound', latestPrice: 6, categories: [{ categoryId: 'c' }] },
+      { companyConceptProductId: 'ovoline', productName: 'Cheese, Ovoline', reportByUnit: 'Pound', latestPrice: 5, categories: [{ categoryId: 'c' }] },
+      { companyConceptProductId: 'apricot', productName: 'Preserves, Apricot', reportByUnit: 'Jar', latestPrice: 5, categories: [{ categoryId: 'c' }] },
+    ],
+    vendors: [{ vendorId: 'igf', vendorName: 'Gourmet' }, { vendorId: 'fer', vendorName: 'Other' }],
+    vendorItems: [{ vendorId: 'igf', vendorItemCode: 'ovo', vendorItemName: 'Ovoline 2/3 Lb', companyConceptProductId: 'ovoline', packagings: [{ packagingId: 7, packagingName: 'Case/6LB', unit: 'CASE', quantity: 1 }] }],
+    invoices: [
+      { orderId: 'a', vendorId: 'fer', invoiceDate: '2026-09-01', orderTotal: 18, lineItems: [line('m', 'Mozzarella Fresh 3LB', 'mozz', 18)] },
+      { orderId: 'b', vendorId: 'igf', invoiceDate: '2026-09-15', orderTotal: 90, lineItems: [line('ovo', 'Ovoline 2/3 Lb', 'ovoline', 30, 3, 7)] },
+      { orderId: 'c', vendorId: 'igf', invoiceDate: '2026-09-20', orderTotal: 30, lineItems: [line('ap', 'Preserves Apricot Darbo', 'apricot', 30)] },
+    ],
+  } as unknown as MarginEdgeExport;
+
+  const plain = importMarginEdge(data);
+  // $30 against MarginEdge's $5 a jar: calibration already guessed six jars; the answer confirms it.
+  assert.equal(plain.prices.find((p) => p.productExternalId === 'apricot')?.source, 'calibrated');
+
+  const told = importMarginEdge(data, {
+    merges: [{ into: 'mozz', from: ['ovoline'] }],
+    packs: [{ vendorId: 'igf', description: 'Preserves Apricot Darbo', per: { amount: 6, unit: 'jar' } }],
+    conversions: { apricot: { customUnits: { jar: { amount: 16, unit: 'oz' } } } },
+  });
+  // Ovoline is gone; its purchases are mozzarella's.
+  assert.equal(told.products.some((p) => p.externalId === 'ovoline'), false);
+  assert.equal(told.invoices.find((i) => i.externalId === 'b')!.lines[0]!.productExternalId, 'mozz');
+  const mozz = told.prices.filter((p) => p.productExternalId === 'mozz');
+  assert.deepEqual(mozz.map((p) => +p.perBaseUnit.toFixed(2)), [6, 5]);
+  // Blended by what was bought: 3 lb at $6 and 18 lb at $5.
+  close(blendedPrices(told.prices, '2026-10-01').get('mozz'), (18 + 90) / (3 + 18));
+  // The case of six 16 oz jars: $5 a jar, and a pound of preserves is one jar.
+  const apricot = told.prices.find((p) => p.productExternalId === 'apricot')!;
+  assert.equal(apricot.source, 'manager');
+  close(apricot.perBaseUnit, 5);
+  close(convert({ amount: 1, unit: 'lb' }, 'jar', told.products.find((p) => p.externalId === 'apricot')!.conversions), 1);
 });
 
 test('products carry their conversions and categories', () => {

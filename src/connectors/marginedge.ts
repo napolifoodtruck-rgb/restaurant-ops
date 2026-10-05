@@ -147,8 +147,10 @@ export interface PricePoint {
   per: Quantity;
   /** Price per one of the product's base units. */
   perBaseUnit: number;
-  /** How the pack size was worked out. */
-  source: 'pack' | 'calibrated' | 'itemName' | 'productUnit';
+  /** Purchased units on the line, for blending prices by what was bought. */
+  quantity: number;
+  /** How the pack size was worked out ('manager': told by a manager). */
+  source: 'manager' | 'pack' | 'calibrated' | 'itemName' | 'productUnit';
 }
 
 export type ImportFlag =
@@ -156,7 +158,8 @@ export type ImportFlag =
   | { type: 'invoiceTotal'; invoiceExternalId: string; invoiceNumber?: string; vendorName?: string; difference: number }
   | { type: 'unknownUnit'; productExternalId: string; name: string; rawUnit: string }
   | { type: 'priceUnclear'; invoiceExternalId: string; lineNumber: number; vendorName?: string; description: string; productExternalId: string; price: number; impliedPerUnit?: number; referencePerUnit?: number; unit?: string }
-  | { type: 'missingDetail'; invoiceExternalId: string; reason: string };
+  | { type: 'missingDetail'; invoiceExternalId: string; reason: string }
+  | { type: 'mergeUnit'; productExternalId: string; into: string; unit: string };
 
 export interface ImportResult {
   vendors: ImportedVendor[];
@@ -179,7 +182,23 @@ function lineMathChecks(quantity: number, unitPrice: number, lineTotal: number):
   return Math.abs(quantity * unitPrice - lineTotal) <= Math.max(0.02, Math.abs(lineTotal) * 0.005);
 }
 
-export function importMarginEdge(data: MarginEdgeExport): ImportResult {
+/**
+ * What managers have told the system, applied every time the export is read, so answers
+ * survive a re-import instead of being typed into MarginEdge.
+ */
+export interface ImportAnswers {
+  /** "Case of 6 × 16 oz jars": what one purchased unit of an item holds. Vendor optional. */
+  packs?: { vendorId?: string; description: string; per: Quantity }[];
+  /** Facts about a product's units ("a jar is 16 oz"). They win over what was inferred. */
+  conversions?: Record<string, ItemConversions>;
+  /**
+   * One ingredient bought under several products (two brands of mozzarella, the same 00
+   * flour from two vendors): their purchases and prices become one product's.
+   */
+  merges?: { into: string; from: string[] }[];
+}
+
+export function importMarginEdge(data: MarginEdgeExport, answers: ImportAnswers = {}): ImportResult {
   const flags: ImportFlag[] = [];
   const categories = new Map(data.categories.map((c) => [String(c.categoryId), c]));
 
@@ -242,9 +261,16 @@ export function importMarginEdge(data: MarginEdgeExport): ImportResult {
       if (density) product.conversions = mergeConversions(product.conversions, { gramsPerMl: density });
     }
   }
+  // Managers' answers win over anything inferred.
+  for (const [productId, told] of Object.entries(answers.conversions ?? {})) {
+    const product = products.get(productId);
+    if (product) product.conversions = mergeConversions(told, product.conversions);
+  }
 
   const packFor = (line: MeLineItem) => (line.packagingId !== null && line.packagingId !== undefined ? packs.get(String(line.packagingId)) : undefined);
   const lineKey = (vendorId: Id | undefined, description: string) => `${id(vendorId) ?? '?'}|${description.toLowerCase().replace(/\s+/g, ' ').trim()}`;
+  const answeredPacks = new Map((answers.packs ?? []).map((a) => [lineKey(a.vendorId, a.description), a.per]));
+  const answeredPack = (vendorId: Id | undefined, description: string) => answeredPacks.get(lineKey(vendorId, description)) ?? answeredPacks.get(lineKey(undefined, description));
   const allLines = data.invoices.flatMap((invoice) =>
     (invoice.lineItems ?? []).map((line) => ({ invoice, line, date: invoice.invoiceDate ?? invoice.createdDate ?? '', description: line.vendorItemName?.trim() || line.vendorItemCode || '' })),
   );
@@ -321,6 +347,7 @@ export function importMarginEdge(data: MarginEdgeExport): ImportResult {
             price: unitPrice,
             per: point.per,
             perBaseUnit: point.perBaseUnit,
+            quantity,
             source: point.source,
           });
         } else {
@@ -356,12 +383,34 @@ export function importMarginEdge(data: MarginEdgeExport): ImportResult {
     });
   }
 
+  // Merges: one ingredient bought under several products.
+  for (const merge of answers.merges ?? []) {
+    const into = products.get(merge.into);
+    if (!into?.baseUnit) continue;
+    for (const fromId of merge.from) {
+      const from = products.get(fromId);
+      if (!from || fromId === merge.into) continue;
+      into.conversions = mergeConversions(into.conversions, from.conversions);
+      products.delete(fromId);
+      for (const invoice of invoices) for (const line of invoice.lines) if (line.productExternalId === fromId) line.productExternalId = merge.into;
+      for (const [i, point] of prices.entries()) {
+        if (point.productExternalId !== fromId) continue;
+        const inBase = tryConvert(point.per, into.baseUnit, into.conversions);
+        if (!inBase) {
+          flags.push({ type: 'mergeUnit', productExternalId: fromId, into: merge.into, unit: point.per.unit });
+          continue;
+        }
+        prices[i] = { ...point, productExternalId: merge.into, perBaseUnit: point.price / inBase };
+      }
+    }
+  }
+
   prices.sort((a, b) => a.date.localeCompare(b.date));
   return {
     vendors: data.vendors.map((v) => ({ externalId: String(v.vendorId), name: v.vendorName.trim() })),
     products: [...products.values()],
     invoices,
-    prices,
+    prices: prices.filter((p) => products.has(p.productExternalId)),
     flags,
   };
 
@@ -374,6 +423,12 @@ export function importMarginEdge(data: MarginEdgeExport): ImportResult {
     | { ok: true; per: Quantity; perBaseUnit: number; source: PricePoint['source'] }
     | { ok: false; impliedPerUnit?: number } {
     const baseUnit = product.baseUnit!;
+    const told = answeredPack(vendorId, description);
+    if (told) {
+      // A manager said what this holds: no second-guessing against MarginEdge's price.
+      const inBase = tryConvert(told, baseUnit, product.conversions);
+      if (inBase && inBase > 0) return { ok: true, per: told, perBaseUnit: unitPrice / inBase, source: 'manager' };
+    }
     const tries: { per: Quantity; source: PricePoint['source'] }[] = [];
     const pack = packFor(line);
     for (const per of pack?.reading.candidates ?? []) tries.push({ per, source: 'pack' });
@@ -445,6 +500,33 @@ export async function readMarginEdgeExport(folder: string): Promise<MarginEdgeEx
 }
 
 /** Latest price per product, for costing recipes. */
+/**
+ * Price per base unit blended over recent purchases, weighted by how much was bought: an
+ * ingredient bought from two vendors costs what the mix you actually buy costs. Products
+ * not bought in the window fall back to their latest purchase.
+ */
+export function blendedPrices(prices: readonly PricePoint[], asOf: string, days = 60): Map<string, number> {
+  const since = new Date(Date.parse(`${asOf.slice(0, 10)}T12:00:00Z`) - days * 86400000).toISOString().slice(0, 10);
+  const spend = new Map<string, { money: number; base: number }>();
+  const latest = new Map<string, PricePoint>();
+  for (const p of prices) {
+    if (p.date.slice(0, 10) > asOf.slice(0, 10)) continue;
+    const current = latest.get(p.productExternalId);
+    if (!current || p.date >= current.date) latest.set(p.productExternalId, p);
+    if (p.date.slice(0, 10) <= since || !(p.perBaseUnit > 0)) continue;
+    const s = spend.get(p.productExternalId) ?? { money: 0, base: 0 };
+    s.money += p.price * p.quantity;
+    s.base += (p.price / p.perBaseUnit) * p.quantity;
+    spend.set(p.productExternalId, s);
+  }
+  const out = new Map<string, number>();
+  for (const [productId, point] of latest) {
+    const s = spend.get(productId);
+    out.set(productId, s && s.base > 0 ? s.money / s.base : point.perBaseUnit);
+  }
+  return out;
+}
+
 export function latestPrices(prices: PricePoint[]): Map<string, PricePoint> {
   const latest = new Map<string, PricePoint>();
   for (const point of prices) {

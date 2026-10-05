@@ -319,7 +319,16 @@ export function yieldsToConversions(yields: Quantity[]): { primary?: Quantity; c
  * up by the yield percentage (1.75 oz of prosciutto at 85% means buying 2.06 oz). Anything
  * unmatched is reported with the closest product names, ready to become a question.
  */
-export function buildRecipes(cards: RecipeCard[], products: ImportedProduct[]): { recipes: Recipe[]; issues: RecipeImportIssue[] } {
+export interface BuildOptions {
+  /**
+   * Card ingredient name → product id, overriding the match by name: the dough's "Spice, Sea
+   * Salt" is fine salt bought outside MarginEdge, not the Maldon flakes that share the name.
+   */
+  ingredientProducts?: Record<string, string>;
+}
+
+export function buildRecipes(cards: RecipeCard[], products: ImportedProduct[], options: BuildOptions = {}): { recipes: Recipe[]; issues: RecipeImportIssue[] } {
+  const told = new Map(Object.entries(options.ingredientProducts ?? {}).map(([name, productId]) => [normalizeName(name), productId]));
   const issues: RecipeImportIssue[] = [];
   const byName = new Map<string, RecipeCard>();
   for (const card of cards) {
@@ -347,7 +356,9 @@ export function buildRecipes(cards: RecipeCard[], products: ImportedProduct[]): 
       }
       const quantity = { amount: ingredient.amount / share, unit: ingredient.unit };
       const key = normalizeName(ingredient.name);
-      if (byName.has(key)) {
+      if (told.has(key)) {
+        ingredients.push({ item: { kind: 'product', id: told.get(key)! }, quantity });
+      } else if (byName.has(key)) {
         ingredients.push({ item: { kind: 'recipe', id: recipeId(ingredient.name) }, quantity });
       } else if (productsByName.has(key)) {
         ingredients.push({ item: { kind: 'product', id: productsByName.get(key)!.externalId }, quantity });
