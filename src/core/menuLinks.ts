@@ -39,6 +39,13 @@ export interface MenuLink {
   recipeId: string | null;
   /** A new dish whose recipe isn't in yet: it counts as missing a recipe, and links once its card arrives. */
   awaitingRecipe?: true;
+  /**
+   * First day (YYYY-MM-DD) this recipe is on the button. Seasonal dishes keep one POS button
+   * and change recipe: each version is its own recipe with its own start date, so sales are
+   * costed with the version served that day and versions can be compared fairly.
+   * Left out: from the beginning.
+   */
+  from?: string;
   /** How much of the recipe one sale uses. Defaults to one yield of the recipe. */
   portion?: Quantity;
   matchedBy: 'name' | 'alias' | 'manager';
@@ -156,21 +163,33 @@ export function nameSimilarity(a: string, b: string): number {
 // ---------------------------------------------------------------- lookups
 
 /** How a sale of `catalogId` under `name` resolves against the saved links. */
-export function linkStatus(state: LinkState, catalogId: string, name: string): LinkStatus {
+export function linkStatus(state: LinkState, catalogId: string, name: string, date?: string): LinkStatus {
   const key = nameKey(name);
   let latest: MenuLink | undefined;
+  let versions = 0;
+  let active: MenuLink | undefined;
   for (const link of state.links) {
     if (link.catalogId !== catalogId) continue;
-    if (nameKey(link.posName) === key) return { status: 'linked', link };
-    latest = link;
+    if (nameKey(link.posName) !== key) {
+      latest = link;
+      continue;
+    }
+    versions++;
+    // The version in force on `date` (today's when no date): the latest start on or before it.
+    const starts = link.from ?? '';
+    if (date !== undefined && starts > date) continue;
+    if (!active || starts >= (active.from ?? '')) active = link;
   }
+  if (active) return { status: 'linked', link: active };
+  // Sold before the first version on record: not this button's recipe yet.
+  if (versions > 0) return { status: 'unlinked' };
   return latest ? { status: 'renamed', previous: latest } : { status: 'unlinked' };
 }
 
 /** The recipe one sale uses, for theoretical usage and margins. Unconfirmed renames don't resolve. */
-export function linkLookup(state: LinkState): (catalogId: string, name: string) => { recipeId: string; portion?: Quantity } | undefined {
-  return (catalogId, name) => {
-    const found = linkStatus(state, catalogId, name);
+export function linkLookup(state: LinkState): (catalogId: string, name: string, date?: string) => { recipeId: string; portion?: Quantity } | undefined {
+  return (catalogId, name, date) => {
+    const found = linkStatus(state, catalogId, name, date);
     if (found.status !== 'linked' || found.link.recipeId === null) return undefined;
     return { recipeId: found.link.recipeId, portion: found.link.portion };
   };
@@ -231,7 +250,8 @@ export function matchMenu(items: readonly SoldItem[], recipes: readonly Recipe[]
     if (awaiting) {
       // Waiting on its card: link as soon as a dish with the same name exists, otherwise stay quiet.
       const exact = recipes.filter((r) => r.kind !== 'prep' && nameKey(r.name) === key && key !== '');
-      if (exact.length === 1) link = { catalogId: item.catalogId, posName: name, recipeId: exact[0]!.id, matchedBy: 'name' };
+      const waiting = status.status === 'linked' ? status.link : undefined;
+      if (exact.length === 1) link = { catalogId: item.catalogId, posName: name, recipeId: exact[0]!.id, matchedBy: 'name', ...(waiting?.from ? { from: waiting.from } : {}) };
       if (!link) continue;
     } else if (key in working.aliases) {
       link = { catalogId: item.catalogId, posName: name, recipeId: working.aliases[key] ?? null, matchedBy: 'alias' };
@@ -271,7 +291,8 @@ export function matchMenu(items: readonly SoldItem[], recipes: readonly Recipe[]
 /** Adds links made by matching. */
 function replaceLink(links: readonly MenuLink[], link: MenuLink): MenuLink[] {
   const key = nameKey(link.posName);
-  return [...links.filter((l) => !(l.catalogId === link.catalogId && nameKey(l.posName) === key)), link];
+  const same = (l: MenuLink) => l.catalogId === link.catalogId && nameKey(l.posName) === key && (l.from ?? '') === (link.from ?? '');
+  return [...links.filter((l) => !same(l)), link];
 }
 
 /** Adds links made by matching, replacing any under the same id and name. */
@@ -283,8 +304,8 @@ export function applyLinks(state: LinkState, links: readonly MenuLink[]): LinkSt
  * Records that an item (usually a renamed one) is a new dish whose recipe isn't in yet.
  * It stops asking, shows as missing a recipe, and links once a card with its name arrives.
  */
-export function markNewDish(state: LinkState, item: PosMenuItem): LinkState {
-  const link: MenuLink = { catalogId: item.catalogId, posName: posName(item), recipeId: null, awaitingRecipe: true, matchedBy: 'manager' };
+export function markNewDish(state: LinkState, item: PosMenuItem, from?: string): LinkState {
+  const link: MenuLink = { catalogId: item.catalogId, posName: posName(item), recipeId: null, awaitingRecipe: true, matchedBy: 'manager', ...(from ? { from } : {}) };
   return { links: replaceLink(state.links, link), aliases: state.aliases };
 }
 
@@ -292,10 +313,10 @@ export function markNewDish(state: LinkState, item: PosMenuItem): LinkState {
  * Records a manager's answer: this item, under this name, is this recipe (or has no
  * food cost when recipeId is null). The name becomes an alias for next time.
  */
-export function confirmLink(state: LinkState, item: PosMenuItem, recipeId: string | null, portion?: Quantity): LinkState {
+export function confirmLink(state: LinkState, item: PosMenuItem, recipeId: string | null, portion?: Quantity, from?: string): LinkState {
   const name = posName(item);
   const key = nameKey(name);
-  const link: MenuLink = { catalogId: item.catalogId, posName: name, recipeId, matchedBy: 'manager', ...(portion ? { portion } : {}) };
+  const link: MenuLink = { catalogId: item.catalogId, posName: name, recipeId, matchedBy: 'manager', ...(portion ? { portion } : {}), ...(from ? { from } : {}) };
   return { links: replaceLink(state.links, link), aliases: key ? { ...state.aliases, [key]: recipeId } : state.aliases };
 }
 

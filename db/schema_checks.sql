@@ -32,6 +32,9 @@ INSERT INTO menu_links (restaurant_id, pos_catalog_id, pos_name_key, kind, pos_n
   ('00000000-0000-0000-0000-00000000000a', 'SQ-RIGATONI', 'rigatoni alla vodka', 'item', 'Rigatoni alla vodka', '30000000-0000-0000-0000-000000000003', 'name'),
   -- Same POS id, renamed to a dish with no recipe yet: its own row.
   ('00000000-0000-0000-0000-00000000000a', 'SQ-RIGATONI', 'penne arrabbiata', 'item', 'Penne Arrabbiata', NULL, 'name');
+-- A seasonal version of the same button from a later date.
+INSERT INTO menu_links (restaurant_id, pos_catalog_id, pos_name_key, kind, pos_name, recipe_id, matched_by, effective_from) VALUES
+  ('00000000-0000-0000-0000-00000000000a', 'SQ-RIGATONI', 'rigatoni alla vodka', 'item', 'Rigatoni alla vodka', '30000000-0000-0000-0000-000000000003', 'name', '2026-09-15');
 INSERT INTO menu_name_aliases (restaurant_id, name_key, recipe_id) VALUES
   ('00000000-0000-0000-0000-00000000000a', 'rigatoni vodka', '30000000-0000-0000-0000-000000000003');
 

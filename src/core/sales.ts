@@ -20,7 +20,7 @@ export interface MenuLinks {
  * Resolves one sold item, by POS id and the name it sold under, to the recipe it uses
  * (see menuLinks.ts). The portion defaults to one yield of the recipe.
  */
-export type LinkLookup = (catalogId: string, name: string) => { recipeId: string; portion?: Quantity } | undefined;
+export type LinkLookup = (catalogId: string, name: string, date?: string) => { recipeId: string; portion?: Quantity } | undefined;
 
 /** Fixed links, or a lookup that also checks names (so renamed items aren't counted blindly). */
 export type Links = MenuLinks | { lookup: LinkLookup; modifiers?: Record<string, string> };
@@ -40,6 +40,8 @@ export interface SaleLine {
   quantity: number;
   /** Net sales for these items, used to rank missing recipes and measure coverage. */
   netSales: number;
+  /** Day sold (YYYY-MM-DD), when sales come by day: picks the recipe version served that day. */
+  date?: string;
   /** Modifiers applied to all of the quantity above. */
   modifiers?: { catalogId: string; name: string }[];
 }
@@ -78,7 +80,7 @@ export function theoreticalUsage(book: RecipeBook, links: Links, sales: SaleLine
 
   for (const line of sales) {
     totalSales += line.netSales;
-    const link = lookup(line.catalogId, line.name);
+    const link = lookup(line.catalogId, line.name, line.date);
     if (link === undefined) {
       const existing = unmapped.get(line.catalogId) ?? { catalogId: line.catalogId, name: line.name, quantity: 0, netSales: 0 };
       existing.quantity += line.quantity;

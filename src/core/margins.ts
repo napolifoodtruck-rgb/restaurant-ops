@@ -24,7 +24,10 @@ export interface MarginSaleLine extends SaleLine {
 export interface DishMargin {
   catalogId: string;
   recipeId: string;
-  /** The name it sold under most. */
+  /**
+   * The name it sold under most. When one POS button has carried several recipes (seasonal
+   * versions), the recipe's name is added so each version reads as its own dish.
+   */
   name: string;
   category: string;
   quantity: number;
@@ -105,7 +108,7 @@ export function menuMargins(book: RecipeBook, lookup: LinkLookup, sales: readonl
   for (const line of sales) {
     if (skipNonMenu && !line.catalogId) continue;
     allSales += line.netSales;
-    const link = lookup(line.catalogId, line.name);
+    const link = lookup(line.catalogId, line.name, line.date);
     const category = line.category ?? 'Other';
     if (!link) {
       const key = `${line.catalogId}|${line.name}`;
@@ -129,8 +132,10 @@ export function menuMargins(book: RecipeBook, lookup: LinkLookup, sales: readonl
   const dishes: DishMargin[] = [];
   const staffMeals: StaffMealCost[] = [];
   for (const g of groups.values()) {
-    const name = [...g.names].sort((a, b) => b[1] - a[1])[0]![0];
+    const soldAs = [...g.names].sort((a, b) => b[1] - a[1])[0]![0];
+    const shared = [...groups.values()].filter((other) => other.catalogId === g.catalogId).length > 1;
     const recipe = book.recipes.get(g.recipeId);
+    const name = shared && recipe ? `${soldAs} (${recipe.name})` : soldAs;
     const cost = g.portion ? book.costOf({ kind: 'recipe', id: g.recipeId }, g.portion) : book.portionCost(g.recipeId);
     if (g.netSales <= 0 || g.quantity <= 0) {
       if (g.quantity > 0) staffMeals.push({ catalogId: g.catalogId, recipeId: g.recipeId, name, quantity: g.quantity, cost, totalCost: cost.total * g.quantity });
@@ -143,7 +148,7 @@ export function menuMargins(book: RecipeBook, lookup: LinkLookup, sales: readonl
     dishes.push({
       catalogId: g.catalogId,
       recipeId: g.recipeId,
-      name: name ?? recipe?.name ?? g.recipeId,
+      name,
       category: g.category,
       quantity: g.quantity,
       netSales: g.netSales,

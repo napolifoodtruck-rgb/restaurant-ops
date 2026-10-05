@@ -124,6 +124,30 @@ test('a new dish on a reused id waits for its card, then links on its own', () =
   assert.equal(state.links.filter((l) => l.catalogId === 'V-LAMB').length, 2);
 });
 
+test('seasonal versions share a POS button and keep their own recipes by date', () => {
+  const button = { catalogId: 'V-RICOTTA', itemName: 'Ricotta Appetizer' };
+  let state = confirmLink(emptyLinkState(), button, 'ricotta-heirloom'); // the summer version, from the start
+  state = confirmLink(state, button, 'ricotta-tomato-jam', undefined, '2026-09-15'); // fall
+  const lookup = linkLookup(state);
+  assert.equal(lookup('V-RICOTTA', 'Ricotta Appetizer', '2026-08-01')?.recipeId, 'ricotta-heirloom');
+  assert.equal(lookup('V-RICOTTA', 'Ricotta Appetizer', '2026-09-14')?.recipeId, 'ricotta-heirloom');
+  assert.equal(lookup('V-RICOTTA', 'Ricotta Appetizer', '2026-09-15')?.recipeId, 'ricotta-tomato-jam');
+  assert.equal(lookup('V-RICOTTA', 'Ricotta Appetizer')?.recipeId, 'ricotta-tomato-jam'); // today
+  assert.equal(state.links.length, 2);
+
+  // A new version without its card yet: waits from its start date, earlier sales keep theirs.
+  state = markNewDish(state, button, '2026-12-01');
+  assert.equal(linkLookup(state)('V-RICOTTA', 'Ricotta Appetizer', '2026-12-05'), undefined);
+  assert.equal(linkLookup(state)('V-RICOTTA', 'Ricotta Appetizer', '2026-10-01')?.recipeId, 'ricotta-tomato-jam');
+  // Its card arrives under the button's name and links to that version only.
+  const { newLinks } = matchMenu([sold('V-RICOTTA', 'Ricotta Appetizer', 100)], [...recipes, dish('ricotta-winter', 'Ricotta Appetizer')], state);
+  assert.deepEqual(newLinks.map((l) => [l.recipeId, l.from]), [['ricotta-winter', '2026-12-01']]);
+
+  // With only dated versions, a sale before the first one has no recipe.
+  const dated = confirmLink(emptyLinkState(), button, 'ricotta-tomato-jam', undefined, '2026-09-15');
+  assert.equal(linkLookup(dated)('V-RICOTTA', 'Ricotta Appetizer', '2026-09-01'), undefined);
+});
+
 test('a rename that only adds "Special:" is the same dish', () => {
   const state = applyLinks(emptyLinkState(), [{ catalogId: 'V-H', posName: 'Heirloom', recipeId: 'heirloom', matchedBy: 'manager' }]);
   assert.equal(linkStatus(state, 'V-H', 'Special: Heirloom').status, 'linked');

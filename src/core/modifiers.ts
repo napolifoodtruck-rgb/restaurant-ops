@@ -135,6 +135,8 @@ export interface ModifierSaleLine {
   quantity: number;
   /** What the modifier itself brought in. */
   sales: number;
+  /** Day sold (YYYY-MM-DD), when sales come by day. */
+  date?: string;
 }
 
 export interface ResolvedModifier {
@@ -324,7 +326,7 @@ export interface ModifierCostOptions {
 export function modifierCosts(
   book: RecipeBook,
   sales: readonly ModifierSaleLine[],
-  dishFor: (catalogId: string, itemName: string) => string | undefined,
+  dishFor: (catalogId: string, itemName: string, date?: string) => string | undefined,
   given: ModifierAnswers,
   options: ModifierCostOptions = {},
 ): ModifierCosts {
@@ -343,7 +345,7 @@ export function modifierCosts(
     summary.sales += line.sales;
     summaries.set(key, summary);
 
-    const dishId = dishFor(line.catalogId, line.itemName);
+    const dishId = dishFor(line.catalogId, line.itemName, line.date);
     if (!dishId) {
       // The dish has no recipe yet; that is asked about elsewhere.
       if (readModifier(line.modifier).action !== 'none') summary.complete = false;

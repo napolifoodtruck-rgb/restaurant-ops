@@ -235,12 +235,15 @@ CREATE TABLE menu_links (
   pos_name            text NOT NULL,              -- the name as the POS showed it
   recipe_id           uuid,                       -- NULL: confirmed as no food cost (gift card, fee), or awaiting a recipe
   awaiting_recipe     boolean NOT NULL DEFAULT false,  -- a new dish whose card isn't in yet
+  -- Seasonal versions share one POS button: each recipe version starts on its own date, and
+  -- a sale is costed with the version in force that day. -infinity: from the beginning.
+  effective_from      date NOT NULL DEFAULT '-infinity',
   portion_amount      numeric CHECK (portion_amount > 0),  -- NULL: one yield of the recipe
   portion_unit        text,
   matched_by          text NOT NULL CHECK (matched_by IN ('name', 'alias', 'manager')),
   confirmed_by        uuid,
   created_at          timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (restaurant_id, pos_catalog_id, pos_name_key),
+  PRIMARY KEY (restaurant_id, pos_catalog_id, pos_name_key, effective_from),
   CHECK ((portion_amount IS NULL) = (portion_unit IS NULL)),
   CHECK (portion_amount IS NULL OR recipe_id IS NOT NULL),
   CHECK (NOT awaiting_recipe OR recipe_id IS NULL),

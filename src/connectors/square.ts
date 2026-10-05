@@ -71,12 +71,18 @@ export type SquareItemSalesRow = Record<string, string | number | null | undefin
 
 const field = (row: SquareItemSalesRow, name: string) => row[`ItemSales.${name}`];
 const num = (v: unknown): number => (v === null || v === undefined || v === '' ? 0 : Number(v));
+/** The day of a row, when the query was grouped by day (timeDimensions granularity "day"). */
+const dayOf = (row: SquareItemSalesRow): string | undefined => {
+  const value = field(row, 'reporting_day.day') ?? field(row, 'reporting_day');
+  return value ? String(value).slice(0, 10) : undefined;
+};
 
 /**
  * Turns ItemSales rows into sale lines. Each row keeps the name it sold under, so a
  * renamed item shows up as the same id under two names.
  * Request: measures items_sold_count and item_net_sales; dimensions item_variation_id,
- * item_name, item_variation_name, category_name.
+ * item_name, item_variation_name, category_name. Grouped by day (reporting_day, granularity
+ * "day"), each line carries its date, so seasonal recipe versions are costed by the day sold.
  */
 export function squareItemSales(rows: readonly SquareItemSalesRow[], menu: readonly PosMenuItem[] = []): MarginSaleLine[] {
   const current = new Map(menu.map((m) => [m.catalogId, m]));
@@ -96,6 +102,7 @@ export function squareItemSales(rows: readonly SquareItemSalesRow[], menu: reado
       netSales: num(field(row, 'item_net_sales')),
       ...(field(row, 'category_name') ? { category: String(field(row, 'category_name')) } : {}),
       ...(listPrice !== undefined ? { listPrice } : {}),
+      ...(dayOf(row) ? { date: dayOf(row) } : {}),
     });
   }
   return out;
@@ -123,6 +130,7 @@ export function squareModifierSales(rows: readonly SquareItemSalesRow[]): Modifi
       quantity: Math.round(quantity * 1000) / 1000,
       sales,
       modifier: { name: modifierName, ...(listName ? { listName: String(listName) } : {}), price: Math.round((sales / quantity) * 100) / 100 },
+      ...(dayOf(row) ? { date: dayOf(row) } : {}),
     });
   }
   return out;

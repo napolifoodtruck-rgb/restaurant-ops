@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { menuMargins, type MarginSaleLine } from '../src/core/margins.ts';
-import { applyLinks, emptyLinkState, linkLookup } from '../src/core/menuLinks.ts';
+import { applyLinks, confirmLink, emptyLinkState, linkLookup } from '../src/core/menuLinks.ts';
 import { RecipeBook, type Product, type Recipe } from '../src/core/recipes.ts';
 import { isStaffMeal, squareItemSales, squareMenuItems, type SquareCatalogObject } from '../src/connectors/square.ts';
 import { theoreticalUsage } from '../src/core/sales.ts';
@@ -76,6 +76,18 @@ test('staff meals, unlinked items and gift cards are kept apart', () => {
   // The gift card isn't a menu item, so coverage is 3,810 linked out of 4,610 sold.
   close(report.coverage, 3810 / 4610);
   close(report.totals.netSales, 3810);
+});
+
+test('seasonal versions of one button are compared as separate dishes', () => {
+  const versions = confirmLink(confirmLink(emptyLinkState(), { catalogId: 'V-APP', itemName: 'Ricotta' }, 'salad'), { catalogId: 'V-APP', itemName: 'Ricotta' }, 'special', undefined, '2026-09-15');
+  const report = menuMargins(book, linkLookup(versions), [
+    { catalogId: 'V-APP', name: 'Ricotta', quantity: 30, netSales: 420, category: 'Apps', date: '2026-08-20' },
+    { catalogId: 'V-APP', name: 'Ricotta', quantity: 10, netSales: 140, category: 'Apps', date: '2026-09-02' },
+    { catalogId: 'V-APP', name: 'Ricotta', quantity: 20, netSales: 280, category: 'Apps', date: '2026-09-20' },
+  ]);
+  assert.deepEqual(report.dishes.map((d) => [d.name, d.quantity]).sort(), [['Ricotta (salad)', 40], ['Ricotta (special)', 20]]);
+  close(report.dishes.find((d) => d.recipeId === 'salad')?.contribution, 14 - 1);
+  close(report.dishes.find((d) => d.recipeId === 'special')?.contribution, 14 - 5.4);
 });
 
 test('dishes are sorted into menu-engineering groups within their category', () => {
