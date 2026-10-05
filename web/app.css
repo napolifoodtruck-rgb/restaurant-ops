@@ -151,3 +151,7 @@ input.amount { width: 90px; height: 40px; border: 1px solid var(--line); border-
 .countrow .grow, .reviewrow .grow, .workrow .grow, .editrow .grow { flex: 1; min-width: 0; }
 .stack { display: flex; flex-direction: column; gap: 6px; }
 input[type=checkbox] { width: 20px; height: 20px; }
+.list > div.wrap { flex-wrap: wrap; }
+.list > div > form.grow { flex: 1; display: grid; gap: 8px; min-width: 0; }
+.list select { max-width: 200px; }
+.list > div > form .grow > input { width: 100%; box-sizing: border-box; min-width: 0; }

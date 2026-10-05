@@ -176,6 +176,50 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   const team = (await call('GET', '/api/staff', { cookies: cookAgain })).json;
   assert.deepEqual([team.canSetAccess, team.staff.map((p: any) => p.access)], [false, ['owner', 'manager']]);
 
+  // Email sign-in for a manager: the owner invites, the manager opens the link and sets a password.
+  assert.equal((await call('POST', `/api/staff/${cookId}/invite`, { body: { email: 'marco@example.com' }, cookies: cookAgain })).status, 403); // managers don't invite
+  assert.equal((await call('POST', `/api/staff/${cookId}/invite`, { body: { email: 'owner@example.com' }, cookies: ownerSession })).status, 409); // taken
+  const invite = await call('POST', `/api/staff/${cookId}/invite`, { body: { email: 'marco@example.com' }, cookies: ownerSession });
+  assert.equal(invite.status, 201);
+  const inviteToken = invite.json.path.split('#invite=')[1];
+  assert.deepEqual((await call('GET', `/api/invites/${inviteToken}`)).json, { name: 'Marco', email: 'marco@example.com', restaurantName: 'Napoli' });
+  assert.equal((await call('GET', '/api/staff', { cookies: ownerSession })).json.staff.find((p: any) => p.id === cookId).emailSignIn, 'invited');
+  assert.equal((await call('POST', `/api/invites/${inviteToken}`, { body: { password: 'short' } })).status, 400);
+  const accepted = await call('POST', `/api/invites/${inviteToken}`, { body: { password: 'marco makes the dough' } });
+  assert.equal(accepted.json.me.name, 'Marco');
+  assert.equal((await call('GET', `/api/invites/${inviteToken}`)).status, 410); // once only
+  assert.equal((await call('POST', '/api/login/password', { body: { email: 'marco@example.com', password: 'marco makes the dough' } })).status, 200);
+
+  // Administrators: the owner makes one; they run the team but can't touch the owner.
+  assert.equal((await call('POST', `/api/staff/${cookId}/access`, { body: { access: 'owner' }, cookies: ownerSession })).status, 400);
+  assert.equal((await call('POST', `/api/staff/${cookId}/access`, { body: { access: 'admin' }, cookies: ownerSession })).status, 200);
+  const adminSession = accepted.cookies;
+  const meAdmin = (await call('GET', '/api/me', { cookies: adminSession })).json.me;
+  assert.deepEqual([meAdmin.access, meAdmin.roleLevel], ['admin', 'manager']);
+  assert.equal((await call('GET', '/api/staff', { cookies: adminSession })).json.canSetAccess, true);
+  assert.equal((await call('POST', `/api/staff/${ownerId}/access`, { body: { access: 'staff' }, cookies: adminSession })).status, 404); // never the owner
+  assert.equal((await call('POST', `/api/staff/${ownerId}/pin`, { body: { pin: '5791' }, cookies: adminSession })).status, 403);
+  const lucaId = (await db!.query<{ id: string }>("INSERT INTO staff (restaurant_id, display_name) VALUES ($1, 'Luca') RETURNING id", [restaurantId])).rows[0]!.id;
+  assert.equal((await call('POST', `/api/staff/${lucaId}/invite`, { body: { email: 'luca@example.com' }, cookies: adminSession })).status, 400); // staff: make a manager first
+  assert.equal((await call('POST', `/api/staff/${lucaId}/access`, { body: { access: 'manager' }, cookies: adminSession })).status, 200);
+  assert.equal((await call('POST', `/api/staff/${lucaId}/invite`, { body: { email: 'luca@example.com' }, cookies: adminSession })).status, 201);
+
+  // Back to staff: email sign-in ends, the PIN stays.
+  assert.equal((await call('POST', `/api/staff/${cookId}/access`, { body: { access: 'staff' }, cookies: ownerSession })).status, 200);
+  assert.equal((await call('GET', '/api/me', { cookies: adminSession })).status, 401);
+  assert.equal((await call('POST', '/api/login/password', { body: { email: 'marco@example.com', password: 'marco makes the dough' } })).status, 401);
+  assert.equal((await call('POST', '/api/login/pin', { body: { staffId: cookId, pin: '8024' }, cookies: device })).status, 200);
+
+  // A kitchen iPad can belong to a station; whoever signs in on it is told which.
+  const devices = (await call('GET', '/api/devices', { cookies: [...ownerSession, ...device] })).json;
+  const thisIpad = devices.devices.find((d: any) => d.thisOne);
+  assert.equal(thisIpad.name, 'Sauté iPad');
+  assert.equal((await call('POST', `/api/devices/${thisIpad.id}`, { body: { stationId: pizza }, cookies: ownerSession })).status, 200);
+  const onIpad = [...(await call('POST', '/api/login/pin', { body: { staffId: cookId, pin: '8024' }, cookies: device })).cookies, ...device];
+  assert.deepEqual((await call('GET', '/api/me', { cookies: onIpad })).json.device, { id: thisIpad.id, name: 'Sauté iPad', stationId: pizza, station: 'Pizza' });
+  assert.equal((await call('POST', `/api/devices/${thisIpad.id}`, { body: { revoke: true }, cookies: ownerSession })).status, 200);
+  assert.equal((await call('GET', '/api/me', { cookies: onIpad })).status, 401); // its sessions end with it
+
   // Nothing secret is stored in the clear.
   const stored = await db!.query<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = $1', [cookId]);
   assert.match(stored.rows[0]!.pin_hash, /^scrypt\$/);

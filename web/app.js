@@ -42,10 +42,12 @@ async function api(method, path, body) {
   return { ok: res.ok, status: res.status, data };
 }
 
-function show(...nodes) { app.replaceChildren(...nodes); }
+/** Replace an element's children, skipping empty slots (null, false, nested arrays flattened). */
+function fill(el, ...kids) { el.replaceChildren(...kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false)); }
+function show(...nodes) { fill(app, ...nodes); }
 
-const LEVEL_NAMES = { line: 'Staff', lead: 'Staff', sous: 'Staff', chef: 'Staff', manager: 'Manager', owner: 'Account owner' };
-const ACCESS_NAMES = { staff: 'Staff', manager: 'Manager', owner: 'Account owner' };
+const ACCESS_NAMES = { staff: 'Staff', manager: 'Manager', admin: 'Administrator', owner: 'Account owner' };
+const canAdminister = (me) => me.access === 'owner' || me.access === 'admin';
 const LEVELS = ['line', 'lead', 'sous', 'chef', 'manager', 'owner'];
 const atLeast = (level, needed) => LEVELS.indexOf(level) >= LEVELS.indexOf(needed);
 
@@ -58,8 +60,15 @@ function when(iso) {
 // ------------------------------------------------------------------ start
 
 async function start() {
+  const invite = location.hash.match(/^#invite=([A-Za-z0-9_-]+)$/);
+  if (invite) return inviteScreen(invite[1]);
   const me = await api('GET', '/api/me');
-  if (me.ok) return home(me.data.me);
+  // On a kitchen iPad that belongs to a station, everyone lands on that station's prep.
+  // Cooks, and anyone on a kitchen iPad, land on Prep: on an iPad that belongs to a station, that station's list.
+  if (me.ok) {
+    const who = { ...me.data.me, ...(me.data.device ? { device: me.data.device } : {}) };
+    return who.device || !atLeast(who.roleLevel, 'manager') ? prepHome(who) : home(who);
+  }
   const device = await api('GET', '/api/devices/staff');
   if (device.ok) return pinNames(device.data);
   const setup = await api('GET', '/api/setup');
@@ -104,7 +113,7 @@ function emailSignIn(backToPins) {
       const f = Object.fromEntries(new FormData(form));
       const r = await api('POST', '/api/login/password', f);
       if (!r.ok) return (err.textContent = r.data.error ?? 'That didn’t work.');
-      home(r.data.me);
+      start();
     } },
     h('div', {}, h('h1', { text: 'Sign in' }), h('div', { class: 'sub', text: 'Managers and owners. Kitchen iPads use names and PINs once a manager sets them up.' })),
     h('label', {}, 'Email', h('input', { type: 'email', name: 'email', required: true, autocomplete: 'username' })),
@@ -112,6 +121,36 @@ function emailSignIn(backToPins) {
     err,
     h('button', { class: 'btn dark', type: 'submit', text: 'Sign in' }),
     backToPins ? h('button', { class: 'link', type: 'button', onclick: start, text: '← Back to names' }) : null,
+  );
+  show(h('div', { class: 'center' }, form));
+}
+
+// ------------------------------------------------------------------ invite: set a password
+
+async function inviteScreen(token) {
+  const r = await api('GET', `/api/invites/${token}`);
+  const leave = () => { history.replaceState(null, '', '/'); start(); };
+  if (!r.ok) {
+    return show(h('div', { class: 'center' }, h('div', { class: 'panel' },
+      h('h1', { text: 'Invite' }), h('div', { class: 'error', text: r.data.error ?? 'This link isn’t valid.' }),
+      h('button', { class: 'btn', onclick: leave, text: 'Go to sign in' }))));
+  }
+  const err = h('div', { class: 'error', role: 'alert' });
+  const form = h('form', { class: 'panel', onsubmit: async (e) => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(form));
+      if (f.password !== f.again) return (err.textContent = 'The two passwords don’t match.');
+      const s = await api('POST', `/api/invites/${token}`, { password: f.password });
+      if (!s.ok) return (err.textContent = s.data.error ?? 'That didn’t work.');
+      leave();
+    } },
+    h('div', {}, h('div', { class: 'kicker', text: r.data.restaurantName }), h('h1', { text: `Welcome, ${r.data.name}` }),
+      h('div', { class: 'sub', text: 'Choose a password. From now on you sign in with your email and this password, on any phone or computer.' })),
+    h('label', {}, 'Email', h('input', { type: 'email', name: 'email', value: r.data.email, readonly: true, autocomplete: 'username' })),
+    h('label', {}, 'Password (10 characters or more)', h('input', { type: 'password', name: 'password', required: true, minlength: '10', autocomplete: 'new-password' })),
+    h('label', {}, 'Same password again', h('input', { type: 'password', name: 'again', required: true, minlength: '10', autocomplete: 'new-password' })),
+    err,
+    h('button', { class: 'btn dark', type: 'submit', text: 'Set password and sign in' }),
   );
   show(h('div', { class: 'center' }, form));
 }
@@ -133,14 +172,14 @@ function pinPad(person, device) {
   let pin = '';
   const dots = h('div', { class: 'dots', 'aria-label': 'PIN entered' });
   const err = h('div', { class: 'error', role: 'alert' });
-  const draw = () => dots.replaceChildren(...Array.from({ length: Math.max(4, pin.length) }, (_, i) => h('span', { class: i < pin.length ? 'on' : '' })));
+  const draw = () => fill(dots, ...Array.from({ length: Math.max(4, pin.length) }, (_, i) => h('span', { class: i < pin.length ? 'on' : '' })));
   const press = (d) => { if (pin.length < 6) { pin += d; err.textContent = ''; draw(); } };
   const go = async () => {
     if (pin.length < 4) return (err.textContent = 'At least 4 digits.');
     const r = await api('POST', '/api/login/pin', { staffId: person.id, pin });
     pin = ''; draw();
     if (!r.ok) return (err.textContent = r.data.error ?? 'That didn’t work.');
-    home(r.data.me);
+    start();
   };
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => h('button', { onclick: () => press(d), text: d }));
   draw();
@@ -443,7 +482,7 @@ function tooltipBox(wrap) {
   wrap.append(tip);
   return {
     show(x, y, title, rows) {
-      tip.replaceChildren(h('div', { class: 'tip-title', text: title }), ...rows.map(([color, value, label]) => h('div', { class: 'tip-row' },
+      fill(tip, h('div', { class: 'tip-title', text: title }), ...rows.map(([color, value, label]) => h('div', { class: 'tip-row' },
         color ? (() => { const k = h('span', { class: 'tip-key' }); k.style.background = color; return k; })() : null,
         h('b', { text: value }), h('span', { class: 'muted', text: label }))));
       tip.hidden = false;
@@ -498,7 +537,7 @@ function lineChart({ weeks, series, format, average }) {
   const hit = s('rect', { x: L, y: T, width: W - L - R, height: H - T - B, fill: 'transparent', tabindex: 0 });
   const at = (i) => {
     hair.setAttribute('x1', x(i)); hair.setAttribute('x2', x(i)); hair.setAttribute('visibility', 'visible');
-    dots.replaceChildren(...series.filter((sr) => sr.values[i] !== null).map((sr) => s('circle', { cx: x(i), cy: y(sr.values[i]), r: 4, fill: sr.color, stroke: '#fff', 'stroke-width': 2 })));
+    fill(dots, ...series.filter((sr) => sr.values[i] !== null).map((sr) => s('circle', { cx: x(i), cy: y(sr.values[i]), r: 4, fill: sr.color, stroke: '#fff', 'stroke-width': 2 })));
     dots.setAttribute('visibility', 'visible');
     const box = svg.getBoundingClientRect(), wb = wrap.getBoundingClientRect();
     const rows = series.map((sr) => [sr.color, sr.values[i] === null ? 'off the menu' : format(sr.values[i]), sr.name]).sort((a, b) => (parseFloat(String(b[1]).replace(/[^0-9.-]/g, '')) || -1) - (parseFloat(String(a[1]).replace(/[^0-9.-]/g, '')) || -1));
@@ -627,7 +666,7 @@ const timeOf = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: 'num
 const remember = (k, v) => { try { v === undefined ? localStorage.getItem(k) : localStorage.setItem(k, v); } catch {} };
 const recall = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 
-async function prepHome(me) {
+async function prepHome(me, allStations = false) {
   loadingScreen(me, 'prep', 'Prep');
   const r = await api('GET', '/api/prep');
   if (!r.ok) return show(shell(me, 'prep', [h('h1', { text: 'Prep' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
@@ -640,7 +679,10 @@ async function prepHome(me) {
     if (l.status === 'approved') return h('span', { class: 'tag ok', text: kind === 'today' ? `Approved · ${l.done}/${l.lines} done` : 'Approved' });
     return Number(l.counted) ? h('span', { class: 'tag warn', text: `Counted · waiting for chef` }) : h('span', { class: 'tag', text: 'Not counted' });
   };
-  const cards = p.stations.map((s) => h('section', { class: 'card' },
+  // An iPad that belongs to a station shows just that one; the rest are a tap away.
+  const mine = me.device?.stationId && p.stations.find((s) => s.id === me.device.stationId);
+  const shown = mine && !allStations ? [mine] : p.stations;
+  const cards = shown.map((s) => h('section', { class: 'card' },
     h('div', { class: 'row' }, h('h2', { class: 'grow', text: s.name }), p.canEdit ? h('button', { class: 'link', text: 'Edit list', onclick: () => prepEdit(me, s.id) }) : null),
     h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'small muted', text: `Today · ${dayName(p.today)}` }), status(s.today, 'today')),
       h('button', { class: 'btn dark', text: 'Today’s prep', onclick: () => { remember('station', s.id); prepWork(me, s.id, p.today); } })),
@@ -649,7 +691,9 @@ async function prepHome(me) {
       p.canApprove ? h('button', { class: 'btn', text: 'Review', onclick: () => prepReview(me, s.id, p.tomorrow) }) : null)));
   show(shell(me, 'prep', [
     h('header', {}, h('div', { class: 'kicker', text: dayName(p.today) }), h('h1', { text: 'Prep' }),
-      h('div', { class: 'sub', text: 'At night: count each station. A chef reviews and approves. Next day: the station preps from the approved list, cleaning last.' })),
+      h('div', { class: 'sub', text: 'At night: count each station. A manager reviews and approves. Next day: the station preps from the approved list, cleaning last.' })),
+    mine ? h('div', { class: 'row' }, h('div', { class: 'grow small muted', text: allStations ? `This iPad is the ${mine.name} station’s.` : `This iPad is the ${mine.name} station’s. Other stations are a tap away.` }),
+      h('button', { class: 'link', text: allStations ? `Just ${mine.name}` : 'All stations', onclick: () => prepHome(me, !allStations) })) : null,
     h('div', { class: 'grid' }, cards)]));
 }
 
@@ -999,11 +1043,11 @@ async function home(me) {
   const manager = atLeast(me.roleLevel, 'manager');
   const signOut = h('button', { class: 'btn', onclick: async () => { await api('POST', '/api/logout'); start(); }, text: 'Sign out' });
   const header = h('header', { class: 'row' },
-    h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${me.name} · ${LEVEL_NAMES[me.roleLevel] ?? me.roleLevel}` }), h('h1', { text: 'Settings' }),
+    h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${me.name} · ${ACCESS_NAMES[me.access] ?? me.access}` }), h('h1', { text: 'Settings' }),
       h('div', { class: 'sub', text: manager ? 'Connections, your team and kitchen iPads. Menu and Performance are in the bar on the left.' : 'Your prep list will show up here once your station is set up.' })),
     signOut);
   const cards = [ownPinCard(me)];
-  if (manager) cards.unshift(await syncCard('square'), await syncCard('marginedge'), await importCard(), await prepImportCard(), await teamCard(me), deviceCard());
+  if (manager) cards.unshift(await syncCard('square'), await syncCard('marginedge'), await importCard(), await prepImportCard(), await teamCard(me), await deviceCard());
   show(shell(me, 'settings', [header, h('div', { class: 'grid' }, cards)]));
 }
 
@@ -1040,7 +1084,7 @@ async function syncCard(source) {
         const s = await api('POST', `/api/sync/${source}`);
         setTimeout(() => draw(s.ok ? null : h('div', { class: 'error', text: s.data.error })), 1200);
       } });
-    box.replaceChildren(
+    fill(box, 
       h('div', { class: 'row' }, h('h2', { class: 'grow', text: info.name }), status),
       h('div', { class: 'small muted', text: `Brings in ${info.what}. Syncs by itself every night after 4 am.` }),
       ...lines,
@@ -1071,7 +1115,7 @@ async function importCard() {
         if (!res.ok) return (err.textContent = res.data.error ?? 'Import failed.');
         draw(h('div', { class: 'tag ok', text: `Loaded ${res.data.loaded.length} parts${res.data.recipeCards ? `, ${res.data.recipeCards} recipe cards` : ''}` }));
       } });
-    box.replaceChildren(
+    fill(box, 
       h('h2', { text: 'Recipe cards and answers' }),
       h('div', { class: 'small muted', text: 'Load the kitchen-book file from Claude: your recipe cards and every answer given so far. Importing again replaces what’s here; earlier versions are kept.' }),
       parts.length ? h('div', { class: 'list' }, parts.map((p) => h('div', {}, h('span', { class: 'grow', text: NAMES[p.key] ?? p.key }), h('span', { class: 'small muted', text: when(p.updated_at) })))) : h('div', { class: 'tag', text: 'Nothing loaded yet' }),
@@ -1083,67 +1127,128 @@ async function importCard() {
   return box;
 }
 
-// The team, from Square, with PINs.
+// The team, from Square, with PINs, access and email sign-in.
 async function teamCard(me) {
   const box = h('section', { class: 'card', 'aria-label': 'Team' });
   const r = await api('GET', '/api/staff');
   const people = r.data.staff ?? [];
-  const isOwner = r.data.canSetAccess;
+  const admin = r.data.canSetAccess;
   const owner = people.find((p) => p.access === 'owner');
-  box.replaceChildren(
+  fill(box, 
     h('div', { class: 'row' }, h('h2', { class: 'grow', text: 'Team' }), h('span', { class: 'small muted', text: `${people.length} active` })),
-    h('div', { class: 'small muted', text: `Names and job titles come from Square. Everyone is staff unless the account owner${owner ? ` (${owner.name})` : ''} makes them a manager. Managers approve prep lists, edit lists, plan the menu and see Performance.` }),
-    h('div', { class: 'list' }, people.map((p) => personRow(p, me, isOwner))),
+    h('div', { class: 'small muted', text: `Names and job titles come from Square. Everyone is staff unless ${owner ? owner.name : 'the account owner'} or an administrator says otherwise. Managers approve and edit prep lists, plan the menu and see Performance. Administrators also run the team: access, PINs and email sign-in.` }),
+    h('div', { class: 'list' }, people.map((p) => personRow(p, me, admin))),
   );
   return box;
 }
 
-function personRow(p, me, isOwner) {
+const SIGN_IN_TAGS = { on: ['Email sign-in', 'ok'], invited: ['Invited', 'warn'] };
+
+function personRow(p, me, admin) {
   const row = h('div');
-  // Managers set PINs for staff; only the account owner sets a manager's PIN or access.
-  const canPin = p.id === me.staffId || isOwner || p.access === 'staff';
-  const draw = () => row.replaceChildren(
-    h('div', { class: 'grow' }, h('div', { text: p.name }), h('div', { class: 'small muted', text: [p.jobTitle].filter(Boolean).join(' · ') })),
-    h('span', { class: `tag${p.access === 'staff' ? '' : ' blue'}`, text: ACCESS_NAMES[p.access] ?? p.access }),
-    p.hasPin ? h('span', { class: 'tag ok', text: 'PIN set' }) : h('span', { class: 'tag', text: 'No PIN' }),
-    canPin ? h('button', { class: 'btn', onclick: () => pinForm(row, p, () => { p.hasPin = true; draw(); }, draw, isOwner && p.access !== 'owner' ? (a) => { p.access = a; } : null), text: p.hasPin ? 'Change' : 'Set PIN' }) : null,
-  );
+  // Managers set staff PINs; administrators set anyone's but the owner's, and their access.
+  const canPin = p.id === me.staffId || (admin && p.access !== 'owner') || p.access === 'staff';
+  const canChange = admin && p.access !== 'owner' && p.id !== me.staffId;
+  const draw = () => {
+    const signIn = p.emailSignIn && p.access !== 'owner' ? SIGN_IN_TAGS[p.emailSignIn] : null;
+    fill(row, 
+      h('div', { class: 'grow' }, h('div', { text: p.name }), h('div', { class: 'small muted', text: [p.jobTitle, p.email].filter(Boolean).join(' · ') })),
+      h('span', { class: `tag${p.access === 'staff' ? '' : ' blue'}`, text: ACCESS_NAMES[p.access] ?? p.access }),
+      signIn ? h('span', { class: `tag ${signIn[1]}`, text: signIn[0] }) : null,
+      p.hasPin ? h('span', { class: 'tag ok', text: 'PIN set' }) : h('span', { class: 'tag', text: 'No PIN' }),
+      canPin || canChange ? h('button', { class: 'btn', text: 'Change', onclick: () => personForm(row, p, { canPin, canChange }, draw) }) : null,
+    );
+  };
   draw();
   return row;
 }
 
-/** PIN entry; for the account owner, also staff or manager. */
-function pinForm(container, person, onDone, onCancel, onAccess) {
+/** Access, PIN and email sign-in for one person. */
+function personForm(container, p, { canPin, canChange }, done) {
+  const err = h('div', { class: 'error' });
+  const result = h('div');
+  const access = canChange ? h('select', { 'aria-label': `Access for ${p.name}` },
+    [['staff', 'Staff'], ['manager', 'Manager'], ['admin', 'Administrator']].map(([v, t]) => h('option', { value: v, text: t, selected: p.access === v ? true : undefined }))) : null;
+  const pin = canPin ? h('input', { inputmode: 'numeric', pattern: '[0-9]*', maxlength: '6', autocomplete: 'off', 'aria-label': `New PIN for ${p.name}`, placeholder: p.hasPin ? 'new PIN (optional)' : 'PIN, 4–6 digits' }) : null;
+  const email = canChange ? h('input', { type: 'email', autocomplete: 'off', 'aria-label': `Email for ${p.name}`, placeholder: 'email for sign-in', value: p.email ?? '' }) : null;
+  const emailRow = email ? h('div', {},
+    h('div', { class: 'small muted', text: p.emailSignIn === 'on' ? 'Signs in with email. A new link lets them choose a new password.' : 'Managers and administrators can also sign in with email, on any phone or computer. Make a link and send it to them.' }),
+    h('div', { class: 'row' }, h('div', { class: 'grow' }, email), h('button', { class: 'btn', type: 'button', text: p.emailSignIn === 'on' ? 'New password link' : 'Make sign-in link', onclick: () => invite() }))) : null;
+  const showEmail = () => { if (emailRow) emailRow.hidden = (access?.value ?? p.access) === 'staff'; };
+  access?.addEventListener('change', showEmail);
+
+  const saveAccess = async () => {
+    if (!access || access.value === p.access) return true;
+    if (access.value === 'staff' && p.emailSignIn === 'on' && !confirmText(`${p.name} won’t be able to sign in with email any more. Their PIN still works.`)) return false;
+    const a = await api('POST', `/api/staff/${p.id}/access`, { access: access.value });
+    if (!a.ok) { err.textContent = a.data.error ?? 'That didn’t work.'; return false; }
+    p.access = access.value;
+    if (p.access === 'staff') { p.emailSignIn = null; delete p.inviteUntil; } else p.emailSignIn ??= 'off';
+    return true;
+  };
+  const invite = async () => {
+    err.textContent = '';
+    if (!(await saveAccess())) return;
+    const r = await api('POST', `/api/staff/${p.id}/invite`, { email: email.value });
+    if (!r.ok) return (err.textContent = r.data.error ?? 'That didn’t work.');
+    p.email = r.data.email;
+    if (p.emailSignIn !== 'on') p.emailSignIn = 'invited';
+    const link = `${location.origin}${r.data.path}`;
+    const field = h('input', { readonly: true, value: link, 'aria-label': 'Sign-in link', class: 'grow' });
+    const copy = h('button', { class: 'btn dark', type: 'button', text: 'Copy link', onclick: async () => {
+      try { await navigator.clipboard.writeText(link); copy.textContent = 'Copied'; } catch { field.select(); }
+    } });
+    const until = new Date(r.data.expiresAt).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+    fill(result, h('div', { class: 'note' },
+      h('div', { text: `Send this link to ${p.name} (${p.email}) by text or email. It works once, until ${until}, and lets them choose a password.` }),
+      h('div', { class: 'row' }, field, copy)));
+  };
+
+  const form = h('form', { class: 'grow', onsubmit: async (e) => {
+      e.preventDefault();
+      err.textContent = '';
+      if (!(await saveAccess())) return;
+      if (pin?.value) {
+        const r = await api('POST', `/api/staff/${p.id}/pin`, { pin: pin.value });
+        if (!r.ok) return (err.textContent = r.data.error ?? 'That didn’t work.');
+        p.hasPin = true;
+      }
+      done();
+    } },
+    h('div', {}, h('div', { text: p.name }), h('div', { class: 'small muted', text: p.jobTitle ?? '' })),
+    h('div', { class: 'row wrap' }, access, pin ? h('div', { class: 'grow' }, pin) : h('div', { class: 'grow' }), h('button', { class: 'btn dark', type: 'submit', text: 'Save' }), h('button', { class: 'btn', type: 'button', onclick: done, text: 'Done' })),
+    emailRow, err, result);
+  fill(container, form);
+  showEmail();
+  (pin ?? access)?.focus();
+}
+
+const confirmText = (text) => window.confirm(text);
+
+/** PIN entry for yourself. */
+function pinForm(container, person, onDone, onCancel) {
   const err = h('span', { class: 'error' });
-  const input = h('input', { inputmode: 'numeric', pattern: '[0-9]*', maxlength: '6', autocomplete: 'off', 'aria-label': `New PIN for ${person.name}`, placeholder: person.hasPin ? 'new PIN (optional)' : '4–6 digits' });
-  const access = onAccess ? h('select', { 'aria-label': `Access for ${person.name}` }, [['staff', 'Staff'], ['manager', 'Manager']].map(([v, t]) => h('option', { value: v, text: t, selected: person.access === v ? true : undefined }))) : null;
+  const input = h('input', { inputmode: 'numeric', pattern: '[0-9]*', maxlength: '6', autocomplete: 'off', 'aria-label': `New PIN for ${person.name}`, placeholder: '4–6 digits' });
   const form = h('form', { class: 'row grow wrap', onsubmit: async (e) => {
       e.preventDefault();
-      if (access && access.value !== person.access) {
-        const a = await api('POST', `/api/staff/${person.id}/access`, { access: access.value });
-        if (!a.ok) return (err.textContent = a.data.error ?? 'That didn’t work.');
-        onAccess(access.value);
-      }
-      if (input.value || !person.hasPin) {
-        const r = await api('POST', `/api/staff/${person.id}/pin`, { pin: input.value });
-        if (!r.ok) return (err.textContent = r.data.error ?? 'That didn’t work.');
-      }
+      const r = await api('POST', `/api/staff/${person.id}/pin`, { pin: input.value });
+      if (!r.ok) return (err.textContent = r.data.error ?? 'That didn’t work.');
       onDone();
     } },
     h('div', { class: 'grow' }, h('div', { text: person.name }), err),
-    access, input, h('button', { class: 'btn dark', type: 'submit', text: 'Save' }), h('button', { class: 'btn', type: 'button', onclick: onCancel, text: 'Cancel' }));
-  container.replaceChildren(form);
+    input, h('button', { class: 'btn dark', type: 'submit', text: 'Save' }), h('button', { class: 'btn', type: 'button', onclick: onCancel, text: 'Cancel' }));
+  fill(container, form);
   input.focus();
 }
 
 function ownPinCard(me) {
   const box = h('section', { class: 'card', 'aria-label': 'Your PIN' });
-  const draw = () => box.replaceChildren(
+  const draw = () => fill(box, 
     h('h2', { text: 'Your PIN' }),
     h('div', { class: 'small muted', text: 'For signing in on a kitchen iPad. 4 to 6 digits, not a run like 1234.' }),
     h('div', { class: 'row' }, h('button', { class: 'btn', text: 'Set my PIN', onclick: () => {
       const slot = h('div', { class: 'row' });
-      box.replaceChildren(h('h2', { text: 'Your PIN' }), slot);
+      fill(box, h('h2', { text: 'Your PIN' }), slot);
       pinForm(slot, { id: me.staffId, name: me.name }, () => { draw(); box.append(h('div', { class: 'tag ok', text: 'Saved' })); }, draw);
     } })),
   );
@@ -1151,22 +1256,49 @@ function ownPinCard(me) {
   return box;
 }
 
-// Turn this browser into a kitchen iPad.
-function deviceCard() {
-  const box = h('section', { class: 'card', 'aria-label': 'Kitchen iPad' });
-  const err = h('div', { class: 'error' });
-  const input = h('input', { type: 'text', placeholder: 'e.g. Pizza station iPad', 'aria-label': 'Name for this iPad', required: true });
-  const form = h('form', { class: 'row', onsubmit: async (e) => {
-      e.preventDefault();
-      const r = await api('POST', '/api/devices', { name: input.value });
-      if (!r.ok) return (err.textContent = r.data.error ?? 'That didn’t work.');
-      box.replaceChildren(h('h2', { text: 'Kitchen iPad' }), h('div', { class: 'note', text: `This iPad is set up as “${input.value}”. Sign out, and cooks will see their names here.` }));
-    } }, h('div', { class: 'grow' }, input), h('button', { class: 'btn dark', type: 'submit', text: 'Set up' }));
-  box.replaceChildren(
-    h('h2', { text: 'Kitchen iPad' }),
-    h('div', { class: 'small muted', text: 'Do this once on each kitchen iPad, signed in as a manager. Afterwards cooks sign in on it with their name and PIN.' }),
-    form, err,
-  );
+// Kitchen iPads: set this one up, and give each a station.
+async function deviceCard() {
+  const box = h('section', { class: 'card', 'aria-label': 'Kitchen iPads' });
+  const draw = async (message) => {
+    const r = await api('GET', '/api/devices');
+    const stations = r.data.stations ?? [];
+    const devices = r.data.devices ?? [];
+    const stationSelect = (value, label) => h('select', { 'aria-label': label },
+      h('option', { value: '', text: 'Any station' }),
+      stations.map((s) => h('option', { value: s.id, text: s.name, selected: s.id === value ? true : undefined })));
+    const err = h('div', { class: 'error' });
+    const here = devices.find((d) => d.thisOne);
+    const name = h('input', { type: 'text', placeholder: 'e.g. Pizza station iPad', 'aria-label': 'Name for this iPad', required: true });
+    const station = stationSelect('', 'Station for this iPad');
+    const form = here ? null : h('form', { class: 'row wrap', onsubmit: async (e) => {
+        e.preventDefault();
+        const s = await api('POST', '/api/devices', { name: name.value, stationId: station.value || null });
+        if (!s.ok) return (err.textContent = s.data.error ?? 'That didn’t work.');
+        draw(h('div', { class: 'note', text: `This iPad is set up as “${name.value}”. Sign out, and cooks will see their names here.` }));
+      } }, h('div', { class: 'grow' }, name), stations.length ? station : null, h('button', { class: 'btn dark', type: 'submit', text: 'Set up this iPad' }));
+    const rows = devices.map((d) => {
+      const pick = stationSelect(d.stationId, `Station for ${d.name}`);
+      pick.addEventListener('change', async () => {
+        const s = await api('POST', `/api/devices/${d.id}`, { stationId: pick.value || null });
+        if (!s.ok) err.textContent = s.data.error ?? 'That didn’t work.';
+      });
+      return h('div', { class: 'wrap' },
+        h('div', { class: 'grow' }, h('div', { text: d.name + (d.thisOne ? ' (this one)' : '') }), h('div', { class: 'small muted', text: d.lastSeen ? `Last used ${when(d.lastSeen)}` : 'Not used yet' })),
+        stations.length ? pick : null,
+        h('button', { class: 'btn', text: 'Remove', onclick: async () => {
+          if (!confirmText(`Remove “${d.name}”? Anyone signed in on it is signed out, and it needs setting up again to use.`)) return;
+          await api('POST', `/api/devices/${d.id}`, { revoke: true });
+          draw();
+        } }));
+    });
+    fill(box, 
+      h('h2', { text: 'Kitchen iPads' }),
+      h('div', { class: 'small muted', text: 'Set up each kitchen iPad once, signed in as a manager on it. Cooks then sign in with their name and PIN. Give an iPad a station and whoever signs in on it goes straight to that station’s prep list.' }),
+      rows.length ? h('div', { class: 'list' }, rows) : null,
+      form, err, message ?? null,
+    );
+  };
+  await draw();
   return box;
 }
 

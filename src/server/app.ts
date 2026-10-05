@@ -6,14 +6,19 @@
  *   GET  /api/setup              whether first-time setup is open
  *   POST /api/setup              first owner and restaurant, once, with SETUP_TOKEN
  *   POST /api/login/password     { email, password }
- *   POST /api/devices            { name } (manager or up): enroll this iPad
+ *   POST /api/devices            { name, stationId? } (manager or up): enroll this iPad
+ *   GET  /api/devices            the kitchen iPads and their stations (manager or up)
+ *   POST /api/devices/:id        { name?, stationId?, revoke? } (manager or up)
  *   GET  /api/devices/staff      names for the PIN screen (enrolled iPad only)
  *   POST /api/login/pin          { staffId, pin } (enrolled iPad only)
  *   POST /api/logout
- *   GET  /api/me
- *   POST /api/staff/:id/pin      { pin } yourself, or a manager for anyone
- *   GET  /api/staff              the team with access and whether each has a PIN (manager or up)
- *   POST /api/staff/:id/access   { access: staff|manager } (the account owner only)
+ *   GET  /api/me                 who's signed in, and this iPad's station if it has one
+ *   POST /api/staff/:id/pin      { pin } yourself; a manager for staff; an admin for anyone but the owner
+ *   GET  /api/staff              the team with access, PINs and email sign-in (manager or up)
+ *   POST /api/staff/:id/access   { access: staff|manager|admin } (owner or admin; never the owner)
+ *   POST /api/staff/:id/invite   { email } (owner or admin): a one-time link to set a password
+ *   GET  /api/invites/:token     whose invite this is
+ *   POST /api/invites/:token     { password }: set it and sign in
  *   GET  /api/sync               last syncs and what's connected (manager or up)
  *   POST /api/sync/:source       start a Square or MarginEdge sync now (manager or up)
  *   GET  /api/book               which parts of the kitchen book are loaded (manager or up)
@@ -31,7 +36,7 @@ import { readFile } from 'node:fs/promises';
 import type { Db } from './db.ts';
 import { HttpError, body, cookie, cookies, send, str } from './http.ts';
 import {
-  atLeast, deviceFor, hashSecret, newToken, passwordProblem, pinProblem, sessionFor, signInWithPassword, signInWithPin, signOut,
+  ACCESS, atLeast, canAdminister, deviceFor, hashSecret, tokenHash, newToken, passwordProblem, pinProblem, sessionFor, signInWithPassword, signInWithPin, signOut,
   type SignedIn, type SignInResult,
 } from './auth.ts';
 import { localDateHour, marginEdgeApiFrom, runSync, squareApiFrom, type SyncSettings } from './scheduler.ts';
@@ -50,6 +55,7 @@ export interface AppConfig {
 }
 
 const SESSION_COOKIE = 'ops_session';
+const INVITE_DAYS = 7;
 const DEVICE_COOKIE = 'ops_device';
 function signInReply(res: ServerResponse, result: SignInResult, secure: boolean): void {
   if (!result.ok) {
@@ -119,13 +125,51 @@ export function createApp(config: AppConfig) {
     if (method === 'GET' && path === '/api/staff') {
       const who = await signedIn(req);
       if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
-      const { rows } = await db.query<{ id: string; display_name: string; job_title: string | null; access: string; has_pin: boolean; has_email: boolean }>(
-        `SELECT s.id, s.display_name, s.job_title, s.access, s.pin_hash IS NOT NULL AS has_pin, s.email IS NOT NULL AS has_email
+      const admin = canAdminister(who);
+      const { rows } = await db.query<{ id: string; display_name: string; job_title: string | null; access: string; has_pin: boolean; email: string | null; has_password: boolean; invite_until: Date | null }>(
+        `SELECT s.id, s.display_name, s.job_title, s.access, s.pin_hash IS NOT NULL AS has_pin, s.email, s.password_hash IS NOT NULL AS has_password,
+                (SELECT max(i.expires_at) FROM invites i WHERE i.staff_id = s.id AND i.used_at IS NULL AND i.expires_at > now()) AS invite_until
            FROM staff s WHERE s.restaurant_id = $1 AND s.active
-          ORDER BY CASE s.access WHEN 'owner' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END, s.display_name`,
+          ORDER BY CASE s.access WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'manager' THEN 2 ELSE 3 END, s.display_name`,
         [who.restaurantId],
       );
-      return send(res, 200, { canSetAccess: who.roleLevel === 'owner', staff: rows.map((r) => ({ id: r.id, name: r.display_name, jobTitle: r.job_title, access: r.access, hasPin: r.has_pin, hasEmail: r.has_email })) });
+      return send(res, 200, {
+        canSetAccess: admin,
+        staff: rows.map((r) => ({
+          id: r.id, name: r.display_name, jobTitle: r.job_title, access: r.access, hasPin: r.has_pin,
+          // Email sign-in: set up (password chosen), invited (link out, not used yet) or neither.
+          emailSignIn: r.access === 'staff' ? null : r.has_password ? 'on' : r.invite_until ? 'invited' : 'off',
+          ...(admin && r.access !== 'staff' && r.email ? { email: r.email } : {}),
+          ...(r.invite_until ? { inviteUntil: r.invite_until } : {}),
+        })),
+      });
+    }
+
+    const invitePath = path.match(/^\/api\/invites\/([A-Za-z0-9_-]{20,100})$/);
+    if (invitePath) {
+      const { rows } = await db.query<{ staff_id: string; email: string | null; display_name: string; restaurant_name: string; used_at: Date | null; expires_at: Date; access: string }>(
+        `SELECT i.staff_id, s.email, s.display_name, r.name AS restaurant_name, i.used_at, i.expires_at, s.access
+           FROM invites i JOIN staff s ON s.id = i.staff_id AND s.restaurant_id = i.restaurant_id AND s.active JOIN restaurants r ON r.id = i.restaurant_id
+          WHERE i.token_hash = $1`, [tokenHash(invitePath[1]!)]);
+      const invite = rows[0];
+      if (!invite || !invite.email || invite.access === 'staff') throw new HttpError(404, 'This link isn’t valid. Ask whoever sent it for a new one.');
+      if (invite.used_at) throw new HttpError(410, 'This link was already used. Sign in with your email and password, or ask for a new link.');
+      if (new Date(invite.expires_at) <= new Date()) throw new HttpError(410, 'This link has expired. Ask whoever sent it for a new one.');
+      if (method === 'GET') return send(res, 200, { name: invite.display_name, email: invite.email, restaurantName: invite.restaurant_name });
+      if (method === 'POST') {
+        const b = await body(req);
+        const password = str(b, 'password');
+        const problem = passwordProblem(password);
+        if (problem) throw new HttpError(400, problem);
+        // Used once: the update only succeeds while the invite is still open.
+        const used = await db.query('UPDATE invites SET used_at = now() WHERE token_hash = $1 AND used_at IS NULL RETURNING token_hash', [tokenHash(invitePath[1]!)]);
+        if (!used.rows.length) throw new HttpError(410, 'This link was already used.');
+        await db.query('UPDATE staff SET password_hash = $1, failed_logins = 0, locked_until = NULL WHERE id = $2', [await hashSecret(password), invite.staff_id]);
+        // A new password signs out the old one everywhere.
+        await db.query("DELETE FROM sessions WHERE staff_id = $1 AND method = 'password'", [invite.staff_id]);
+        await db.query('DELETE FROM invites WHERE staff_id = $1 AND used_at IS NULL', [invite.staff_id]);
+        return signInReply(res, await signInWithPassword(db, invite.email, password), secureCookies);
+      }
     }
 
     if (method === 'GET' && path === '/health') {
@@ -166,17 +210,57 @@ export function createApp(config: AppConfig) {
     }
 
     if (method === 'GET' && path === '/api/me') {
-      return send(res, 200, { me: await signedIn(req) });
+      const me = await signedIn(req);
+      const device = await deviceFor(db, cookies(req)[DEVICE_COOKIE]);
+      const here = device && device.restaurantId === me.restaurantId ? device : undefined;
+      const station = here?.stationId ? (await db.query<{ name: string }>('SELECT name FROM stations WHERE id = $1 AND active', [here.stationId])).rows[0] : undefined;
+      return send(res, 200, { me, ...(here ? { device: { id: here.id, name: here.name, ...(station ? { stationId: here.stationId, station: station.name } : {}) } } : {}) });
     }
+
+    const stationOf = async (restaurantId: string, b: Record<string, unknown>): Promise<string | null> => {
+      if (b.stationId === undefined || b.stationId === null || b.stationId === '') return null;
+      const r = await db.query('SELECT 1 FROM stations WHERE restaurant_id = $1 AND id = $2', [restaurantId, String(b.stationId)]);
+      if (!r.rows.length) throw new HttpError(400, 'No such station.');
+      return String(b.stationId);
+    };
 
     if (method === 'POST' && path === '/api/devices') {
       const who = await signedIn(req);
       if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Only a manager can set up an iPad.');
       const b = await body(req);
+      const name = str(b, 'name').trim();
+      if (!name) throw new HttpError(400, 'Name this iPad.');
+      const stationId = await stationOf(who.restaurantId, b);
       const { token, hash } = newToken();
-      const r = await db.query<{ id: string }>('INSERT INTO devices (restaurant_id, name, token_hash, enrolled_by) VALUES ($1, $2, $3, $4) RETURNING id', [who.restaurantId, str(b, 'name'), hash, who.staffId]);
+      const r = await db.query<{ id: string }>('INSERT INTO devices (restaurant_id, name, token_hash, enrolled_by, station_id) VALUES ($1, $2, $3, $4, $5) RETURNING id', [who.restaurantId, name, hash, who.staffId, stationId]);
       const tenYears = new Date(Date.now() + 10 * 365 * 86_400_000);
-      return send(res, 201, { device: { id: r.rows[0]!.id, name: b.name } }, { 'set-cookie': cookie(DEVICE_COOKIE, token, tenYears, secureCookies) });
+      return send(res, 201, { device: { id: r.rows[0]!.id, name, stationId } }, { 'set-cookie': cookie(DEVICE_COOKIE, token, tenYears, secureCookies) });
+    }
+
+    if (method === 'GET' && path === '/api/devices') {
+      const who = await signedIn(req);
+      if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
+      const here = await deviceFor(db, cookies(req)[DEVICE_COOKIE]);
+      const devices = (await db.query<{ id: string; name: string; station_id: string | null; last_seen_at: Date | null }>(
+        'SELECT id, name, station_id, last_seen_at FROM devices WHERE restaurant_id = $1 AND revoked_at IS NULL ORDER BY name', [who.restaurantId])).rows;
+      const stations = (await db.query<{ id: string; name: string }>('SELECT id, name FROM stations WHERE restaurant_id = $1 AND active ORDER BY sort_order', [who.restaurantId])).rows;
+      return send(res, 200, { stations, devices: devices.map((d) => ({ id: d.id, name: d.name, stationId: d.station_id, lastSeen: d.last_seen_at, thisOne: d.id === here?.id })) });
+    }
+
+    const devicePath = path.match(/^\/api\/devices\/([0-9a-f-]{36})$/);
+    if (method === 'POST' && devicePath) {
+      const who = await signedIn(req);
+      if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Only a manager can change an iPad.');
+      const b = await body(req);
+      const id = devicePath[1];
+      if (b.revoke === true) {
+        await db.query('UPDATE devices SET revoked_at = now() WHERE restaurant_id = $1 AND id = $2', [who.restaurantId, id]);
+        await db.query('DELETE FROM sessions WHERE device_id = $1', [id]);
+        return send(res, 200, { ok: true });
+      }
+      if ('stationId' in b) await db.query('UPDATE devices SET station_id = $1 WHERE restaurant_id = $2 AND id = $3', [await stationOf(who.restaurantId, b), who.restaurantId, id]);
+      if (typeof b.name === 'string' && b.name.trim()) await db.query('UPDATE devices SET name = $1 WHERE restaurant_id = $2 AND id = $3', [b.name.trim(), who.restaurantId, id]);
+      return send(res, 200, { ok: true });
     }
 
     if (method === 'GET' && path === '/api/devices/staff') {
@@ -193,9 +277,11 @@ export function createApp(config: AppConfig) {
       const who = await signedIn(req);
       const staffId = pinPath[1]!;
       if (staffId !== who.staffId && !atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Only a manager can set someone else’s PIN.');
-      if (staffId !== who.staffId && who.roleLevel !== 'owner') {
+      if (staffId !== who.staffId) {
+        // Managers set staff PINs; administrators anyone's but the owner's.
         const target = (await db.query<{ access: string }>('SELECT access FROM staff WHERE id = $1 AND restaurant_id = $2', [staffId, who.restaurantId])).rows[0];
-        if (target && target.access !== 'staff') throw new HttpError(403, 'Only the account owner sets a manager’s PIN.');
+        if (target?.access === 'owner' && who.access !== 'owner') throw new HttpError(403, 'Only the account owner sets their own PIN.');
+        if (target && target.access !== 'staff' && !canAdminister(who)) throw new HttpError(403, 'Only the account owner or an administrator sets a manager’s PIN.');
       }
       const b = await body(req);
       const pin = str(b, 'pin');
@@ -209,13 +295,41 @@ export function createApp(config: AppConfig) {
     const accessPath = path.match(/^\/api\/staff\/([0-9a-f-]{36})\/access$/);
     if (method === 'POST' && accessPath) {
       const who = await signedIn(req);
-      if (who.roleLevel !== 'owner') throw new HttpError(403, 'Only the account owner sets who is a manager.');
-      if (accessPath[1] === who.staffId) throw new HttpError(400, 'You’re the account owner.');
+      if (!canAdminister(who)) throw new HttpError(403, 'Only the account owner or an administrator sets access.');
+      if (accessPath[1] === who.staffId) throw new HttpError(400, 'Someone else has to change your own access.');
       const b = await body(req);
-      if (b.access !== 'staff' && b.access !== 'manager') throw new HttpError(400, 'Staff or manager.');
+      if (!ACCESS.includes(b.access as never) || b.access === 'owner') throw new HttpError(400, 'Staff, manager or administrator.');
       const r = await db.query("UPDATE staff SET access = $1 WHERE id = $2 AND restaurant_id = $3 AND access <> 'owner' RETURNING id", [b.access, accessPath[1], who.restaurantId]);
-      if (!r.rows.length) throw new HttpError(404, 'No such person.');
+      if (!r.rows.length) throw new HttpError(404, 'No such person, or it’s the account owner.');
+      if (b.access === 'staff') {
+        // Back to staff: no more email sign-in. Their PIN still works on kitchen iPads.
+        await db.query('UPDATE staff SET password_hash = NULL WHERE id = $1', [accessPath[1]]);
+        await db.query("DELETE FROM sessions WHERE staff_id = $1 AND method = 'password'", [accessPath[1]]);
+        await db.query('DELETE FROM invites WHERE staff_id = $1', [accessPath[1]]);
+      }
       return send(res, 200, { ok: true });
+    }
+
+    const invitePost = path.match(/^\/api\/staff\/([0-9a-f-]{36})\/invite$/);
+    if (method === 'POST' && invitePost) {
+      const who = await signedIn(req);
+      if (!canAdminister(who)) throw new HttpError(403, 'Only the account owner or an administrator invites people.');
+      const target = (await db.query<{ access: string }>('SELECT access FROM staff WHERE id = $1 AND restaurant_id = $2 AND active', [invitePost[1], who.restaurantId])).rows[0];
+      if (!target) throw new HttpError(404, 'No such person.');
+      if (target.access === 'owner') throw new HttpError(400, 'The account owner already signs in with email.');
+      if (target.access === 'staff') throw new HttpError(400, 'Email sign-in is for managers. Make them a manager first.');
+      const b = await body(req);
+      const email = str(b, 'email').trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'That doesn’t look like an email address.');
+      const taken = await db.query('SELECT 1 FROM staff WHERE lower(email) = lower($1) AND id <> $2', [email, invitePost[1]]);
+      if (taken.rows.length) throw new HttpError(409, 'Someone else already signs in with that email.');
+      await db.query('UPDATE staff SET email = $1 WHERE id = $2', [email, invitePost[1]]);
+      // One open link at a time: a new invite replaces the last (and doubles as a password reset).
+      await db.query('DELETE FROM invites WHERE staff_id = $1 AND used_at IS NULL', [invitePost[1]]);
+      const { token, hash } = newToken();
+      const expiresAt = new Date(Date.now() + INVITE_DAYS * 86_400_000);
+      await db.query('INSERT INTO invites (token_hash, restaurant_id, staff_id, created_by, expires_at) VALUES ($1, $2, $3, $4, $5)', [hash, who.restaurantId, invitePost[1], who.staffId, expiresAt]);
+      return send(res, 201, { path: `/#invite=${token}`, expiresAt, email });
     }
 
     if (path.startsWith('/api/') && ['/api/sync', '/api/book', '/api/book/import', '/api/margins', '/api/menu', '/api/answers'].includes(path) || path.startsWith('/api/sync/')) {
