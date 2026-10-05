@@ -18,7 +18,7 @@ import { getModel, loadBook } from './model.ts';
 import { loadAreas } from './areas.ts';
 import { cardView, kindOf, linkedItems, yieldConversions } from './cards.ts';
 import { tryConvert } from '../core/units.ts';
-import { nameKey } from '../core/menuLinks.ts';
+import { normalizeName as cardKey } from '../connectors/marginedgeRecipes.ts';
 
 const PREP_SECTION = { kitchen: 'Preps', bar: 'Bar preps' };
 
@@ -30,13 +30,13 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
   const book = await loadBook(db, who.restaurantId);
   const linked = linkedItems(model);
   const cards = (book.recipeCards ?? []).map((c) => ({ card: c, view: cardView(model, c, linked, areaOf) }));
-  const byName = new Map(cards.map((c) => [nameKey(c.card.name), c]));
+  const byName = new Map(cards.map((c) => [cardKey(c.card.name), c]));
   // A prep belongs to the side of what uses it (the bar's simple syrup), else its own kind.
   const sideOf = (c: (typeof cards)[number], seen = new Set<string>()): 'kitchen' | 'bar' => {
     if (c.view.kind === 'dish' || c.view.kind === 'drink' || c.view.linked.length) return c.view.area as 'kitchen' | 'bar';
     if (c.view.kind === 'barPrep') return 'bar';
-    seen.add(nameKey(c.card.name));
-    const users = c.view.usedBy.map((n) => byName.get(nameKey(n))).filter((u): u is (typeof cards)[number] => !!u && !seen.has(nameKey(u.card.name)));
+    seen.add(cardKey(c.card.name));
+    const users = c.view.usedBy.map((n) => byName.get(cardKey(n))).filter((u): u is (typeof cards)[number] => !!u && !seen.has(cardKey(u.card.name)));
     return users.some((u) => sideOf(u, seen) === 'bar') && !users.some((u) => sideOf(u, seen) === 'kitchen') ? 'bar' : 'kitchen';
   };
   const categories = [...new Set(model.sales.map((l) => l.category).filter((x): x is string => !!x))];
@@ -59,7 +59,7 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
       const list = sides[side].get(section) ?? [];
       // Shown by the name it sells under when that differs ("Spinachi" for the "Spinachi Pizza" card).
       const sellsAs = c.view.linked.sort((a, b) => b.sold - a.sold)[0]?.itemName;
-      list.push({ name: c.card.name, kind: c.view.kind, ...(sellsAs && nameKey(sellsAs) !== nameKey(c.card.name) ? { sellsAs } : {}) });
+      list.push({ name: c.card.name, kind: c.view.kind, ...(sellsAs && cardKey(sellsAs) !== cardKey(c.card.name) ? { sellsAs } : {}) });
       sides[side].set(section, list);
     }
     // Sections that sell most first, preps last.
@@ -73,7 +73,7 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
   const m = path.match(/^\/api\/recipes\/(.+)$/);
   if (m) {
     const name = decodeURIComponent(m[1]!);
-    const c = byName.get(nameKey(name));
+    const c = byName.get(cardKey(name));
     if (!c) throw new HttpError(404, 'No recipe card by that name.');
     const kind = kindOf(c.card);
     const prep = kind === 'prep' || kind === 'barPrep';
@@ -89,7 +89,7 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
     return send(res, 200, {
       name: c.card.name, kind, side: sideOf(c), section: sectionOf(c),
       yields, scale, ...(scaledTo ? { scaledTo } : {}), ...(prep && amount > 0 && unit ? { asked: { amount, unit } } : {}),
-      ingredients: c.card.ingredients.map((i) => ({ amount: i.amount, unit: i.unit, name: i.name, ...(byName.has(nameKey(i.name)) ? { card: byName.get(nameKey(i.name))!.card.name } : {}), ...(i.yieldPercent && i.yieldPercent !== 100 ? { yieldPercent: i.yieldPercent } : {}), ...(i.note ? { note: i.note } : {}) })),
+      ingredients: c.card.ingredients.map((i) => ({ amount: i.amount, unit: i.unit, name: i.name, ...(byName.has(cardKey(i.name)) ? { card: byName.get(cardKey(i.name))!.card.name } : {}), ...(i.yieldPercent && i.yieldPercent !== 100 ? { yieldPercent: i.yieldPercent } : {}), ...(i.note ? { note: i.note } : {}) })),
       ...(c.card.method ? { method: c.card.method } : {}),
       ...(c.card.shelfLifeDays ? { shelfLifeDays: c.card.shelfLifeDays } : {}),
       usedBy: c.view.usedBy,

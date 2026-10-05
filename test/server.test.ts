@@ -261,9 +261,21 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.deepEqual((typeof book === 'string' ? JSON.parse(book) : book).confirm.filter((c: any) => c.catalogId === 'V-SODA').map((c: any) => c.recipe), ['House Soda']);
   assert.equal((await call('POST', '/api/prep/stations', { body: { name: 'Bar' }, cookies: ownerSession })).status, 201);
 
+  // Tidy names: drinks take their Square name, preps are capitalized, references follow.
+  await call('POST', '/api/cards', { body: { card: { name: 'lemon juice', kind: 'barPrep', yields: [{ amount: 1, unit: 'qt' }], ingredients: [{ amount: 1, unit: 'qt', name: 'Water' }] } }, cookies: ownerSession });
+  await call('POST', '/api/cards', { body: { card: { name: 'house lemonade', kind: 'drink', ingredients: [{ amount: 2, unit: 'floz', name: 'lemon juice' }] }, link: [{ catalogId: 'V-LEM', itemName: 'Lemonade' }] }, cookies: ownerSession });
+  const tidy = (await call('GET', '/api/cards/tidy', { cookies: ownerSession })).json.proposals;
+  assert.deepEqual(tidy.map((t: any) => [t.from, t.to]), [['lemon juice', 'Lemon Juice'], ['house lemonade', 'Lemonade']]);
+  assert.equal((await call('POST', '/api/cards/tidy', { body: { renames: tidy.map((t: any) => ({ ...t, from: 'stale' })) }, cookies: ownerSession })).status, 409);
+  assert.deepEqual((await call('POST', '/api/cards/tidy', { body: { renames: tidy }, cookies: ownerSession })).json, { renamed: 2, removed: 0 });
+  const lemonade = (await call('GET', '/api/recipes/Lemonade', { cookies: ownerSession })).json;
+  assert.deepEqual([lemonade.name, lemonade.ingredients[0].card], ['Lemonade', 'Lemon Juice']);
+  const tidied = (await db!.query<{ value: any }>("SELECT value FROM kitchen_book WHERE key = 'linkAnswers'")).rows[0]!.value;
+  assert.deepEqual((typeof tidied === 'string' ? JSON.parse(tidied) : tidied).confirm.filter((c: any) => c.catalogId === 'V-LEM').map((c: any) => c.recipe), ['Lemonade']);
+
   // The recipe book: anyone can read it, by side and section; costs are for managers.
   const bookForCook = (await call('GET', '/api/recipes', { cookies: marcoOnExpo })).json;
-  assert.deepEqual(bookForCook.bar.map((s: any) => [s.section, s.cards.map((c: any) => c.name)]), [['Drinks', ['House Soda']], ['Bar preps', ['Simple Syrup 1:1']]]);
+  assert.deepEqual(bookForCook.bar.map((s: any) => [s.section, s.cards.map((c: any) => c.name)]), [['Drinks', ['House Soda', 'Lemonade']], ['Bar preps', ['Lemon Juice', 'Simple Syrup 1:1']]]);
   const sodaForCook = (await call('GET', '/api/recipes/House%20Soda', { cookies: marcoOnExpo })).json;
   assert.deepEqual([sodaForCook.ingredients[0].card, sodaForCook.cost, sodaForCook.canEdit], ['Simple Syrup 1:1', undefined, false]);
   const syrupScaled = (await call('GET', '/api/recipes/Simple%20Syrup%201%3A1?amount=2&unit=qt', { cookies: marcoOnExpo })).json;

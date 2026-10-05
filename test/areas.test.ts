@@ -9,3 +9,9 @@ test('Square categories sort into kitchen, bar or neither by name', () => {
     Beer: 'bar', Wine: 'bar', Cocktails: 'bar', 'Non-Alcoholic Drinks': 'bar', 'Online Drinks': 'bar', Coffee: 'bar', Merch: 'none', '': 'none',
   });
 });
+
+test('card names are capitalized the way the book writes them', async () => {
+  const { titleCase } = await import('../src/server/cards.ts');
+  assert.deepEqual(['apricot glaze', 'BOH chili oil', 'Gluten Free dough1', 'brussels sprouts with black garlic'].map(titleCase),
+    ['Apricot Glaze', 'BOH Chili Oil', 'Gluten Free Dough', 'Brussels Sprouts with Black Garlic']);
+});

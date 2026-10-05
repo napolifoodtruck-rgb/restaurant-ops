@@ -248,3 +248,10 @@ table.ingredients td.amt { width: 34%; font-weight: 700; white-space: nowrap; }
 .sheet-wrap { position: fixed; inset: 0; background: rgba(20, 22, 24, .45); display: flex; justify-content: flex-end; z-index: 20; }
 .sheet { width: min(640px, 100%); height: 100%; overflow-y: auto; background: var(--bg); padding: 20px 24px 40px; display: flex; flex-direction: column; gap: 16px; box-shadow: -8px 0 30px rgba(0,0,0,.15); }
 .sheet-title { font-size: 28px; margin: 4px 0 0; }
+.tlist { display: flex; flex-direction: column; }
+.trow { display: grid; grid-template-columns: 28px minmax(160px, 1fr) minmax(200px, 1.2fr) minmax(200px, 1.4fr); gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--soft); }
+.trow input[type=checkbox] { width: 22px; height: 22px; }
+.trow input[type=text] { height: 44px; border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; font-size: 15px; width: 100%; }
+.trow .strike { color: var(--muted); }
+.trow.off { opacity: .6; }
+@media (max-width: 800px) { .trow { grid-template-columns: 28px 1fr; } .trow > :nth-child(n+3) { grid-column: 2; } }

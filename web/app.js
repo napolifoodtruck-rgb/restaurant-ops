@@ -1124,7 +1124,7 @@ async function recipesScreen(me, state = {}) {
     sections.length ? h('div', { class: 'book' }, sections.map((s) => h('section', { class: 'card' },
       h('div', { class: 'row' }, h('h2', { class: 'grow', text: s.section }), h('span', { class: 'small muted', text: String(s.cards.length) })),
       h('div', { class: 'book-list' }, s.cards.map((c) => h('button', { class: 'book-item', onclick: () => recipePage(me, c.name) },
-        h('span', { text: c.name }), c.sellsAs ? h('span', { class: 'small muted', text: `sells as ${c.sellsAs}` }) : null)))))
+        h('span', { text: c.name }))))))
     ) : h('div', { class: 'card small muted', text: q ? 'No recipe by that name.' : `No ${side === 'bar' ? 'drink' : ''} recipe cards yet.` }),
   ]));
 }
@@ -1175,7 +1175,7 @@ function recipeView(me, r, opts) {
     fill(body,
       h('div', { class: 'row wrap' },
         h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[r.side]} · ${r.section}` }), h(opts.sheet ? 'h2' : 'h1', { class: opts.sheet ? 'sheet-title' : '', text: r.name }),
-          h('div', { class: 'sub', text: [makes, r.sellsAs.length ? `sells as ${r.sellsAs.join(', ')}` : '', r.shelfLifeDays ? `keeps ${r.shelfLifeDays} days` : ''].filter(Boolean).join(' · ') })),
+          h('div', { class: 'sub', text: [makes, r.sellsAs.filter((n) => n.toLowerCase() !== r.name.toLowerCase()).length ? `sells as ${r.sellsAs.join(', ')}` : '', r.shelfLifeDays ? `keeps ${r.shelfLifeDays} days` : ''].filter(Boolean).join(' · ') })),
         opts.back ?? null,
         r.canEdit && !opts.sheet ? h('button', { class: 'btn', text: 'Edit card', onclick: async () => { const d = (await api('GET', '/api/cards')).data; const c = d.cards.find((x) => x.name === r.name); if (c) cardEditor(me, d, c); } }) : null),
       scaler,
@@ -1227,18 +1227,59 @@ async function cardsScreen(me, opts = {}) {
       h('div', { class: 'grow' }, h('div', { text: x.name }), h('div', { class: 'small muted', text: `${x.category} · ${x.sold} sold · ${dollars(x.netSales)} in 90 days` })),
       h('button', { class: 'btn small-btn', text: 'Write card', onclick: () => cardEditor(me, d, null, { name: x.itemName, kind: side === 'bar' ? 'drink' : 'dish', link: [x] }) }),
       h('button', { class: 'link', text: 'No card needed', title: 'A fee, a gift card, or nothing poured or cooked', onclick: async () => { await api('POST', '/api/cards/no-card', { items: [x] }); cardsScreen(me, opts); } }))))) : null;
+  const tidy = (await api('GET', '/api/cards/tidy')).data?.proposals ?? [];
+  const tidyBox = tidy.some((t) => t.to || t.remove) ? h('div', { class: 'note row wrap' },
+    h('div', { class: 'grow', text: `${tidy.filter((t) => t.to || t.remove).length} card names could be tidied: dishes and drinks named as they sell in Square, preps capitalized, duplicates removed.` }),
+    h('button', { class: 'btn dark', text: 'Review names', onclick: () => tidyScreen(me) })) : null;
   show(shell(me, 'menu', [
     h('header', { class: 'row wrap' },
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[side]} · costed from invoice prices` }), h('h1', { text: 'Recipe cards' }),
         h('div', { class: 'sub', text: side === 'bar' ? 'Every drink poured or mixed has a card: a pour from the bottle or keg, a cocktail spec, a dose of coffee. Cans and sodas are one of what was bought.' : 'What goes into each dish and prep, priced from what you paid.' })),
       h('div', { class: 'row wrap' }, h('button', { class: 'btn', text: '← Menu', onclick: () => menuScreen(me) }), sideSwitch(me, () => cardsScreen(me)),
         h('button', { class: 'btn dark', text: 'New card', onclick: () => cardEditor(me, d, null, { kind: side === 'bar' ? 'drink' : 'dish' }) }))),
+    tidyBox,
     noCardBox,
     h('section', { class: 'card' },
       h('div', { class: 'row' }, h('h2', { class: 'grow', text: `Cards (${d.cards.length})` }), search),
       cardRows.length ? h('div', { class: 'clist' }, h('div', { class: 'crow head' }, h('div', { text: 'Card' }), h('div', { text: 'Kind' }), h('div', { class: 'num', text: 'Cost' }), h('div', { class: 'num', text: 'Of the price' }), h('div')), cardRows)
         : h('div', { class: 'small muted', text: side === 'bar' ? 'No drink cards yet.' : 'No cards yet.' }),
       h('div', { class: 'small muted', text: '* part of the card has no price yet.' })),
+  ]));
+}
+
+/** Card names to tidy, reviewed before anything changes. */
+async function tidyScreen(me) {
+  loadingScreen(me, 'menu', 'Tidy card names');
+  const r = await api('GET', '/api/cards/tidy');
+  const list = r.data.proposals ?? [];
+  const err = h('div', { class: 'error' });
+  const rows = list.map((t) => {
+    const can = Boolean(t.to || t.remove);
+    t.on = can;
+    const box = h('input', { type: 'checkbox', checked: can ? true : undefined, disabled: can ? undefined : true, 'aria-label': `${t.remove ? 'Remove' : 'Rename'} ${t.from}` });
+    box.addEventListener('change', () => { t.on = box.checked; });
+    const to = t.to ? h('input', { type: 'text', value: t.to, 'aria-label': `New name for ${t.from}` }) : null;
+    to?.addEventListener('change', () => { t.to = to.value; });
+    return h('div', { class: `trow${can ? '' : ' off'}` }, box,
+      h('div', { class: 'strike', text: t.from }),
+      t.remove ? h('span', { class: 'tag bad', text: 'Remove duplicate' }) : to ?? h('span', { class: 'small muted', text: 'unchanged' }),
+      h('div', { class: 'small muted', text: t.why }));
+  });
+  const apply = h('button', { class: 'btn dark', text: 'Apply checked', onclick: async () => {
+    const on = list.filter((t) => t.on);
+    if (!on.length) return (err.textContent = 'Nothing checked.');
+    apply.disabled = true;
+    const res = await api('POST', '/api/cards/tidy', { renames: on.filter((t) => t.to).map((t) => ({ index: t.index, from: t.from, to: t.to })), removes: on.filter((t) => t.remove).map((t) => ({ index: t.index, from: t.from })) });
+    apply.disabled = false;
+    if (!res.ok) return (err.textContent = res.data.error ?? 'Not saved.');
+    cardsScreen(me);
+  } });
+  show(shell(me, 'menu', [
+    h('header', { class: 'row wrap' },
+      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: 'Recipe cards' }), h('h1', { text: 'Tidy card names' }),
+        h('div', { class: 'sub', text: 'Dishes and drinks take the name they sell under in Square; everything else is capitalized. Every rename follows the card into the cards that use it, the prep lists and menu plans. Change any new name before applying.' })),
+      h('button', { class: 'btn', text: '← Cards', onclick: () => cardsScreen(me) })),
+    h('section', { class: 'card' }, list.length ? h('div', { class: 'tlist' }, rows) : h('div', { class: 'small muted', text: 'Every name is tidy.' }), err, list.length ? h('div', {}, apply) : null),
   ]));
 }
 

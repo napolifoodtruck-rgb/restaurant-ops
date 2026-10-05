@@ -18,12 +18,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
-import { getModel, loadBook, saveBook, withAnswer, type LinkAnswers, type Model } from './model.ts';
+import { getModel, loadBook, saveBook, withAnswer, type LinkAnswers, type Model, type PilotImportAnswers } from './model.ts';
 import { loadAreas, type AreaOf } from './areas.ts';
 import { posItemOf } from './views.ts';
-import { recipeId, type RecipeCard } from '../connectors/marginedgeRecipes.ts';
+import { normalizeName as cardKey, recipeId, type RecipeCard } from '../connectors/marginedgeRecipes.ts';
 import { tryConvert } from '../core/units.ts';
-import { nameKey, posName, type PosMenuItem } from '../core/menuLinks.ts';
+import { posName, type PosMenuItem } from '../core/menuLinks.ts';
 import { draftDrinkCards, type BarItem } from '../core/drinkCards.ts';
 
 export type CardKind = 'dish' | 'drink' | 'prep' | 'barPrep';
@@ -70,29 +70,29 @@ function cardProblem(c: any, model: Model, cards: RecipeCard[], previousName?: s
   if (!c || typeof c.name !== 'string' || !c.name.trim()) return 'Name the card.';
   if (!['dish', 'drink', 'prep', 'barPrep'].includes(c.kind)) return 'Is it a dish, a drink or a prep?';
   if (!Array.isArray(c.ingredients)) return 'Missing ingredients.';
-  const key = nameKey(c.name);
-  if (cards.some((x) => nameKey(x.name) === key && (!previousName || nameKey(previousName) !== key))) return `There's already a card called ${c.name.trim()}.`;
+  const key = cardKey(c.name);
+  if (cards.some((x) => cardKey(x.name) === key && (!previousName || cardKey(previousName) !== key))) return `There's already a card called ${c.name.trim()}.`;
   if ((c.kind === 'prep' || c.kind === 'barPrep') && !(Array.isArray(c.yields) && c.yields.some((y: any) => y?.amount > 0 && y?.unit))) return 'Say what a batch makes (e.g. 2 qt).';
-  const products = new Set(model.products.map((p) => nameKey(p.name)));
-  const cardNames = new Set(cards.filter((x) => !previousName || nameKey(x.name) !== nameKey(previousName)).map((x) => nameKey(x.name)));
+  const products = new Set(model.products.map((p) => cardKey(p.name)));
+  const cardNames = new Set(cards.filter((x) => !previousName || cardKey(x.name) !== cardKey(previousName)).map((x) => cardKey(x.name)));
   for (const i of c.ingredients) {
     if (typeof i?.name !== 'string' || !i.name.trim()) return 'Each line needs what goes in.';
     if (!(Number(i.amount) > 0)) return `How much ${i.name}?`;
     if (typeof i.unit !== 'string' || !i.unit) return `${i.name}: in what unit?`;
-    if (nameKey(i.name) === key) return 'A card can’t use itself.';
-    if (!products.has(nameKey(i.name)) && !cardNames.has(nameKey(i.name))) return `${i.name} isn’t a product on your invoices or another card. Pick it from the list.`;
+    if (cardKey(i.name) === key) return 'A card can’t use itself.';
+    if (!products.has(cardKey(i.name)) && !cardNames.has(cardKey(i.name))) return `${i.name} isn’t a product on your invoices or another card. Pick it from the list.`;
   }
   // No loops through other cards: this card can't go into anything it uses.
-  const byKey = new Map(cards.map((x) => [nameKey(x.name), x]));
+  const byKey = new Map(cards.map((x) => [cardKey(x.name), x]));
   const seen = new Set<string>();
   const walk = (name: string): boolean => {
-    const k = nameKey(name);
+    const k = cardKey(name);
     if (k === key) return true;
     if (seen.has(k)) return false;
     seen.add(k);
     return (byKey.get(k)?.ingredients ?? []).some((i) => walk(i.name));
   };
-  if (c.ingredients.some((i: any) => byKey.has(nameKey(i.name)) && walk(i.name))) return 'That would make a loop: one of those cards already uses this one.';
+  if (c.ingredients.some((i: any) => byKey.has(cardKey(i.name)) && walk(i.name))) return 'That would make a loop: one of those cards already uses this one.';
   return undefined;
 }
 
@@ -167,20 +167,14 @@ async function saveCards(db: Db, who: SignedIn, changes: { card: CardInput; prev
   const importAnswers = book.importAnswers ?? {};
   let importChanged = false;
   for (const ch of changes) {
-    const prev = ch.previousName ? cards.find((c) => nameKey(c.name) === nameKey(ch.previousName!)) : cards.find((c) => nameKey(c.name) === nameKey(ch.card.name));
+    const prev = ch.previousName ? cards.find((c) => cardKey(c.name) === cardKey(ch.previousName!)) : cards.find((c) => cardKey(c.name) === cardKey(ch.card.name));
     const stored = toStored(ch.card, prev);
     cards = prev ? cards.map((c) => (c === prev ? stored : c)) : [...cards, stored];
     // A rename follows the card everywhere it's named.
     if (prev && prev.name !== stored.name) {
-      const was = nameKey(prev.name);
-      cards = cards.map((c) => ({ ...c, ingredients: c.ingredients.map((i) => (nameKey(i.name) === was ? { ...i, name: stored.name } : i)) }));
-      links = { ...links, confirm: links.confirm.map((l) => (nameKey(l.recipe) === was ? { ...l, recipe: stored.name } : l)) };
-      if (importAnswers.portions?.some((p) => nameKey(p.recipe) === was)) {
-        importAnswers.portions = importAnswers.portions.map((p) => (nameKey(p.recipe) === was ? { ...p, recipe: stored.name } : p));
-        importChanged = true;
-      }
-      await db.query('UPDATE station_items SET recipe_name = $1 WHERE restaurant_id = $2 AND recipe_name = $3', [stored.name, who.restaurantId, prev.name]);
-      await db.query('UPDATE menu_plans SET recipe_name = $1 WHERE restaurant_id = $2 AND recipe_name = $3', [stored.name, who.restaurantId, prev.name]);
+      const r = await followRename(db, who, { cards, links, importAnswers }, prev.name, stored.name);
+      cards = r.cards; links = r.links;
+      importChanged ||= r.importChanged;
     }
     for (const item of ch.link ?? []) links = withAnswer(links, { type: 'link', catalogId: item.catalogId, itemName: item.itemName, ...(item.variationName ? { variationName: item.variationName } : {}), recipe: stored.name });
     for (const item of ch.unlink ?? []) {
@@ -192,6 +186,77 @@ async function saveCards(db: Db, who: SignedIn, changes: { card: CardInput; prev
   await saveBook(db, who.restaurantId, 'recipeCards', cards, who.staffId);
   await saveBook(db, who.restaurantId, 'linkAnswers', links, who.staffId);
   if (importChanged) await saveBook(db, who.restaurantId, 'importAnswers', importAnswers, who.staffId);
+}
+
+/** Everything that names a card by name, renamed with it: other cards, links, portions, station items, plans. */
+async function followRename(db: Db, who: SignedIn, state: { cards: RecipeCard[]; links: LinkAnswers; importAnswers: PilotImportAnswers }, from: string, to: string) {
+  const was = cardKey(from);
+  const cards = state.cards.map((c) => ({ ...c, ingredients: c.ingredients.map((i) => (cardKey(i.name) === was ? { ...i, name: to } : i)) }));
+  const links = { ...state.links, confirm: state.links.confirm.map((l) => (cardKey(l.recipe) === was ? { ...l, recipe: to } : l)) };
+  let importChanged = false;
+  if (state.importAnswers.portions?.some((p) => cardKey(p.recipe) === was)) {
+    state.importAnswers.portions = state.importAnswers.portions.map((p) => (cardKey(p.recipe) === was ? { ...p, recipe: to } : p));
+    importChanged = true;
+  }
+  await db.query('UPDATE station_items SET recipe_name = $1 WHERE restaurant_id = $2 AND lower(recipe_name) = lower($3)', [to, who.restaurantId, from]);
+  await db.query('UPDATE menu_plans SET recipe_name = $1 WHERE restaurant_id = $2 AND lower(recipe_name) = lower($3)', [to, who.restaurantId, from]);
+  return { cards, links, importChanged };
+}
+
+const SMALL_WORDS = new Set(['a', 'an', 'and', 'or', 'of', 'with', 'in', 'on', 'the', 'to', 'for', 'de', 'di', 'del', 'della', 'al', 'alla', 'e', 'la', 'le']);
+/** "apricot glaze" → "Apricot Glaze"; "BOH chili oil" → "BOH Chili Oil"; "Gluten Free dough1" → "Gluten Free Dough". */
+export function titleCase(name: string): string {
+  const words = name.trim().replace(/\s+/g, ' ').split(' ');
+  return words.map((w, i) => {
+    w = w.replace(/(?<=[a-z])\d+$/i, '');
+    if (/^[A-Z0-9&]{2,}$/.test(w) || /[a-z][A-Z]/.test(w)) return w; // BOH, McX: as written
+    if (i > 0 && SMALL_WORDS.has(w.toLowerCase())) return w.toLowerCase();
+    return w.toLowerCase().replace(/(^|[-'’(/])([a-zà-ÿ])/g, (_m, p, c) => p + c.toUpperCase());
+  }).join(' ');
+}
+
+const PRICE_VARIATION = /off|wednesday|tuesday|thursday|monday|friday|happy|special|\$|regular price|cocktail tues/i;
+
+/**
+ * Names to tidy: dishes and drinks named as they sell on the POS (the plain button, not a
+ * price variation of it), everything else in title case, and duplicate cards (only one of a
+ * name is ever used) to remove.
+ */
+function tidyProposals(model: Model, cards: RecipeCard[], links: LinkAnswers) {
+  const linked = linkedItems(model);
+  const out: { index: number; from: string; to?: string; remove?: true; why: string }[] = [];
+  // Duplicates: the app has been using the last card of a name; the others are dead weight.
+  const lastOf = new Map<string, number>();
+  cards.forEach((c, i) => lastOf.set(cardKey(c.name), i));
+  cards.forEach((c, i) => { if (lastOf.get(cardKey(c.name)) !== i) out.push({ index: i, from: c.name, remove: true, why: `Two cards are called ${c.name}; the app has been using the other one (${cards[lastOf.get(cardKey(c.name))!]!.ingredients.length} lines; this one has ${c.ingredients.length}).` }); });
+  const taken = new Set(cards.map((c) => cardKey(c.name)));
+  cards.forEach((c, i) => {
+    if (lastOf.get(cardKey(c.name)) !== i) return;
+    const kind = kindOf(c);
+    let to = titleCase(c.name), why = 'Capitalized like the rest of the book.';
+    if (kind === 'dish' || kind === 'drink') {
+      const id = recipeId(c.name);
+      const sold = (linked.get(id) ?? []).sort((a, b) => b.sold - a.sold);
+      const answered = links.confirm.filter((l) => cardKey(l.recipe) === cardKey(c.name));
+      const button = sold.find((b) => !b.variationName || !PRICE_VARIATION.test(b.variationName)) ?? sold[0] ?? answered[0];
+      if (button) {
+        // One button that has carried other cards too (seasonal versions) keeps each version's own name.
+        const versions = new Set(links.confirm.filter((l) => l.catalogId === button.catalogId).map((l) => cardKey(l.recipe)));
+        const seasonal = versions.size > 1 || links.newDish.some((n) => n.catalogId === button.catalogId && n.from);
+        const pos = button.variationName && !PRICE_VARIATION.test(button.variationName) && !/^regular$/i.test(button.variationName) ? `${button.itemName} (${button.variationName})` : button.itemName;
+        if (seasonal) {
+          why = `Keeps its own name: ${pos} has had more than one version, and each version keeps its card's name.`;
+          if (to === c.name) { out.push({ index: i, from: c.name, why }); return; }
+        }
+        else { to = pos.trim(); why = `Named as it sells in Square.`; }
+      }
+    }
+    if (to === c.name) return;
+    if (cardKey(to) !== cardKey(c.name) && taken.has(cardKey(to))) { out.push({ index: i, from: c.name, why: `Would be ${to}, but another card already has that name.` }); return; }
+    taken.add(cardKey(to));
+    out.push({ index: i, from: c.name, to, why });
+  });
+  return out;
 }
 
 const posItemArg = (v: unknown): PosMenuItem[] => (Array.isArray(v) ? v : []).filter((x: any) => typeof x?.catalogId === 'string' && typeof x?.itemName === 'string' && x.itemName)
@@ -229,8 +294,8 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     if (!c?.ingredients) throw new HttpError(400, 'Missing card.');
     // Cost each line on its own: what it costs and what's missing.
     const lines = (c.ingredients as any[]).map((i) => {
-      const product = model.products.find((p) => nameKey(p.name) === nameKey(String(i.name ?? '')));
-      const card = (book.recipeCards ?? []).find((x) => nameKey(x.name) === nameKey(String(i.name ?? '')));
+      const product = model.products.find((p) => cardKey(p.name) === cardKey(String(i.name ?? '')));
+      const card = (book.recipeCards ?? []).find((x) => cardKey(x.name) === cardKey(String(i.name ?? '')));
       const amount = Number(i.amount) / ((Number(i.yieldPercent) || 100) / 100);
       if (!(amount > 0) || !i.unit) return {};
       const item = product ? { kind: 'product' as const, id: product.id } : card ? { kind: 'recipe' as const, id: recipeId(card.name) } : undefined;
@@ -253,7 +318,7 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
       const problem = cardProblem(ch.card, model, cards, prev);
       if (problem) throw new HttpError(400, list.length > 1 ? `${ch.card?.name ?? 'A card'}: ${problem}` : problem);
       // Later cards in a batch may use earlier ones.
-      cards = [...cards.filter((c) => nameKey(c.name) !== nameKey(prev ?? ch.card.name)), toStored(ch.card)];
+      cards = [...cards.filter((c) => cardKey(c.name) !== cardKey(prev ?? ch.card.name)), toStored(ch.card)];
     }
     await saveCards(db, who, list.map((ch) => ({ card: ch.card as CardInput, ...(typeof ch.previousName === 'string' ? { previousName: ch.previousName } : {}), link: posItemArg(ch.link), unlink: posItemArg(ch.unlink) })));
     return send(res, 200, { saved: list.length }), true;
@@ -265,12 +330,48 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     const name = String(b.name ?? '');
     const card = (book.recipeCards ?? []).find((c) => c.name === name);
     if (!card) throw new HttpError(404, 'No such card.');
-    const users = (book.recipeCards ?? []).filter((c) => c.ingredients.some((i) => nameKey(i.name) === nameKey(name)));
+    const users = (book.recipeCards ?? []).filter((c) => c.ingredients.some((i) => cardKey(i.name) === cardKey(name)));
     if (users.length) throw new HttpError(409, `${users.map((u) => u.name).join(', ')} still use${users.length === 1 ? 's' : ''} it.`);
     const links = book.linkAnswers ?? { confirm: [], newDish: [] };
     await saveBook(db, who.restaurantId, 'recipeCards', (book.recipeCards ?? []).filter((c) => c !== card), who.staffId);
     await saveBook(db, who.restaurantId, 'linkAnswers', { ...links, confirm: links.confirm.filter((l) => l.recipe !== name) }, who.staffId);
     return send(res, 200, { ok: true }), true;
+  }
+
+  if (method === 'GET' && path === '/api/cards/tidy') {
+    const book = await loadBook(db, who.restaurantId);
+    return send(res, 200, { proposals: tidyProposals(model, book.recipeCards ?? [], book.linkAnswers ?? { confirm: [], newDish: [] }) }), true;
+  }
+
+  if (method === 'POST' && path === '/api/cards/tidy') {
+    const b = await body(req, 256 * 1024);
+    const book = await loadBook(db, who.restaurantId);
+    let cards = [...(book.recipeCards ?? [])];
+    let links: LinkAnswers = book.linkAnswers ?? { confirm: [], newDish: [] };
+    const importAnswers = book.importAnswers ?? {};
+    let importChanged = false;
+    const renames = (Array.isArray(b.renames) ? b.renames : []) as { index: number; from: string; to: string }[];
+    const removes = (Array.isArray(b.removes) ? b.removes : []) as { index: number; from: string }[];
+    // Checked against the book as it is now, by position and name, so a stale screen can't remove the wrong card.
+    for (const x of [...renames, ...removes]) if (cards[x.index]?.name !== x.from) throw new HttpError(409, 'The cards changed since this list was made. Reload and try again.');
+    for (const x of renames) {
+      if (typeof x.to !== 'string' || !x.to.trim()) throw new HttpError(400, `A new name for ${x.from}?`);
+      const clash = cards.findIndex((c, i) => i !== x.index && cardKey(c.name) === cardKey(x.to) && !removes.some((r) => r.index === i) && !renames.some((r) => r.index === i && cardKey(r.to) !== cardKey(x.to)));
+      if (clash >= 0) throw new HttpError(409, `${x.to.trim()} is already another card's name.`);
+    }
+    const renamed = cards.map((c, i) => { const r = renames.find((x) => x.index === i); return r ? { ...c, name: r.to.trim() } : c; });
+    cards = renamed.filter((_c, i) => !removes.some((r) => r.index === i));
+    // References follow each rename (a removed duplicate's name stays with the card that kept it).
+    // Through placeholders first, so swapped names (A → B, B → A) don't run into each other.
+    const steps = [...renames.map((x, n) => [x.from, `tidyplaceholder${n}x`]), ...renames.map((x, n) => [`tidyplaceholder${n}x`, x.to.trim()])];
+    for (const [from, to] of steps) {
+      const r = await followRename(db, who, { cards, links, importAnswers }, from!, to!);
+      cards = r.cards; links = r.links; importChanged ||= r.importChanged;
+    }
+    await saveBook(db, who.restaurantId, 'recipeCards', cards, who.staffId);
+    await saveBook(db, who.restaurantId, 'linkAnswers', links, who.staffId);
+    if (importChanged) await saveBook(db, who.restaurantId, 'importAnswers', importAnswers, who.staffId);
+    return send(res, 200, { renamed: renames.length, removed: removes.length }), true;
   }
 
   if (method === 'POST' && path === '/api/cards/no-card') {
@@ -294,9 +395,9 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     const products = productsView(model);
     const drafts = draftDrinkCards(items, products.map((p) => ({ id: p.id, name: p.name, unit: p.unit, ...(p.type ? { type: p.type } : {}), ...(p.lastBought ? { lastBought: p.lastBought } : {}) })), { winePour: num('winePour', 6), draftPour: num('draftPour', 16), espressoDose: num('dose', 18) });
     // Cards already named like a draft: link to that card rather than writing a second one.
-    const existing = new Set((book.recipeCards ?? []).map((c) => nameKey(c.name)));
+    const existing = new Set((book.recipeCards ?? []).map((c) => cardKey(c.name)));
     return send(res, 200, {
-      drafts: drafts.map((d) => ({ ...d, ...(existing.has(nameKey(d.name)) ? { cardExists: true } : {}), ...(d.items.some((i) => awaiting.has(posName(i))) ? { markedNew: true } : {}) })),
+      drafts: drafts.map((d) => ({ ...d, ...(existing.has(cardKey(d.name)) ? { cardExists: true } : {}), ...(d.items.some((i) => awaiting.has(posName(i))) ? { markedNew: true } : {}) })),
       products: products.filter((p) => ['WINE', 'BEER', 'LIQUOR', 'NA_BEVERAGES'].includes(p.type ?? '') || /coffee|milk/i.test(p.name)).map((p) => ({ id: p.id, name: p.name, unit: p.unit, units: p.units, type: p.type })),
     }), true;
   }
