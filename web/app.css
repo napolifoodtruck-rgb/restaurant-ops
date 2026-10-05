@@ -70,7 +70,7 @@ input:focus-visible, button:focus-visible { outline: 3px solid #9DBDE6; outline-
 }
 
 /* Margins */
-.mrow { display: grid; grid-template-columns: minmax(150px, 1.2fr) 280px 190px 60px minmax(200px, 1.4fr) 100px; align-items: center; gap: 14px; padding: 10px 0; border-top: 1px solid var(--soft); }
+.mrow { display: grid; grid-template-columns: minmax(140px, 1.1fr) 240px 170px 64px minmax(170px, 1.2fr) 110px 92px; align-items: center; gap: 14px; padding: 10px 0; border-top: 1px solid var(--soft); }
 .mrow.head { border-top: 0; padding-top: 0; font-size: 12px; font-weight: 600; color: var(--muted); }
 .mrow .name { font-weight: 600; font-size: 15px; }
 .mrow .num { text-align: right; }
@@ -90,3 +90,11 @@ input:focus-visible, button:focus-visible { outline: 3px solid #9DBDE6; outline-
 .btn.small-btn { height: 40px; padding: 0 12px; font-size: 14px; }
 select { height: 40px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; background: #fff; font-size: 14px; max-width: 220px; }
 input[type=date] { height: 40px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; background: #fff; font-size: 14px; }
+.trend { display: flex; flex-direction: column; gap: 2px; }
+.spark polyline { fill: none; stroke: #8A8F96; stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
+.spark circle { fill: #8A8F96; }
+.spark.up polyline { stroke: var(--green); } .spark.up circle { fill: var(--green); }
+.spark.down polyline { stroke: var(--accent); } .spark.down circle { fill: var(--accent); }
+.trend-up { color: var(--green); font-weight: 700; }
+.trend-down { color: var(--accent); font-weight: 700; }
+.trend-flat { color: var(--muted); font-weight: 600; }

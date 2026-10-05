@@ -189,6 +189,44 @@ function missingNote(missing) {
 
 // ------------------------------------------------------------------ margins
 
+/** A small line of weekly values; gaps where the dish wasn't on the menu. */
+function sparkline(series, direction) {
+  const W = 96, H = 30, P = 3;
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('width', W); svg.setAttribute('height', H); svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('class', `spark ${direction}`);
+  svg.setAttribute('aria-hidden', 'true');
+  const vals = series.filter((v) => v !== null);
+  if (!vals.length) return svg;
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const x = (i) => P + (series.length > 1 ? (i / (series.length - 1)) * (W - 2 * P) : (W - 2 * P) / 2);
+  const y = (v) => (hi === lo ? H / 2 : H - P - ((v - lo) / (hi - lo)) * (H - 2 * P));
+  let run = [];
+  const flush = () => {
+    if (run.length > 1) { const pl = document.createElementNS(ns, 'polyline'); pl.setAttribute('points', run.join(' ')); svg.append(pl); }
+    if (run.length === 1) { const c = document.createElementNS(ns, 'circle'); const [cx, cy] = run[0].split(','); c.setAttribute('cx', cx); c.setAttribute('cy', cy); c.setAttribute('r', '2'); svg.append(c); }
+    run = [];
+  };
+  series.forEach((v, i) => { if (v === null) flush(); else run.push(`${x(i).toFixed(1)},${y(v).toFixed(1)}`); });
+  flush();
+  // The latest week, marked.
+  const lastIdx = series.length - 1 - [...series].reverse().findIndex((v) => v !== null);
+  const dot = document.createElementNS(ns, 'circle');
+  dot.setAttribute('cx', x(lastIdx)); dot.setAttribute('cy', y(series[lastIdx])); dot.setAttribute('r', '2.5'); dot.setAttribute('class', 'last');
+  svg.append(dot);
+  return svg;
+}
+
+function trendCell(t) {
+  if (!t) return h('div');
+  const c = t.change;
+  const dir = c === undefined ? 'flat' : c >= 0.05 ? 'up' : c <= -0.05 ? 'down' : 'flat';
+  const label = c === undefined ? 'too new' : dir === 'flat' ? 'steady' : `${dir === 'up' ? '▲' : '▼'} ${Math.abs(Math.round(c * 100))}%`;
+  return h('div', { class: 'trend', title: `Plates per open day, week by week${t.partial ? '; gaps are weeks it wasn’t on the menu' : ''}` },
+    sparkline(t.series, dir), h('div', { class: `small trend-${dir}`, text: label }), t.partial ? h('div', { class: 'small muted', text: 'part of period' }) : null);
+}
+
 const ROLE = { earner: ['Top earner', 'ok'], sellMore: ['Sell more', 'blue'], minor: ['Small', ''] };
 
 const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -238,13 +276,15 @@ async function marginsScreen(me, category, range, by = 'total') {
   if (!cat) return show(shell(me, 'margins', [header, picker, missingNote(m.missing), h('p', { class: 'muted', text: 'No dishes with recipe cards sold in this period.' })]));
 
   const perDay = by === 'day';
-  const dishes = perDay ? [...cat.dishes].sort((a, b) => (b.leftPerDay ?? 0) - (a.leftPerDay ?? 0)) : cat.dishes;
+  const trendKey = (d) => (d.offSince ? -9 : d.trend?.change ?? -8);
+  const dishes = perDay ? [...cat.dishes].sort((a, b) => (b.leftPerDay ?? 0) - (a.leftPerDay ?? 0))
+    : by === 'trend' ? [...cat.dishes].sort((a, b) => trendKey(b) - trendKey(a)) : cat.dishes;
   const maxPrice = Math.max(...dishes.map((d) => d.averagePrice), 1);
   const maxValue = Math.max(...dishes.map((d) => (perDay ? d.leftPerDay ?? 0 : d.leftTotal)), 1);
   const bar = (cls, width) => { const b = h('div', { class: cls }); b.style.width = `${Math.max(0, width)}px`; return b; };
   const partOfPeriod = (d) => d.daysOn && d.daysOn < m.openDays;
   const rows = dishes.map((d) => {
-    const plate = h('div', { class: 'pricebar' }, bar('food', (d.plateCost / maxPrice) * 220), bar('left', ((d.averagePrice - d.plateCost) / maxPrice) * 220));
+    const plate = h('div', { class: 'pricebar' }, bar('food', (d.plateCost / maxPrice) * 180), bar('left', ((d.averagePrice - d.plateCost) / maxPrice) * 180));
     const [roleText, roleCls] = ROLE[d.role] ?? ['', ''];
     const value = perDay ? d.leftPerDay ?? 0 : d.leftTotal;
     const other = perDay ? `${dollars(d.leftTotal)} in all` : d.leftPerDay !== undefined ? `${dollars(d.leftPerDay)} a day` : '';
@@ -254,17 +294,19 @@ async function marginsScreen(me, category, range, by = 'total') {
       h('div', { class: 'row tight' }, plate, h('span', { class: 'small muted', text: `${dollars(d.averagePrice, { cents: true })}` })),
       h('div', { class: 'small', text: `${dollars(d.plateCost, { cents: true })}${d.estimated ? '*' : ''} food · ${dollars(d.leftPerPlate, { cents: true })} left` }),
       h('div', { class: 'num' }, h('div', { text: d.sold.toLocaleString() }), d.soldPerDay !== undefined ? h('div', { class: 'small muted', text: `${d.soldPerDay}/day` }) : null),
-      h('div', {}, h('div', { class: 'row tight' }, bar('total', (value / maxValue) * 200), h('b', { text: dollars(value) })), other ? h('div', { class: 'small muted', text: other }) : null),
+      h('div', {}, h('div', { class: 'row tight' }, bar('total', (value / maxValue) * 160), h('b', { text: dollars(value) })), other ? h('div', { class: 'small muted', text: other }) : null),
+      trendCell(d.trend),
       // Roles judge money over the whole period; in the per-day view, a dish that joined partway is just marked new.
       h('div', {}, d.offSince ? null : perDay ? (partOfPeriod(d) ? h('span', { class: 'tag blue', text: 'New' }) : null) : h('span', { class: `tag ${roleCls}`, text: roleText })),
     );
   });
   const toggle = h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Rank by' }),
-    h('button', { class: `btn small-btn${perDay ? '' : ' dark'}`, text: 'All of it', onclick: () => marginsScreen(me, cat.name, range, 'total') }),
-    h('button', { class: `btn small-btn${perDay ? ' dark' : ''}`, text: 'Per day on the menu', onclick: () => marginsScreen(me, cat.name, range, 'day') }));
+    h('button', { class: `btn small-btn${by === 'total' ? ' dark' : ''}`, text: 'All of it', onclick: () => marginsScreen(me, cat.name, range, 'total') }),
+    h('button', { class: `btn small-btn${perDay ? ' dark' : ''}`, text: 'Per day on the menu', onclick: () => marginsScreen(me, cat.name, range, 'day') }),
+    h('button', { class: `btn small-btn${by === 'trend' ? ' dark' : ''}`, text: 'Trend', onclick: () => marginsScreen(me, cat.name, range, 'trend') }));
   const table = h('section', { class: 'card' },
-    h('div', { class: 'row' }, h('div', { class: 'grow small muted', text: perDay ? 'Left over per open day the dish was on the menu: fair to new dishes and specials that weren’t there the whole time.' : 'Left over across every plate sold in the period.' }), toggle),
-    h('div', { class: 'mrow head' }, h('div', { text: 'Dish' }), h('div', { text: 'One plate: food | left over' }), h('div', { text: 'Per plate' }), h('div', { class: 'num', text: 'Sold' }), h('div', { text: perDay ? 'Left over per day on the menu' : 'Left over, all of them' }), h('div')),
+    h('div', { class: 'row' }, h('div', { class: 'grow small muted', text: perDay ? 'Left over per open day the dish was on the menu: fair to new dishes and specials that weren’t there the whole time.' : by === 'trend' ? 'Plates sold per open day, week by week, rising first. Weeks a dish wasn’t on the menu are left out of its trend.' : 'Left over across every plate sold in the period.' }), toggle),
+    h('div', { class: 'mrow head' }, h('div', { text: 'Dish' }), h('div', { text: 'One plate: food | left over' }), h('div', { text: 'Per plate' }), h('div', { class: 'num', text: 'Sold' }), h('div', { text: perDay ? 'Left over per day on the menu' : 'Left over, all of them' }), h('div', { text: 'Trend, plates a day' }), h('div')),
     rows,
     h('div', { class: 'small muted', text: 'Price is what guests paid on average, after discounts. * part of the card still uses an estimated price. Top earners together bring in 80% of the money in the period.' }),
   );

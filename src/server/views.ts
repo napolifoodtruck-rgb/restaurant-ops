@@ -31,6 +31,47 @@ export function marginsView(model: Model) {
     sold.set(link.recipeId, s ? { first: s.first < l.date ? s.first : l.date, last: s.last > l.date ? s.last : l.date } : { first: l.date, last: l.date });
   }
   const open = [...openDays].sort();
+
+  // Weekly buckets ending on the period's last day, so the latest week is a full one.
+  const weeks: { from: string; to: string }[] = [];
+  for (let end = model.today; end >= model.from; end = addDays(end, -7)) weeks.unshift({ from: addDays(end, -6) < model.from ? model.from : addDays(end, -6), to: end });
+  const weekOf = (day: string) => weeks.findIndex((w) => day >= w.from && day <= w.to);
+  const weekly = new Map<string, number[]>();
+  for (const l of model.sales) {
+    if (!l.date || !(l.quantity > 0)) continue;
+    const link = model.lookup(l.catalogId, l.name, l.date);
+    if (!link) continue;
+    const w = weekOf(l.date);
+    if (w < 0) continue;
+    const arr = weekly.get(link.recipeId) ?? weeks.map(() => 0);
+    arr[w]! += l.quantity;
+    weekly.set(link.recipeId, arr);
+  }
+  /**
+   * Plates per open day, week by week (null for weeks the dish wasn't on the menu, or was on
+   * fewer than 2 open days), and the trend: the fitted line's change across those weeks as a
+   * share of the dish's average. Needs at least 3 weeks on the menu.
+   */
+  const trendOf = (recipeId: string) => {
+    const s = sold.get(recipeId);
+    const q = weekly.get(recipeId);
+    if (!s || !q) return undefined;
+    const end = s.last >= stillOn ? model.today : s.last;
+    const series = weeks.map((w, i) => {
+      const days = open.filter((d) => d >= w.from && d <= w.to && d >= s.first && d <= end).length;
+      return days >= 2 ? Math.round((q[i]! / days) * 10) / 10 : null;
+    });
+    const points = series.map((v, i) => [i, v] as const).filter((p): p is readonly [number, number] => p[1] !== null);
+    let change: number | undefined;
+    if (points.length >= 3) {
+      const n = points.length;
+      const mx = points.reduce((a, p) => a + p[0], 0) / n;
+      const my = points.reduce((a, p) => a + p[1], 0) / n;
+      const slope = points.reduce((a, p) => a + (p[0] - mx) * (p[1] - my), 0) / (points.reduce((a, p) => a + (p[0] - mx) ** 2, 0) || 1);
+      if (my > 0) change = Math.round(((slope * (points[n - 1]![0] - points[0]![0])) / my) * 100) / 100;
+    }
+    return { series, ...(change !== undefined ? { change } : {}), partial: series.some((v) => v === null) };
+  };
   const lastSold = new Map([...sold].map(([id, s]) => [id, s.last]));
   /** Open days a dish was on the menu: first sale to last, or to the period's end if it's still on. */
   const daysOn = (recipeId: string): number | undefined => {
@@ -67,6 +108,7 @@ export function marginsView(model: Model) {
           const n = daysOn(d.recipeId);
           return n ? { daysOn: n, firstSold: sold.get(d.recipeId)!.first, leftPerDay: money(d.totalContribution / n), soldPerDay: Math.round((d.quantity / n) * 10) / 10 } : {};
         })(),
+        ...(trendOf(d.recipeId) ? { trend: trendOf(d.recipeId) } : {}),
         // Came off the menu during the period: its money is real, but it's not a dish to work on.
         ...((lastSold.get(d.recipeId) ?? model.today) < stillOn ? { offSince: lastSold.get(d.recipeId) } : {}),
       })),
@@ -81,6 +123,7 @@ export function marginsView(model: Model) {
     to: model.today,
     dataFrom: model.dataFrom,
     openDays: openDays.size,
+    weeks: weeks.map((w) => w.from),
     missing: model.missing,
     totals: { netSales: money(t.netSales), foodCostShare: share(t.foodCostShare), leftOver: money(t.contribution), coverage: share(model.margins.coverage) },
     categories,
