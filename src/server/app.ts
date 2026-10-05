@@ -13,8 +13,12 @@
  *   GET  /api/me
  *   POST /api/staff/:id/pin      { pin } yourself, or a manager for anyone
  *   GET  /api/staff              the team with roles and whether each has a PIN (manager or up)
- *   GET  /api/sync               last syncs (manager or up)
- *   POST /api/sync/square        start a Square sync now (manager or up)
+ *   GET  /api/sync               last syncs and what's connected (manager or up)
+ *   POST /api/sync/:source       start a Square or MarginEdge sync now (manager or up)
+ *   GET  /api/book               which parts of the kitchen book are loaded (manager or up)
+ *   POST /api/book/import        load recipe cards and answers from a kitchen-book file (manager or up)
+ *   GET  /api/margins            margins by category over the last 90 days (manager or up)
+ *   GET  /api/menu               the menu from sales, what came off, to-dos (manager or up)
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -25,8 +29,9 @@ import {
   atLeast, deviceFor, hashSecret, newToken, passwordProblem, pinProblem, sessionFor, signInWithPassword, signInWithPin, signOut,
   type SignedIn, type SignInResult,
 } from './auth.ts';
-import { runSquareSync } from './squareSync.ts';
-import { localDateHour, squareApiFrom, type SquareSettings } from './scheduler.ts';
+import { localDateHour, marginEdgeApiFrom, runSync, squareApiFrom, type SyncSettings } from './scheduler.ts';
+import { BOOK_KEYS, bookProblem, getModel, saveBook } from './model.ts';
+import { marginsView, menuView } from './views.ts';
 
 export interface AppConfig {
   db: Db;
@@ -34,7 +39,7 @@ export interface AppConfig {
   setupToken?: string;
   /** Secure cookies (true everywhere but local development). */
   secureCookies: boolean;
-  square?: SquareSettings;
+  sync?: SyncSettings;
 }
 
 const SESSION_COOKIE = 'ops_session';
@@ -62,13 +67,13 @@ function cookie(name: string, value: string, expires: Date, secure: boolean): st
   return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires.toUTCString()}${secure ? '; Secure' : ''}`;
 }
 
-async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function body(req: IncomingMessage, max = MAX_BODY): Promise<Record<string, unknown>> {
   if (!(req.headers['content-type'] ?? '').includes('application/json')) throw new HttpError(415, 'Send JSON.');
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > MAX_BODY) throw new HttpError(413, 'Too large.');
+    if (size > max) throw new HttpError(413, 'Too large.');
     chunks.push(chunk as Buffer);
   }
   try {
@@ -240,25 +245,53 @@ export function createApp(config: AppConfig) {
       return send(res, 200, { ok: true });
     }
 
-    if (method === 'GET' && path === '/api/sync') {
+    if (path.startsWith('/api/') && ['/api/sync', '/api/book', '/api/book/import', '/api/margins', '/api/menu'].includes(path) || path.startsWith('/api/sync/')) {
       const who = await signedIn(req);
       if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
-      const { rows } = await db.query('SELECT source, started_at, finished_at, status, detail FROM sync_runs WHERE restaurant_id = $1 ORDER BY started_at DESC LIMIT 20', [who.restaurantId]);
-      return send(res, 200, { squareConnected: Boolean(squareApiFrom(config.square ?? {})), runs: rows });
-    }
+      const today = async () => localDateHour((await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York').date;
 
-    if (method === 'POST' && path === '/api/sync/square') {
-      const who = await signedIn(req);
-      if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
-      const api = squareApiFrom(config.square ?? {});
-      if (!api) throw new HttpError(409, 'Square isn’t connected yet: add SQUARE_ACCESS_TOKEN in Render.');
-      const running = await db.query("SELECT 1 FROM sync_runs WHERE restaurant_id = $1 AND source = 'square' AND status = 'running' AND started_at > now() - interval '2 hours'", [who.restaurantId]);
-      if (running.rows.length) throw new HttpError(409, 'A Square sync is already running.');
-      const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
-      // Runs in the background; GET /api/sync shows how it went.
-      runSquareSync(db, api, who.restaurantId, { today: localDateHour(tz).date, ...(config.square?.locationId ? { locationId: config.square.locationId } : {}) })
-        .catch((err) => console.error(`Square sync failed: ${(err as Error).message}`));
-      return send(res, 202, { started: true });
+      if (method === 'GET' && path === '/api/sync') {
+        const { rows } = await db.query('SELECT source, started_at, finished_at, status, detail FROM sync_runs WHERE restaurant_id = $1 ORDER BY started_at DESC LIMIT 30', [who.restaurantId]);
+        return send(res, 200, { connected: { square: Boolean(squareApiFrom(config.sync?.square ?? {})), marginedge: Boolean(marginEdgeApiFrom(config.sync?.marginedge ?? {})) }, runs: rows });
+      }
+
+      const syncPath = path.match(/^\/api\/sync\/(square|marginedge)$/);
+      if (method === 'POST' && syncPath) {
+        const source = syncPath[1] as 'square' | 'marginedge';
+        const connected = source === 'square' ? squareApiFrom(config.sync?.square ?? {}) : marginEdgeApiFrom(config.sync?.marginedge ?? {});
+        if (!connected) throw new HttpError(409, `${source === 'square' ? 'Square' : 'MarginEdge'} isn’t connected yet: add its key in Render.`);
+        const running = await db.query("SELECT 1 FROM sync_runs WHERE restaurant_id = $1 AND source = $2 AND status = 'running' AND started_at > now() - interval '2 hours'", [who.restaurantId, source]);
+        if (running.rows.length) throw new HttpError(409, 'That sync is already running.');
+        // Runs in the background; GET /api/sync shows how it went.
+        runSync(db, source, config.sync ?? {}, who.restaurantId, await today()).catch((err) => console.error(`${source} sync failed: ${(err as Error).message}`));
+        return send(res, 202, { started: true });
+      }
+
+      if (method === 'GET' && path === '/api/book') {
+        const { rows } = await db.query<{ key: string; updated_at: string; size: string }>('SELECT key, updated_at, length(value::text) AS size FROM kitchen_book WHERE restaurant_id = $1', [who.restaurantId]);
+        return send(res, 200, { parts: rows });
+      }
+
+      if (method === 'POST' && path === '/api/book/import') {
+        const b = await body(req, 5 * 1024 * 1024);
+        if (b.format !== 'kitchen-book') throw new HttpError(400, 'That isn’t a kitchen-book file.');
+        const found = BOOK_KEYS.filter((k) => b[k] !== undefined);
+        if (!found.length) throw new HttpError(400, 'The file has nothing to load.');
+        for (const k of found) {
+          const problem = bookProblem(k, b[k]);
+          if (problem) throw new HttpError(400, problem);
+        }
+        for (const k of found) await saveBook(db, who.restaurantId, k, b[k], who.staffId);
+        return send(res, 200, { loaded: found, recipeCards: Array.isArray(b.recipeCards) ? b.recipeCards.length : undefined });
+      }
+
+      if (method === 'GET' && path === '/api/margins') {
+        return send(res, 200, marginsView(await getModel(db, who.restaurantId, await today())));
+      }
+
+      if (method === 'GET' && path === '/api/menu') {
+        return send(res, 200, menuView(await getModel(db, who.restaurantId, await today())));
+      }
     }
 
     throw new HttpError(404, 'Not found.');

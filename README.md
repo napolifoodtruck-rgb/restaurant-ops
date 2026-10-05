@@ -35,7 +35,11 @@ Back-of-house foundation:
 | `src/server/app.ts` | JSON API on node:http: health, first-owner setup, sign-in and out, iPad enrollment, PINs. |
 | `src/connectors/squareApi.ts` | Square REST client, read-only by construction: locations, catalog, team and job titles, Reporting API queries with paging and retries. |
 | `src/server/squareSync.ts` | Nightly copy from Square into the database: location, catalog, team (job titles become role levels to confirm), item and modifier sales by day; recent days are refreshed. |
-| `src/server/scheduler.ts` | Runs the sync after 4 am in the restaurant's time zone, from inside the web app. |
+| `src/connectors/marginedgeApi.ts` | MarginEdge read-only API client (the export script's calls, from the server): incremental invoice refresh, pack sizes fetched once per vendor item. |
+| `src/server/marginedgeSync.ts` | Nightly copy from MarginEdge into the database, in the export's shape. |
+| `src/server/model.ts` | Rebuilds the restaurant from stored data (MarginEdge, Square, recipe cards, managers' answers) for the screens; cached until the next sync or saved answer. Also the kitchen book: recipe cards and answers, with history. |
+| `src/server/views.ts` | What the Margins and Menu screens show, shaped from the model. |
+| `src/server/scheduler.ts` | Runs the Square and MarginEdge syncs after 4 am in the restaurant's time zone, from inside the web app. |
 | `web/` | The web app: first-time setup, manager sign-in, kitchen iPad name-and-PIN sign-in, Settings (Square sync, team PINs, iPad setup). Plain modules, no build step. |
 | `src/server/main.ts` | Starts the app: connect, migrate, listen. |
 | `render.yaml` | Render Blueprint: web service plus PostgreSQL. Secrets are entered in the Render dashboard. |

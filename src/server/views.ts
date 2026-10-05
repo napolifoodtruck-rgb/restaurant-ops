@@ -1,0 +1,125 @@
+/**
+ * What the screens show, shaped from the model: plain JSON, rounded for display.
+ */
+
+import type { Model } from './model.ts';
+import { onMenu } from '../core/menu.ts';
+
+const money = (v: number) => Math.round(v * 100) / 100;
+const share = (v: number | undefined) => (v === undefined ? undefined : Math.round(v * 1000) / 1000);
+
+function addDays(day: string, n: number): string {
+  const d = new Date(`${day}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Margins by category, biggest money first. Only categories with at least one dish that has a recipe. */
+export function marginsView(model: Model) {
+  const stillOn = addDays(model.today, -7);
+  const lastSold = new Map<string, string>();
+  for (const sp of model.spans) {
+    const link = model.lookup(sp.catalogId, sp.name, sp.last);
+    if (link && (lastSold.get(link.recipeId) ?? '') < sp.last) lastSold.set(link.recipeId, sp.last);
+  }
+  const byCategory = new Map<string, Model['margins']['dishes']>();
+  for (const d of model.margins.dishes) byCategory.set(d.category, [...(byCategory.get(d.category) ?? []), d]);
+  const categories = [...byCategory].map(([name, dishes]) => {
+    const netSales = dishes.reduce((s, d) => s + d.netSales, 0);
+    const food = dishes.reduce((s, d) => s + d.plateCost * d.quantity, 0);
+    const missing = model.margins.unlinked.filter((u) => u.category === name && u.netSales > 0);
+    return {
+      name,
+      netSales: money(netSales),
+      leftOver: money(netSales - food),
+      foodCostShare: share(netSales > 0 ? food / netSales : 0),
+      dishes: dishes.map((d) => ({
+        name: d.name,
+        sold: Math.round(d.quantity),
+        averagePrice: money(d.averagePrice),
+        listPrice: d.listPrice,
+        plateCost: money(d.plateCost),
+        leftPerPlate: money(d.contribution),
+        leftTotal: money(d.totalContribution),
+        foodCostShare: share(d.foodCostShare),
+        profitShare: share(d.profitShare),
+        role: d.role,
+        estimated: !d.cost.complete,
+        // Came off the menu during the period: its money is real, but it's not a dish to work on.
+        ...((lastSold.get(d.recipeId) ?? model.today) < stillOn ? { offSince: lastSold.get(d.recipeId) } : {}),
+      })),
+      // Selling but no recipe card yet: their money isn't counted above.
+      noCard: missing.slice(0, 12).map((u) => ({ name: u.name, sold: Math.round(u.quantity), netSales: money(u.netSales) })),
+      noCardSales: money(missing.reduce((s, u) => s + u.netSales, 0)),
+    };
+  }).sort((a, b) => b.leftOver - a.leftOver);
+  const t = model.margins.totals;
+  return {
+    from: model.from,
+    to: model.today,
+    missing: model.missing,
+    totals: { netSales: money(t.netSales), foodCostShare: share(t.foodCostShare), leftOver: money(t.contribution), coverage: share(model.margins.coverage) },
+    categories,
+  };
+}
+
+/** The menu as sales show it today, what came off, and what needs a manager. */
+export function menuView(model: Model) {
+  const today = model.today;
+  const recent = addDays(today, -7);
+  const categoryOf = new Map<string, string>();
+  for (const l of model.sales) if (l.category) categoryOf.set(l.catalogId, l.category);
+  const recipeCategory = new Map<string, string>();
+  for (const d of model.margins.dishes) recipeCategory.set(d.recipeId, d.category);
+  // Show dishes by the name they sell under on the POS, not the recipe card's name.
+  const posNameOf = new Map<string, { name: string; quantity: number }>();
+  for (const sp of model.spans) {
+    const link = model.lookup(sp.catalogId, sp.name, sp.last);
+    if (!link) continue;
+    const seen = posNameOf.get(link.recipeId);
+    if (!seen || sp.quantity > seen.quantity) posNameOf.set(link.recipeId, { name: sp.name, quantity: sp.quantity });
+  }
+  const shownName = (e: { name: string; recipeId?: string }) => (e.recipeId && posNameOf.get(e.recipeId)?.name) || e.name;
+  // "Add a side (…)" buttons are add-ons, listed apart from the dishes.
+  const sectionFor = (name: string, section: string) => (/^add\b/i.test(name) ? `${section} add-ons` : section);
+
+  const current = onMenu(model.entries, today).map((e) => ({
+    name: shownName(e),
+    section: sectionFor(shownName(e), (e.recipeId && recipeCategory.get(e.recipeId)) || 'Other'),
+    since: e.startsOn,
+    hasCard: true,
+  }));
+  const cameOff = model.entries.filter((e) => e.endsOn).map((e) => ({ name: shownName(e), section: sectionFor(shownName(e), (e.recipeId && recipeCategory.get(e.recipeId)) || 'Other'), from: e.startsOn, to: e.endsOn!, hasCard: true }));
+
+  // Selling with no card: on the menu by name until a card is linked.
+  const foodSections = new Set([...recipeCategory.values()]);
+  for (const s of model.spans) {
+    if (model.lookup(s.catalogId, s.name, s.last)) continue;
+    const section = categoryOf.get(s.catalogId) ?? 'Other';
+    if (!foodSections.has(section) || s.quantity <= 0) continue;
+    const item = { name: s.name, section: sectionFor(s.name, section), hasCard: false };
+    if (s.last >= recent) current.push({ ...item, since: s.first });
+    else cameOff.push({ ...item, from: s.first, to: s.last });
+  }
+
+  // Sections in order of the money they bring in, add-ons after their section.
+  const sectionSales = new Map<string, number>();
+  for (const l of model.sales) if (l.category) sectionSales.set(l.category, (sectionSales.get(l.category) ?? 0) + l.netSales);
+  const rank = (section: string) => {
+    const base = section.replace(/ add-ons$/, '');
+    return -(sectionSales.get(base) ?? 0) + (section.endsWith(' add-ons') ? 0.5 : 0);
+  };
+  const order = (a: { section: string; name: string }, b: { section: string; name: string }) => rank(a.section) - rank(b.section) || a.section.localeCompare(b.section) || a.name.localeCompare(b.name);
+  return {
+    today,
+    from: model.from,
+    missing: model.missing,
+    current: current.sort(order),
+    cameOff: cameOff.sort((a, b) => b.to.localeCompare(a.to)),
+    checks: model.checks.map((c) => ({ kind: c.kind, title: c.title, netSales: money(c.netSales), suggestedDate: c.suggestedDate })),
+    linkQuestions: model.linkQuestions
+      .filter((q) => foodSections.has(q.item.category ?? ''))
+      .slice(0, 10)
+      .map((q) => ({ type: q.type, name: q.posName, netSales: money(q.netSales), candidates: q.candidates.slice(0, 3).map((c) => c.name) })),
+  };
+}

@@ -8,6 +8,8 @@
  *   NODE_ENV       'production' on Render (secure cookies)
  *   SQUARE_ACCESS_TOKEN   read-only use; 'later' or unset = not connected yet
  *   SQUARE_LOCATION_ID    only needed when the Square account has several locations
+ *   MARGINEDGE_API_KEY    read-only use; 'later' or unset = not connected yet
+ *   MARGINEDGE_UNIT_ID    only needed when the key covers several restaurants
  */
 
 import { createServer } from 'node:http';
@@ -25,9 +27,12 @@ const db = await connectPg(url);
 const applied = await migrate(db, fileURLToPath(new URL('../../db/migrations', import.meta.url)));
 if (applied.length) console.log(`Applied migrations: ${applied.join(', ')}`);
 
-const square = { token: process.env.SQUARE_ACCESS_TOKEN, locationId: process.env.SQUARE_LOCATION_ID || undefined, version: process.env.SQUARE_VERSION || undefined };
-const handle = createApp({ db, setupToken: process.env.SETUP_TOKEN || undefined, secureCookies: process.env.NODE_ENV === 'production', square });
-const stopScheduler = startScheduler(db, square);
+const sync = {
+  square: { token: process.env.SQUARE_ACCESS_TOKEN, locationId: process.env.SQUARE_LOCATION_ID || undefined, version: process.env.SQUARE_VERSION || undefined },
+  marginedge: { key: process.env.MARGINEDGE_API_KEY, unitId: process.env.MARGINEDGE_UNIT_ID || undefined },
+};
+const handle = createApp({ db, setupToken: process.env.SETUP_TOKEN || undefined, secureCookies: process.env.NODE_ENV === 'production', sync });
+const stopScheduler = startScheduler(db, sync);
 const port = Number(process.env.PORT ?? 3000);
 const server = createServer(handle);
 server.listen(port, () => console.log(`Listening on ${port}`));

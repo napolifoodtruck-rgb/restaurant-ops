@@ -55,7 +55,10 @@ export type BookKey = (typeof BOOK_KEYS)[number];
 
 export function bookProblem(key: BookKey, value: unknown): string | undefined {
   const obj = value as any;
-  if (key === 'recipeCards') return Array.isArray(obj) && obj.every((c) => typeof c?.name === 'string' && Array.isArray(c?.ingredients)) ? undefined : 'recipeCards must be a list of cards with a name and ingredients.';
+  if (key === 'recipeCards') {
+    const ok = Array.isArray(obj) && obj.every((c) => typeof c?.name === 'string' && Array.isArray(c?.ingredients) && Array.isArray(c?.yields) && Array.isArray(c?.unreadLines));
+    return ok ? undefined : 'recipeCards must be a list of cards, each with a name, yields, ingredients and unreadLines.';
+  }
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return `${key} must be an object.`;
   if (key === 'linkAnswers' && !(Array.isArray(obj.confirm) && Array.isArray(obj.newDish))) return 'linkAnswers needs confirm and newDish lists.';
   if (key === 'modifierAnswers' && !(obj.adds && obj.removes)) return 'modifierAnswers needs adds and removes.';

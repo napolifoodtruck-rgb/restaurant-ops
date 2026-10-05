@@ -89,6 +89,19 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.equal((await call('GET', '/api/me', { cookies: cookSession })).status, 401);
   assert.equal((await call('GET', '/api/me', { cookies: ownerSession })).status, 200);
 
+  // The kitchen book: only kitchen-book files, checked part by part; screens say what's missing.
+  assert.equal((await call('POST', '/api/book/import', { body: { recipeCards: [] }, cookies: ownerSession })).status, 400);
+  assert.equal((await call('POST', '/api/book/import', { body: { format: 'kitchen-book', linkAnswers: { confirm: [] } }, cookies: ownerSession })).status, 400);
+  assert.equal((await call('POST', '/api/book/import', { body: { format: 'kitchen-book', recipeCards: [{ name: 'Margherita', ingredients: [] }] }, cookies: ownerSession })).status, 400);
+  const imported = await call('POST', '/api/book/import', { body: { format: 'kitchen-book', recipeCards: [{ name: 'Margherita', yields: [{ amount: 1, unit: 'each' }], ingredients: [], unreadLines: [], layout: 'card' }], linkAnswers: { confirm: [], newDish: [] } }, cookies: ownerSession });
+  assert.deepEqual(imported.json, { loaded: ['recipeCards', 'linkAnswers'], recipeCards: 1 });
+  assert.deepEqual((await call('GET', '/api/book', { cookies: ownerSession })).json.parts.map((p: any) => p.key).sort(), ['linkAnswers', 'recipeCards']);
+  const margins = await call('GET', '/api/margins', { cookies: ownerSession });
+  assert.equal(margins.status, 200);
+  assert.deepEqual(margins.json.missing, ['marginedge', 'square']);
+  assert.equal((await call('GET', '/api/menu', { cookies: ownerSession })).status, 200);
+  assert.equal((await call('POST', '/api/sync/square', { cookies: ownerSession })).status, 409); // not connected in this test
+
   // Nothing secret is stored in the clear.
   const stored = await db!.query<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = $1', [cookId]);
   assert.match(stored.rows[0]!.pin_hash, /^scrypt\$/);

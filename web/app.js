@@ -156,14 +156,16 @@ function pinPad(person, device) {
 
 // ------------------------------------------------------------------ signed in
 
+
 function shell(me, active, content) {
+  const manager = atLeast(me.roleLevel, 'manager');
   const nav = [
-    ['today', 'Today'], ['prep', 'Prep'], ['menu', 'Menu'], ['margins', 'Margins'], ['orders', 'Orders'],
+    ['today', 'Today', null], ['prep', 'Prep', null], ['menu', 'Menu', manager && menuScreen], ['margins', 'Margins', manager && marginsScreen], ['orders', 'Orders', null],
   ];
   return h('div', { class: 'shell' },
     h('nav', { class: 'rail', 'aria-label': 'Main' },
       h('div', { class: 'logo', text: (me.restaurantName ?? 'N')[0] }),
-      nav.map(([key, label]) => h('button', { class: active === key ? 'on' : '', disabled: true, title: 'Coming next' }, icon(key), label)),
+      nav.map(([key, label, go]) => h('button', { class: active === key ? 'on' : '', disabled: !go, title: go ? label : 'Coming next', onclick: go ? () => go(me) : undefined }, icon(key), label)),
       h('div', { class: 'spacer' }),
       h('button', { class: active === 'settings' ? 'on' : '', onclick: () => home(me) }, icon('settings'), 'Settings'),
     ),
@@ -171,51 +173,178 @@ function shell(me, active, content) {
   );
 }
 
+function loadingScreen(me, active, title) {
+  show(shell(me, active, [h('header', {}, h('h1', { text: title })), h('p', { class: 'muted', text: 'Working it out…' })]));
+}
+
+const dollars = (v, opts = {}) => (Math.abs(v) >= 10000 && !opts.exact ? `$${(v / 1000).toFixed(1)}k` : `$${v.toLocaleString(undefined, { minimumFractionDigits: opts.cents ? 2 : 0, maximumFractionDigits: opts.cents ? 2 : 0 })}`);
+const pct = (v) => (v === undefined || v === null ? '–' : `${(v * 100).toFixed(1)}%`);
+const shortDate = (d) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
+function missingNote(missing) {
+  if (!missing?.length) return null;
+  const words = { square: 'Square sales (press Sync now on the Square card in Settings)', marginedge: 'MarginEdge invoices (Sync now on the MarginEdge card)', recipeCards: 'recipe cards (Import the kitchen-book file in Settings)' };
+  return h('div', { class: 'note', text: `Still needed for complete numbers: ${missing.map((m) => words[m] ?? m).join('; ')}.` });
+}
+
+// ------------------------------------------------------------------ margins
+
+const ROLE = { earner: ['Top earner', 'ok'], sellMore: ['Sell more', 'blue'], minor: ['Small', ''] };
+
+async function marginsScreen(me, category) {
+  loadingScreen(me, 'margins', 'Where the money comes from');
+  const r = await api('GET', '/api/margins');
+  if (!r.ok) return show(shell(me, 'margins', [h('h1', { text: 'Margins' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const m = r.data;
+  const cat = m.categories.find((c) => c.name === category) ?? m.categories[0];
+  const tabs = h('div', { class: 'row' }, m.categories.map((c) => h('button', { class: `btn${c === cat ? ' dark' : ''}`, onclick: () => marginsScreen(me, c.name), text: c.name })));
+  const header = h('header', { class: 'row' },
+    h('div', { class: 'grow' },
+      h('div', { class: 'kicker', text: `${cat ? cat.name + ' · ' : ''}${shortDate(m.from)} – ${shortDate(m.to)} · prices from Square, costs from MarginEdge` }),
+      h('h1', { text: 'Where the money comes from' }),
+      h('div', { class: 'sub', text: `Food cost ${pct(m.totals.foodCostShare)} on dishes with recipe cards. ${dollars(m.totals.leftOver)} left after food in 90 days.` })),
+    tabs);
+  if (!cat) return show(shell(me, 'margins', [header, missingNote(m.missing), h('p', { class: 'muted', text: 'No dishes with recipe cards have sold yet.' })]));
+
+  const maxPrice = Math.max(...cat.dishes.map((d) => d.averagePrice), 1);
+  const maxTotal = Math.max(...cat.dishes.map((d) => d.leftTotal), 1);
+  const bar = (cls, width) => { const b = h('div', { class: cls }); b.style.width = `${Math.max(0, width)}px`; return b; };
+  const rows = cat.dishes.map((d) => {
+    const plate = h('div', { class: 'pricebar' }, bar('food', (d.plateCost / maxPrice) * 220), bar('left', ((d.averagePrice - d.plateCost) / maxPrice) * 220));
+    const [roleText, roleCls] = ROLE[d.role] ?? ['', ''];
+    return h('div', { class: `mrow${d.offSince ? ' off' : ''}` },
+      h('div', {}, h('div', { class: 'name', text: d.name }), d.offSince ? h('div', { class: 'small muted', text: `off the menu since ${shortDate(d.offSince)}` }) : null),
+      h('div', { class: 'row tight' }, plate, h('span', { class: 'small muted', text: `${dollars(d.averagePrice, { cents: true })}` })),
+      h('div', { class: 'small', text: `${dollars(d.plateCost, { cents: true })}${d.estimated ? '*' : ''} food · ${dollars(d.leftPerPlate, { cents: true })} left` }),
+      h('div', { class: 'num', text: d.sold.toLocaleString() }),
+      h('div', { class: 'row tight' }, bar('total', (d.leftTotal / maxTotal) * 200), h('b', { text: dollars(d.leftTotal) })),
+      h('div', {}, d.offSince ? null : h('span', { class: `tag ${roleCls}`, text: roleText })),
+    );
+  });
+  const table = h('section', { class: 'card' },
+    h('div', { class: 'mrow head' }, h('div', { text: 'Dish' }), h('div', { text: 'One plate: food | left over' }), h('div', { text: 'Per plate' }), h('div', { class: 'num', text: 'Sold' }), h('div', { text: 'Left over, all of them' }), h('div')),
+    rows,
+    h('div', { class: 'small muted', text: 'Price is what guests paid on average, after discounts. * part of the card still uses an estimated price. Top earners together bring in 80% of the money.' }),
+  );
+  const noCard = cat.noCard.length ? h('section', { class: 'card' },
+    h('h2', { text: `Selling with no recipe card: ${dollars(cat.noCardSales)} in sales not counted above` }),
+    h('div', { class: 'small', text: cat.noCard.map((x) => `${x.name} ${dollars(x.netSales)}`).join(' · ') })) : null;
+  show(shell(me, 'margins', [header, missingNote(m.missing), table, noCard]));
+}
+
+// ------------------------------------------------------------------ menu
+
+async function menuScreen(me) {
+  loadingScreen(me, 'menu', 'Menu');
+  const r = await api('GET', '/api/menu');
+  if (!r.ok) return show(shell(me, 'menu', [h('h1', { text: 'Menu' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const m = r.data;
+  const since = (d) => (d <= m.from ? `before ${shortDate(m.from)}` : `since ${shortDate(d)}`);
+  const sections = [...new Set(m.current.map((x) => x.section))];
+  const dishRow = (x, right, flagCard = true) => h('div', {}, h('span', { class: 'grow', text: x.name }), x.hasCard || !flagCard ? null : h('span', { class: 'tag warn', text: 'needs card' }), h('span', { class: 'small muted nowrap', text: right }));
+  const columns = sections.map((s) => h('section', { class: 'card' },
+    h('div', { class: 'row' }, h('h2', { class: 'grow', text: s }), h('span', { class: 'small muted', text: String(m.current.filter((x) => x.section === s).length) })),
+    h('div', { class: 'list' }, m.current.filter((x) => x.section === s).map((x) => dishRow(x, since(x.since))))));
+  const todo = h('section', { class: 'card' },
+    h('h2', { text: 'Needs you' }),
+    m.checks.length || m.linkQuestions.length ? h('div', { class: 'list' },
+      m.checks.map((c) => h('div', {}, h('span', { class: 'grow', text: c.title }))),
+      m.linkQuestions.map((q) => h('div', {}, h('span', { class: 'grow', text: q.candidates.length ? `“${q.name}”: is it ${q.candidates.join(' or ')}?` : `“${q.name}” has no recipe card yet` }), h('span', { class: 'small muted', text: dollars(q.netSales) })))) : h('div', { class: 'small muted', text: 'Nothing right now.' }),
+    h('div', { class: 'small muted', text: 'Answering these from here comes next.' }));
+  const off = h('section', { class: 'card' },
+    h('h2', { text: 'Came off' }),
+    h('div', { class: 'list' }, m.cameOff.slice(0, 20).map((x) => dishRow(x, `${shortDate(x.from)} – ${shortDate(x.to)}`, false))));
+  show(shell(me, 'menu', [
+    h('header', {}, h('div', { class: 'kicker', text: `What’s selling · from Square sales since ${shortDate(m.from)}` }), h('h1', { text: 'Menu' }),
+      h('div', { class: 'sub', text: 'Dates come from the first and last day each dish sold. Seasonal versions on one button are kept apart.' })),
+    missingNote(m.missing),
+    h('div', { class: 'grid' }, columns, todo, off),
+  ]));
+}
+
+// ------------------------------------------------------------------ settings
+
 async function home(me) {
   const manager = atLeast(me.roleLevel, 'manager');
   const signOut = h('button', { class: 'btn', onclick: async () => { await api('POST', '/api/logout'); start(); }, text: 'Sign out' });
   const header = h('header', { class: 'row' },
     h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${me.name} · ${LEVEL_NAMES[me.roleLevel] ?? me.roleLevel}` }), h('h1', { text: 'Settings' }),
-      h('div', { class: 'sub', text: manager ? 'Today, Prep, Menu, Margins and Orders come next. This is where the app gets connected.' : 'Your prep list will show up here once your station is set up.' })),
+      h('div', { class: 'sub', text: manager ? 'Connections, your team and kitchen iPads. Menu and Margins are in the bar on the left.' : 'Your prep list will show up here once your station is set up.' })),
     signOut);
   const cards = [ownPinCard(me)];
-  if (manager) cards.unshift(await squareCard(), await teamCard(me), deviceCard());
+  if (manager) cards.unshift(await syncCard('square'), await syncCard('marginedge'), await importCard(), await teamCard(me), deviceCard());
   show(shell(me, 'settings', [header, h('div', { class: 'grid' }, cards)]));
 }
 
-// Square connection and syncs.
-async function squareCard() {
-  const box = h('section', { class: 'card', 'aria-label': 'Square' });
-  const draw = async () => {
+const SOURCES = {
+  square: { name: 'Square', secret: 'SQUARE_ACCESS_TOKEN', what: 'sales, menu and team', summary: (d) => `sales ${shortDate(d.from)} – ${shortDate(d.to)}, ${d.itemRows} item rows, ${d.modifierRows} modifier rows, ${d.catalogObjects} catalog entries. Team: ${d.team?.added ?? 0} added, ${d.team?.updated ?? 0} updated, ${d.team?.deactivated ?? 0} no longer active.` },
+  marginedge: { name: 'MarginEdge', secret: 'MARGINEDGE_API_KEY', what: 'invoices, products and pack sizes', summary: (d) => `${d.invoices} invoices since ${shortDate(d.from)}, ${d.products} products, ${d.vendorItems} vendor items.` },
+};
+
+async function syncCard(source) {
+  const info = SOURCES[source];
+  const box = h('section', { class: 'card', 'aria-label': info.name });
+  const draw = async (extra) => {
     const r = await api('GET', '/api/sync');
-    const runs = (r.data.runs ?? []).filter((x) => x.source === 'square');
-    const last = runs[0];
-    const status = !r.data.squareConnected ? h('span', { class: 'tag warn', text: 'Not connected' })
+    const connected = r.data.connected?.[source];
+    const last = (r.data.runs ?? []).find((x) => x.source === source);
+    const status = !connected ? h('span', { class: 'tag warn', text: 'Not connected' })
       : !last ? h('span', { class: 'tag', text: 'Not synced yet' })
       : last.status === 'ok' ? h('span', { class: 'tag ok', text: 'Synced' })
       : last.status === 'running' ? h('span', { class: 'tag warn', text: 'Syncing…' })
       : h('span', { class: 'tag bad', text: 'Last sync failed' });
     const detail = last?.detail ?? {};
     const lines = [];
-    if (!r.data.squareConnected) lines.push(h('div', { class: 'small muted', text: 'Add SQUARE_ACCESS_TOKEN in Render (web service → Environment), then redeploy. The app only reads from Square.' }));
-    if (last?.status === 'ok') {
-      lines.push(h('div', { class: 'small', text: `${when(last.finished_at)}: sales ${detail.from} to ${detail.to}, ${detail.itemRows} item rows, ${detail.modifierRows} modifier rows, ${detail.catalogObjects} catalog entries.` }));
-      const t = detail.team ?? {};
-      lines.push(h('div', { class: 'small muted', text: `Team: ${t.added ?? 0} added, ${t.updated ?? 0} updated, ${t.deactivated ?? 0} no longer active.` }));
+    if (!connected) lines.push(h('div', { class: 'small muted', text: `Add ${info.secret} in Render (web service → Environment). The app only reads from ${info.name}.` }));
+    if (last?.status === 'ok') lines.push(h('div', { class: 'small', text: `${when(last.finished_at)}: ${info.summary(detail)}` }));
+    if (last?.status === 'running') {
+      lines.push(h('div', { class: 'small muted', text: source === 'marginedge' ? 'The first MarginEdge sync reads 6 months of invoices one by one and can take 10 minutes or more.' : 'This can take a minute or two.' }));
+      setTimeout(draw, 5000);
     }
     if (last?.status === 'failed') lines.push(h('div', { class: 'error', text: detail.error ?? 'Unknown error' }));
-    if (last?.status === 'running') setTimeout(draw, 5000);
-    const button = h('button', { class: 'btn dark', disabled: !r.data.squareConnected || last?.status === 'running', text: 'Sync now', onclick: async () => {
+    if (extra) lines.push(extra);
+    const button = h('button', { class: 'btn dark', disabled: !connected || last?.status === 'running', text: 'Sync now', onclick: async () => {
         button.disabled = true;
-        const s = await api('POST', '/api/sync/square');
-        if (!s.ok) lines.push(h('div', { class: 'error', text: s.data.error }));
-        setTimeout(draw, 1500);
+        const s = await api('POST', `/api/sync/${source}`);
+        setTimeout(() => draw(s.ok ? null : h('div', { class: 'error', text: s.data.error })), 1200);
       } });
     box.replaceChildren(
-      h('div', { class: 'row' }, h('h2', { class: 'grow', text: 'Square' }), status),
+      h('div', { class: 'row' }, h('h2', { class: 'grow', text: info.name }), status),
+      h('div', { class: 'small muted', text: `Brings in ${info.what}. Syncs by itself every night after 4 am.` }),
       ...lines,
-      h('div', { class: 'small muted', text: 'Syncs by itself every night after 4 am.' }),
       h('div', {}, button),
+    );
+  };
+  await draw();
+  return box;
+}
+
+// Recipe cards and earlier answers, from a kitchen-book file.
+async function importCard() {
+  const box = h('section', { class: 'card', 'aria-label': 'Recipe cards and answers' });
+  const NAMES = { recipeCards: 'Recipe cards', importAnswers: 'Product answers (merges, pack sizes, prices)', linkAnswers: 'Dish links and seasonal versions', modifierAnswers: 'Modifier answers' };
+  const draw = async (message) => {
+    const r = await api('GET', '/api/book');
+    const parts = r.data.parts ?? [];
+    const err = h('div', { class: 'error' });
+    const input = h('input', { type: 'file', accept: '.json,application/json', 'aria-label': 'Kitchen-book file' });
+    const button = h('button', { class: 'btn dark', text: 'Import', onclick: async () => {
+        const file = input.files?.[0];
+        if (!file) return (err.textContent = 'Choose the file first.');
+        let data;
+        try { data = JSON.parse(await file.text()); } catch { return (err.textContent = 'That file isn’t readable JSON.'); }
+        button.disabled = true;
+        const res = await api('POST', '/api/book/import', data);
+        button.disabled = false;
+        if (!res.ok) return (err.textContent = res.data.error ?? 'Import failed.');
+        draw(h('div', { class: 'tag ok', text: `Loaded ${res.data.loaded.length} parts${res.data.recipeCards ? `, ${res.data.recipeCards} recipe cards` : ''}` }));
+      } });
+    box.replaceChildren(
+      h('h2', { text: 'Recipe cards and answers' }),
+      h('div', { class: 'small muted', text: 'Load the kitchen-book file from Claude: your recipe cards and every answer given so far. Importing again replaces what’s here; earlier versions are kept.' }),
+      parts.length ? h('div', { class: 'list' }, parts.map((p) => h('div', {}, h('span', { class: 'grow', text: NAMES[p.key] ?? p.key }), h('span', { class: 'small muted', text: when(p.updated_at) })))) : h('div', { class: 'tag', text: 'Nothing loaded yet' }),
+      h('div', { class: 'row' }, h('div', { class: 'grow' }, input), button),
+      err, message ?? null,
     );
   };
   await draw();

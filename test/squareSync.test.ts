@@ -133,5 +133,5 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
   // The scheduler: due after 4 am local when today's sync hasn't run; quiet otherwise.
   const runs = (await db!.query<{ status: string }>("SELECT status FROM sync_runs WHERE source = 'square'")).rows;
   assert.deepEqual(runs.map((x) => x.status), ['ok', 'ok']);
-  assert.equal(await syncDue(db!, { token: 'later' }, new Date('2026-10-06T09:00:00Z')), 0); // not connected
+  assert.equal(await syncDue(db!, { square: { token: 'later' }, marginedge: {} }, new Date('2026-10-06T09:00:00Z')), 0); // not connected
 });

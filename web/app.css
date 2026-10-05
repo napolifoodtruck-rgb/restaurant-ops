@@ -68,3 +68,19 @@ input:focus-visible, button:focus-visible { outline: 3px solid #9DBDE6; outline-
   main { padding: 20px 16px 32px; }
   h1 { font-size: 28px; }
 }
+
+/* Margins */
+.mrow { display: grid; grid-template-columns: minmax(150px, 1.2fr) 280px 190px 60px minmax(200px, 1.4fr) 100px; align-items: center; gap: 14px; padding: 10px 0; border-top: 1px solid var(--soft); }
+.mrow.head { border-top: 0; padding-top: 0; font-size: 12px; font-weight: 600; color: var(--muted); }
+.mrow .name { font-weight: 600; font-size: 15px; }
+.mrow .num { text-align: right; }
+.mrow.off { opacity: .55; }
+.mrow > div:last-child { text-align: right; }
+.row.tight { gap: 8px; }
+.pricebar { display: flex; height: 20px; border-radius: 5px; overflow: hidden; }
+.pricebar .food { background: var(--accent); }
+.pricebar .left { background: #D9E6D9; }
+.total { height: 20px; border-radius: 5px; background: var(--green); min-width: 2px; }
+.tag.blue { background: #E6EEF8; color: var(--blue); }
+@media (max-width: 1100px) { .mrow { grid-template-columns: 1fr 1fr; } .mrow.head { display: none; } .mrow > div:last-child { text-align: left; } }
+.nowrap { white-space: nowrap; }
