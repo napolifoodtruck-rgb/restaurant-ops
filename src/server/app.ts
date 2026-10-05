@@ -12,7 +12,8 @@
  *   POST /api/logout
  *   GET  /api/me
  *   POST /api/staff/:id/pin      { pin } yourself, or a manager for anyone
- *   GET  /api/staff              the team with roles and whether each has a PIN (manager or up)
+ *   GET  /api/staff              the team with access and whether each has a PIN (manager or up)
+ *   POST /api/staff/:id/access   { access: staff|manager } (the account owner only)
  *   GET  /api/sync               last syncs and what's connected (manager or up)
  *   POST /api/sync/:source       start a Square or MarginEdge sync now (manager or up)
  *   GET  /api/book               which parts of the kitchen book are loaded (manager or up)
@@ -118,13 +119,13 @@ export function createApp(config: AppConfig) {
     if (method === 'GET' && path === '/api/staff') {
       const who = await signedIn(req);
       if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
-      const { rows } = await db.query<{ id: string; display_name: string; job_title: string | null; role_level: string | null; has_pin: boolean; has_email: boolean }>(
-        `SELECT s.id, s.display_name, s.job_title, j.role_level, s.pin_hash IS NOT NULL AS has_pin, s.email IS NOT NULL AS has_email
-           FROM staff s LEFT JOIN job_title_permissions j ON j.restaurant_id = s.restaurant_id AND j.job_title = s.job_title
-          WHERE s.restaurant_id = $1 AND s.active ORDER BY s.display_name`,
+      const { rows } = await db.query<{ id: string; display_name: string; job_title: string | null; access: string; has_pin: boolean; has_email: boolean }>(
+        `SELECT s.id, s.display_name, s.job_title, s.access, s.pin_hash IS NOT NULL AS has_pin, s.email IS NOT NULL AS has_email
+           FROM staff s WHERE s.restaurant_id = $1 AND s.active
+          ORDER BY CASE s.access WHEN 'owner' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END, s.display_name`,
         [who.restaurantId],
       );
-      return send(res, 200, { staff: rows.map((r) => ({ id: r.id, name: r.display_name, jobTitle: r.job_title, roleLevel: r.role_level ?? 'line', hasPin: r.has_pin, hasEmail: r.has_email })) });
+      return send(res, 200, { canSetAccess: who.roleLevel === 'owner', staff: rows.map((r) => ({ id: r.id, name: r.display_name, jobTitle: r.job_title, access: r.access, hasPin: r.has_pin, hasEmail: r.has_email })) });
     }
 
     if (method === 'GET' && path === '/health') {
@@ -144,7 +145,7 @@ export function createApp(config: AppConfig) {
       const r = await db.query<{ id: string }>('INSERT INTO restaurants (name, timezone) VALUES ($1, $2) RETURNING id', [str(b, 'restaurantName'), typeof b.timezone === 'string' ? b.timezone : 'America/New_York']);
       const restaurantId = r.rows[0]!.id;
       await db.query("INSERT INTO job_title_permissions (restaurant_id, job_title, role_level) VALUES ($1, 'Owner', 'owner')", [restaurantId]);
-      await db.query("INSERT INTO staff (restaurant_id, display_name, job_title, email, password_hash) VALUES ($1, $2, 'Owner', $3, $4)", [restaurantId, str(b, 'name'), str(b, 'email').trim(), hash]);
+      await db.query("INSERT INTO staff (restaurant_id, display_name, job_title, email, password_hash, access) VALUES ($1, $2, 'Owner', $3, $4, 'owner')", [restaurantId, str(b, 'name'), str(b, 'email').trim(), hash]);
       return signInReply(res, await signInWithPassword(db, str(b, 'email'), password), secureCookies);
     }
 
@@ -192,11 +193,27 @@ export function createApp(config: AppConfig) {
       const who = await signedIn(req);
       const staffId = pinPath[1]!;
       if (staffId !== who.staffId && !atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Only a manager can set someone else’s PIN.');
+      if (staffId !== who.staffId && who.roleLevel !== 'owner') {
+        const target = (await db.query<{ access: string }>('SELECT access FROM staff WHERE id = $1 AND restaurant_id = $2', [staffId, who.restaurantId])).rows[0];
+        if (target && target.access !== 'staff') throw new HttpError(403, 'Only the account owner sets a manager’s PIN.');
+      }
       const b = await body(req);
       const pin = str(b, 'pin');
       const problem = pinProblem(pin);
       if (problem) throw new HttpError(400, problem);
       const r = await db.query('UPDATE staff SET pin_hash = $1, failed_logins = 0, locked_until = NULL WHERE id = $2 AND restaurant_id = $3 RETURNING id', [await hashSecret(pin), staffId, who.restaurantId]);
+      if (!r.rows.length) throw new HttpError(404, 'No such person.');
+      return send(res, 200, { ok: true });
+    }
+
+    const accessPath = path.match(/^\/api\/staff\/([0-9a-f-]{36})\/access$/);
+    if (method === 'POST' && accessPath) {
+      const who = await signedIn(req);
+      if (who.roleLevel !== 'owner') throw new HttpError(403, 'Only the account owner sets who is a manager.');
+      if (accessPath[1] === who.staffId) throw new HttpError(400, 'You’re the account owner.');
+      const b = await body(req);
+      if (b.access !== 'staff' && b.access !== 'manager') throw new HttpError(400, 'Staff or manager.');
+      const r = await db.query("UPDATE staff SET access = $1 WHERE id = $2 AND restaurant_id = $3 AND access <> 'owner' RETURNING id", [b.access, accessPath[1], who.restaurantId]);
       if (!r.rows.length) throw new HttpError(404, 'No such person.');
       return send(res, 200, { ok: true });
     }

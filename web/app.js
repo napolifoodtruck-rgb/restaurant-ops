@@ -44,7 +44,8 @@ async function api(method, path, body) {
 
 function show(...nodes) { app.replaceChildren(...nodes); }
 
-const LEVEL_NAMES = { line: 'Line', lead: 'Lead', sous: 'Sous chef', chef: 'Chef', manager: 'Manager', owner: 'Owner' };
+const LEVEL_NAMES = { line: 'Staff', lead: 'Staff', sous: 'Staff', chef: 'Staff', manager: 'Manager', owner: 'Account owner' };
+const ACCESS_NAMES = { staff: 'Staff', manager: 'Manager', owner: 'Account owner' };
 const LEVELS = ['line', 'lead', 'sous', 'chef', 'manager', 'owner'];
 const atLeast = (level, needed) => LEVELS.indexOf(level) >= LEVELS.indexOf(needed);
 
@@ -1087,37 +1088,50 @@ async function teamCard(me) {
   const box = h('section', { class: 'card', 'aria-label': 'Team' });
   const r = await api('GET', '/api/staff');
   const people = r.data.staff ?? [];
-  const list = h('div', { class: 'list' }, people.map((p) => personRow(p, me)));
+  const isOwner = r.data.canSetAccess;
+  const owner = people.find((p) => p.access === 'owner');
   box.replaceChildren(
     h('div', { class: 'row' }, h('h2', { class: 'grow', text: 'Team' }), h('span', { class: 'small muted', text: `${people.length} active` })),
-    h('div', { class: 'small muted', text: 'Names and job titles come from Square. Each cook needs a PIN to sign in on a kitchen iPad.' }),
-    list,
+    h('div', { class: 'small muted', text: `Names and job titles come from Square. Everyone is staff unless the account owner${owner ? ` (${owner.name})` : ''} makes them a manager. Managers approve prep lists, edit lists, plan the menu and see Performance.` }),
+    h('div', { class: 'list' }, people.map((p) => personRow(p, me, isOwner))),
   );
   return box;
 }
 
-function personRow(p, me) {
+function personRow(p, me, isOwner) {
   const row = h('div');
+  // Managers set PINs for staff; only the account owner sets a manager's PIN or access.
+  const canPin = p.id === me.staffId || isOwner || p.access === 'staff';
   const draw = () => row.replaceChildren(
-    h('div', { class: 'grow' }, h('div', { text: p.name }), h('div', { class: 'small muted', text: [p.jobTitle, LEVEL_NAMES[p.roleLevel]].filter(Boolean).join(' · ') })),
+    h('div', { class: 'grow' }, h('div', { text: p.name }), h('div', { class: 'small muted', text: [p.jobTitle].filter(Boolean).join(' · ') })),
+    h('span', { class: `tag${p.access === 'staff' ? '' : ' blue'}`, text: ACCESS_NAMES[p.access] ?? p.access }),
     p.hasPin ? h('span', { class: 'tag ok', text: 'PIN set' }) : h('span', { class: 'tag', text: 'No PIN' }),
-    h('button', { class: 'btn', onclick: () => pinForm(row, p, () => { p.hasPin = true; draw(); }, draw), text: p.hasPin ? 'Change' : 'Set PIN' }),
+    canPin ? h('button', { class: 'btn', onclick: () => pinForm(row, p, () => { p.hasPin = true; draw(); }, draw, isOwner && p.access !== 'owner' ? (a) => { p.access = a; } : null), text: p.hasPin ? 'Change' : 'Set PIN' }) : null,
   );
   draw();
   return row;
 }
 
-function pinForm(container, person, onDone, onCancel) {
+/** PIN entry; for the account owner, also staff or manager. */
+function pinForm(container, person, onDone, onCancel, onAccess) {
   const err = h('span', { class: 'error' });
-  const input = h('input', { inputmode: 'numeric', pattern: '[0-9]*', maxlength: '6', autocomplete: 'off', 'aria-label': `New PIN for ${person.name}`, placeholder: '4–6 digits' });
-  const form = h('form', { class: 'row grow', onsubmit: async (e) => {
+  const input = h('input', { inputmode: 'numeric', pattern: '[0-9]*', maxlength: '6', autocomplete: 'off', 'aria-label': `New PIN for ${person.name}`, placeholder: person.hasPin ? 'new PIN (optional)' : '4–6 digits' });
+  const access = onAccess ? h('select', { 'aria-label': `Access for ${person.name}` }, [['staff', 'Staff'], ['manager', 'Manager']].map(([v, t]) => h('option', { value: v, text: t, selected: person.access === v ? true : undefined }))) : null;
+  const form = h('form', { class: 'row grow wrap', onsubmit: async (e) => {
       e.preventDefault();
-      const r = await api('POST', `/api/staff/${person.id}/pin`, { pin: input.value });
-      if (!r.ok) return (err.textContent = r.data.error ?? 'That didn’t work.');
+      if (access && access.value !== person.access) {
+        const a = await api('POST', `/api/staff/${person.id}/access`, { access: access.value });
+        if (!a.ok) return (err.textContent = a.data.error ?? 'That didn’t work.');
+        onAccess(access.value);
+      }
+      if (input.value || !person.hasPin) {
+        const r = await api('POST', `/api/staff/${person.id}/pin`, { pin: input.value });
+        if (!r.ok) return (err.textContent = r.data.error ?? 'That didn’t work.');
+      }
       onDone();
     } },
     h('div', { class: 'grow' }, h('div', { text: person.name }), err),
-    input, h('button', { class: 'btn dark', type: 'submit', text: 'Save' }), h('button', { class: 'btn', type: 'button', onclick: onCancel, text: 'Cancel' }));
+    access, input, h('button', { class: 'btn dark', type: 'submit', text: 'Save' }), h('button', { class: 'btn', type: 'button', onclick: onCancel, text: 'Cancel' }));
   container.replaceChildren(form);
   input.focus();
 }

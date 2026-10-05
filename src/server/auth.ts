@@ -83,7 +83,8 @@ interface StaffRow {
   restaurant_name: string;
 }
 
-const STAFF_SELECT = `SELECT s.id, s.restaurant_id, s.display_name, s.job_title, s.pin_hash, s.password_hash, s.failed_logins, s.locked_until, j.role_level, r.name AS restaurant_name
+const STAFF_SELECT = `SELECT s.id, s.restaurant_id, s.display_name, s.job_title, s.pin_hash, s.password_hash, s.failed_logins, s.locked_until,
+    CASE s.access WHEN 'owner' THEN 'owner' WHEN 'manager' THEN 'manager' ELSE 'line' END AS role_level, r.name AS restaurant_name
   FROM staff s JOIN restaurants r ON r.id = s.restaurant_id
   LEFT JOIN job_title_permissions j ON j.restaurant_id = s.restaurant_id AND j.job_title = s.job_title`;
 

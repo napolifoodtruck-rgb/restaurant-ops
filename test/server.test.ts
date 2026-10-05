@@ -167,6 +167,15 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.deepEqual(await pizzaList('2026-10-20'), ['Mushroom Blend']); // the replaced dish's own prep is off
   assert.equal((await call('POST', `/api/plans/${planId}/apply`, { body: {}, cookies: ownerSession })).status, 409);
 
+  // Access: everyone is staff until the account owner makes them a manager.
+  assert.equal((await call('POST', `/api/staff/${cookId}/access`, { body: { access: 'manager' }, cookies: cookAgain })).status, 403);
+  assert.equal((await call('POST', `/api/staff/${ownerId}/access`, { body: { access: 'staff' }, cookies: ownerSession })).status, 400); // not yourself
+  assert.equal((await call('POST', `/api/staff/${cookId}/access`, { body: { access: 'manager' }, cookies: ownerSession })).status, 200);
+  assert.equal((await call('GET', '/api/me', { cookies: cookAgain })).json.me.roleLevel, 'manager');
+  assert.equal((await call('POST', `/api/staff/${ownerId}/pin`, { body: { pin: '5791' }, cookies: cookAgain })).status, 403); // a manager can't set the owner's PIN
+  const team = (await call('GET', '/api/staff', { cookies: cookAgain })).json;
+  assert.deepEqual([team.canSetAccess, team.staff.map((p: any) => p.access)], [false, ['owner', 'manager']]);
+
   // Nothing secret is stored in the clear.
   const stored = await db!.query<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = $1', [cookId]);
   assert.match(stored.rows[0]!.pin_hash, /^scrypt\$/);
