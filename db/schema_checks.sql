@@ -28,8 +28,12 @@ INSERT INTO recipe_ingredients (restaurant_id, recipe_id, product_id, sub_recipe
 INSERT INTO custom_units (restaurant_id, recipe_id, name, amount, unit) VALUES
   ('00000000-0000-0000-0000-00000000000a', '30000000-0000-0000-0000-000000000002', 'sixth pan', 2, 'qt');
 
-INSERT INTO menu_links (restaurant_id, pos_catalog_id, kind, pos_name, recipe_id) VALUES
-  ('00000000-0000-0000-0000-00000000000a', 'SQ-RIGATONI', 'item', 'Rigatoni alla vodka', '30000000-0000-0000-0000-000000000003');
+INSERT INTO menu_links (restaurant_id, pos_catalog_id, pos_name_key, kind, pos_name, recipe_id, matched_by) VALUES
+  ('00000000-0000-0000-0000-00000000000a', 'SQ-RIGATONI', 'rigatoni alla vodka', 'item', 'Rigatoni alla vodka', '30000000-0000-0000-0000-000000000003', 'name'),
+  -- Same POS id, renamed to a dish with no recipe yet: its own row.
+  ('00000000-0000-0000-0000-00000000000a', 'SQ-RIGATONI', 'penne arrabbiata', 'item', 'Penne Arrabbiata', NULL, 'name');
+INSERT INTO menu_name_aliases (restaurant_id, name_key, recipe_id) VALUES
+  ('00000000-0000-0000-0000-00000000000a', 'rigatoni vodka', '30000000-0000-0000-0000-000000000003');
 
 INSERT INTO prep_batches (id, restaurant_id, recipe_id, amount, unit, use_by) VALUES
   ('40000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000a', '30000000-0000-0000-0000-000000000002', 1, 'sixth pan', now() + interval '5 days');
@@ -80,6 +84,18 @@ SELECT pg_temp.must_fail('only one open to-do item per problem',
 SELECT pg_temp.must_fail('waste needs a reason from the list',
   $q$INSERT INTO waste_entries (restaurant_id, product_id, amount, unit, reason)
      VALUES ('00000000-0000-0000-0000-00000000000a', '20000000-0000-0000-0000-000000000001', 1, 'lb', 'vibes')$q$);
+
+SELECT pg_temp.must_fail('a portion needs a unit',
+  $$INSERT INTO menu_links (restaurant_id, pos_catalog_id, pos_name_key, kind, pos_name, recipe_id, portion_amount, matched_by)
+    VALUES ('00000000-0000-0000-0000-00000000000a', 'SQ-SIDE', 'side sauce', 'item', 'Side sauce', '30000000-0000-0000-0000-000000000002', 2, 'name')$$);
+
+SELECT pg_temp.must_fail('a manager answer records who answered',
+  $$INSERT INTO menu_links (restaurant_id, pos_catalog_id, pos_name_key, kind, pos_name, recipe_id, matched_by)
+    VALUES ('00000000-0000-0000-0000-00000000000a', 'SQ-SIDE', 'side sauce', 'item', 'Side sauce', '30000000-0000-0000-0000-000000000002', 'manager')$$);
+
+SELECT pg_temp.must_fail('a menu link cannot point at another restaurant''s recipe',
+  $$INSERT INTO menu_links (restaurant_id, pos_catalog_id, pos_name_key, kind, pos_name, recipe_id, matched_by)
+    VALUES ('00000000-0000-0000-0000-00000000000b', 'SQ-X', 'x', 'item', 'X', '30000000-0000-0000-0000-000000000003', 'name')$$);
 
 SELECT pg_temp.must_fail('custom unit names are unique per item',
   $q$INSERT INTO custom_units (restaurant_id, recipe_id, name, amount, unit)

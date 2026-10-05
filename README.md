@@ -13,11 +13,15 @@ Back-of-house foundation:
 | `src/core/units.ts` | Kitchen units and conversions: standard units, spellings like "lbs" or "#", per-item units like "sixth pan", and weight ↔ volume ↔ count conversions that name the missing fact when they can't be done. |
 | `src/core/recipes.ts` | The recipe engine: nested recipes (garlic → chopped garlic → vodka sauce → dish), yields, breakdown to raw products, cost roll-up, food cost %, loop detection. Gaps become issues, never crashes. |
 | `src/core/sales.ts` | Turns POS sales (items and modifiers) into theoretical usage, ranks menu items still missing a recipe, and reports how much of sales recipes cover. |
+| `src/core/menuLinks.ts` | Links POS items to recipes by POS id, so renames never break them. Exact names link on their own; the rest become one-tap questions, best sellers first. A renamed item keeps its link but asks once whether it is still the same dish. Answers become aliases. |
+| `src/core/margins.ts` | Real margins from POS sales: average price actually collected, food cost at today's invoice prices, food cost % (period and at today's list price), contribution per plate and in total, and the four menu-engineering groups within each category. Staff meals and unlinked items are kept apart. |
 | `src/core/prep.ts` | Prep batches with use-by dates from shelf life, the nightly count sheet (walk-in order, oldest first, expiring batches flagged), and one-tap discards that log waste. |
 | `src/core/forecast.ts` | Sales forecast per menu item from the same weekday in recent weeks, open days only; specials only on days they're available; a reservation adjustment. |
 | `src/core/prepList.ts` | Tomorrow's prep list: forecast demand + buffer − usable on hand, in whole batches, with sub-preps (chopped garlic for the sauce) listed first. Bigger buffer when the count was skipped. |
 | `src/core/prepChecks.ts` | Surplus-special suggestions for batches that won't sell through before their use-by, and the daily prep check ranked by dollar value. |
 | `src/connectors/marginedge.ts` | Reads a MarginEdge export into vendors, products, pack sizes, invoices and price history, and runs the invoice self-checks (line math, invoice totals, unknown units, missing pack sizes). |
+| `src/connectors/marginedgeRecipes.ts` | Reads MarginEdge recipe cards and recipe costing PDFs (text, or OCR when the PDF fonts are garbled) into nested recipes, with yield %, several yields and shelf life. |
+| `src/connectors/square.ts` | Square's catalog (one menu item per variation, staff-meal buttons spotted) and Reporting API item sales, in the neutral shapes above. |
 | `scripts/marginedge-export.mjs` | One-off export from MarginEdge's read-only API, run on the restaurant's own computer. The API key is typed at a hidden prompt and never saved. |
 | `db/schema.sql` | PostgreSQL schema for restaurants, staff, vendors, products, invoices, price history, recipes, menu links, prep batches, counts, waste, to-do items and questions. Built for many restaurants: every reference includes the restaurant. |
 

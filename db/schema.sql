@@ -223,13 +223,36 @@ CREATE TABLE custom_units (
 );
 
 -- POS menu items and modifiers attach straight to recipes: no separate dish to create.
+-- Links are kept by the POS id, so a rename in the POS never breaks them. Square keeps the
+-- id when an item is renamed (and restaurants reuse items for rotating specials), so a
+-- link also records the name it was confirmed under: a sale under a new name asks once
+-- whether it is still the same dish, and a different dish gets its own row.
 CREATE TABLE menu_links (
   restaurant_id       uuid NOT NULL,
   pos_catalog_id      text NOT NULL,              -- Square catalog object id (item variation or modifier)
+  pos_name_key        text NOT NULL,              -- the name, normalized by the app (menuLinks.nameKey)
   kind                text NOT NULL CHECK (kind IN ('item', 'modifier')),
-  pos_name            text NOT NULL,
-  recipe_id           uuid NOT NULL,
-  PRIMARY KEY (restaurant_id, pos_catalog_id),
+  pos_name            text NOT NULL,              -- the name as the POS showed it
+  recipe_id           uuid,                       -- NULL: confirmed as no food cost (gift card, fee)
+  portion_amount      numeric CHECK (portion_amount > 0),  -- NULL: one yield of the recipe
+  portion_unit        text,
+  matched_by          text NOT NULL CHECK (matched_by IN ('name', 'alias', 'manager')),
+  confirmed_by        uuid,
+  created_at          timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (restaurant_id, pos_catalog_id, pos_name_key),
+  CHECK ((portion_amount IS NULL) = (portion_unit IS NULL)),
+  CHECK (portion_amount IS NULL OR recipe_id IS NOT NULL),
+  CHECK (matched_by <> 'manager' OR confirmed_by IS NOT NULL),
+  FOREIGN KEY (restaurant_id, recipe_id) REFERENCES recipes (restaurant_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (restaurant_id, confirmed_by) REFERENCES staff (restaurant_id, id)
+);
+
+-- Names a manager has confirmed, so the same name links elsewhere without asking again.
+CREATE TABLE menu_name_aliases (
+  restaurant_id       uuid NOT NULL REFERENCES restaurants ON DELETE CASCADE,
+  name_key            text NOT NULL,
+  recipe_id           uuid,                       -- NULL: no food cost
+  PRIMARY KEY (restaurant_id, name_key),
   FOREIGN KEY (restaurant_id, recipe_id) REFERENCES recipes (restaurant_id, id) ON DELETE CASCADE
 );
 
