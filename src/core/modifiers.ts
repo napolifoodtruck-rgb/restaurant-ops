@@ -36,6 +36,8 @@ export interface ModifierReading {
   /** What is added (add, swap) or what is taken off (remove). */
   adds?: string;
   removes?: string;
+  /** Worded "extra": more of what the dish already has, usually a part portion. */
+  extra?: true;
 }
 
 export const modifierKey = (m: Pick<PosModifier, 'listName' | 'name'>): string => `${nameKey(m.listName ?? '')}|${nameKey(m.name)}`;
@@ -68,7 +70,8 @@ export function readModifier(m: PosModifier): ModifierReading {
 
   const stripped = name.replace(/^[\s+*\-–]+/, '');
   if (/^\s*\+\+/.test(name) || /^(add|extra)\b/i.test(stripped)) {
-    return { action: 'add', adds: clean(stripped.replace(/^(add|extra)\b/i, '')) };
+    const extra = /\bextra\b/i.test(name);
+    return { action: 'add', adds: clean(stripped.replace(/^(add|extra)\b/i, '')), ...(extra ? { extra: true as const } : {}) };
   }
   if (/^no\b/i.test(stripped) || /^\s*[-–]/.test(name)) {
     return { action: 'remove', removes: clean(stripped.replace(/^no\b/i, '')) };
@@ -82,13 +85,28 @@ export function readModifier(m: PosModifier): ModifierReading {
 
 export interface ModifierAnswers {
   /** Modifier key → what one use adds (an add-on, a swap's new half, a choice). Empty: changes nothing. */
-  adds: Record<string, Ingredient[]>;
+  adds: Record<string, (Ingredient | ShareOfDish)[]>;
   /**
    * `${dish recipe id}|${modifier key}` → the dish's ingredient it takes off. Null: takes nothing off.
    * `*|${modifier key}` answers for every dish ("the gluten-free crust replaces the dough").
    */
   removes: Record<string, ItemRef | null>;
 }
+
+/**
+ * A part of the dish's own portion: extra mozzarella is half again what the dish has, so
+ * 1.5 oz on a 3 oz Margherita and 1 oz on a 2 oz Greca. On a dish without the item it is
+ * that share of the item's usual portion.
+ */
+export interface ShareOfDish {
+  item: ItemRef;
+  share: number;
+}
+
+const isShare = (a: Ingredient | ShareOfDish): a is ShareOfDish => 'share' in a;
+
+/** The default for "extra": half again the dish's portion. */
+export const EXTRA_SHARE = 0.5;
 
 export const emptyModifierAnswers = (): ModifierAnswers => ({ adds: {}, removes: {} });
 
@@ -101,7 +119,7 @@ export interface ModifierQuestion {
   dishRecipeId?: string;
   dishName?: string;
   /** Best guess, for a one-tap yes. */
-  proposal?: Ingredient[] | ItemRef;
+  proposal?: (Ingredient | ShareOfDish)[] | ItemRef;
   /** The dish's ingredients, for "which". */
   choices?: ItemRef[];
   uses: number;
@@ -177,12 +195,30 @@ export function usualPortion(book: RecipeBook, item: ItemRef): Quantity | undefi
   return [...counts.values()].sort((a, b) => b.n - a.n || b.quantity.amount - a.quantity.amount)[0]?.quantity;
 }
 
-function proposeAdd(book: RecipeBook, text: string): Ingredient[] | undefined {
+function proposeAdd(book: RecipeBook, text: string, extra: boolean): (Ingredient | ShareOfDish)[] | undefined {
   for (const item of findItems(book, text)) {
+    if (extra) return [{ item, share: EXTRA_SHARE }];
     const quantity = usualPortion(book, item);
     if (quantity) return [{ item, quantity }];
   }
   return undefined;
+}
+
+/** Turns answers into amounts for one dish. Undefined when a share has nothing to be a share of. */
+function amountsFor(book: RecipeBook, dishRecipeId: string, adds: readonly (Ingredient | ShareOfDish)[]): Ingredient[] | undefined {
+  const dish = book.recipes.get(dishRecipeId);
+  const out: Ingredient[] = [];
+  for (const add of adds) {
+    if (!isShare(add)) {
+      out.push(add);
+      continue;
+    }
+    const own = dish?.ingredients.find((l) => l.item.kind === add.item.kind && l.item.id === add.item.id)?.quantity;
+    const base = own ?? usualPortion(book, add.item);
+    if (!base) return undefined;
+    out.push({ item: add.item, quantity: { amount: base.amount * add.share, unit: base.unit } });
+  }
+  return out;
 }
 
 /**
@@ -205,14 +241,15 @@ export function resolveModifier(
   let adds: Ingredient[] = [];
   if (reading.action === 'add' || reading.action === 'swap' || reading.action === 'ask') {
     const answered = answers.adds[key];
-    if (answered) {
-      adds = answered;
+    const amounts = answered && amountsFor(book, dishRecipeId, answered);
+    if (amounts) {
+      adds = amounts;
     } else if (reading.action === 'add' && !modifier.price && reading.adds && findLine(book, dishRecipeId, reading.adds)) {
       // Free, and the dish already has it: the dish as written.
       return { resolved: { adds: [], removes: [] } };
     } else {
       const type = reading.action === 'ask' ? 'what' : 'portion';
-      const proposal = reading.adds ? proposeAdd(book, reading.adds) : undefined;
+      const proposal = reading.adds ? proposeAdd(book, reading.adds, !!reading.extra) : undefined;
       return { question: { ...base, type, ...(proposal ? { proposal } : {}) } };
     }
   }

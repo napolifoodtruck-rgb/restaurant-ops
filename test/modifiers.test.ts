@@ -34,12 +34,12 @@ const book = new RecipeBook(products, recipes);
 const mod = (name: string, listName?: string, price?: number) => ({ name, ...(listName ? { listName } : {}), ...(price !== undefined ? { price } : {}) });
 
 test('the wording says what a modifier does', () => {
-  assert.deepEqual(readModifier(mod('++ Extra Mozzarella')), { action: 'add', adds: 'Mozzarella' });
+  assert.deepEqual(readModifier(mod('++ Extra Mozzarella')), { action: 'add', adds: 'Mozzarella', extra: true });
   assert.deepEqual(readModifier(mod('-- No Chorizo')), { action: 'remove', removes: 'Chorizo' });
   assert.deepEqual(readModifier(mod('--No Honey')), { action: 'remove', removes: 'Honey' });
   assert.deepEqual(readModifier(mod('** Sub Buffalo Mozzarella')), { action: 'swap', adds: 'Buffalo Mozzarella' });
   assert.deepEqual(readModifier(mod('-No Focaccia; Sub Gluten Free')), { action: 'swap', adds: 'Gluten Free', removes: 'Focaccia' });
-  assert.deepEqual(readModifier(mod('-Extra Side Focaccia')), { action: 'add', adds: 'Side Focaccia' });
+  assert.deepEqual(readModifier(mod('-Extra Side Focaccia')), { action: 'add', adds: 'Side Focaccia', extra: true });
   assert.deepEqual(readModifier(mod('++ Fresh Basil Cooked on Pizza')), { action: 'add', adds: 'Fresh Basil' });
   assert.equal(readModifier(mod('** Dressing OTS')).action, 'none');
   assert.equal(readModifier(mod('FULLY COOKED & SLICED (NOT AVAILABLE ONLINE)', 'How would you like it cooked?')).action, 'none');
@@ -50,12 +50,29 @@ test('the wording says what a modifier does', () => {
 });
 
 test('an add-on portion is proposed from the dishes that use it', () => {
-  // Mozzarella is 3 oz on three dishes and 1.75 oz on one.
+  // Pepperoni is 3 oz on the Pepperoni pizza, so a pepperoni add-on is proposed at 3 oz.
   assert.deepEqual(usualPortion(book, { kind: 'product', id: 'mozz' }), { amount: 3, unit: 'oz' });
-  const r = resolveModifier(book, 'margherita', mod('++ Extra Mozzarella', 'Toppings', 2), emptyModifierAnswers());
+  const r = resolveModifier(book, 'margherita', mod('++ Pepperoni', 'Toppings', 2), emptyModifierAnswers());
   assert.ok('question' in r);
   assert.equal(r.question.type, 'portion');
-  assert.deepEqual(r.question.proposal, [p('mozz', 3, 'oz')]);
+  assert.deepEqual(r.question.proposal, [p('pepperoni', 3, 'oz')]);
+});
+
+test('"extra" is half again the dish\'s own portion', () => {
+  const extra = mod('++ Extra Mozzarella', 'Toppings', 2);
+  const q = resolveModifier(book, 'margherita', extra, emptyModifierAnswers());
+  assert.ok('question' in q);
+  assert.deepEqual(q.question.proposal, [{ item: { kind: 'product', id: 'mozz' }, share: 0.5 }]);
+
+  const answers = { ...emptyModifierAnswers(), adds: { [modifierKey(extra)]: [{ item: { kind: 'product' as const, id: 'mozz' }, share: 0.5 }] } };
+  const on = (dishId: string) => {
+    const r = resolveModifier(book, dishId, extra, answers);
+    assert.ok('resolved' in r);
+    return r.resolved.adds;
+  };
+  assert.deepEqual(on('margherita'), [p('mozz', 1.5, 'oz')]); // 3 oz on the dish
+  assert.deepEqual(on('apricot'), [p('mozz', 0.875, 'oz')]); // 1.75 oz on the dish
+  assert.deepEqual(on('greca'), [p('mozz', 1.5, 'oz')]); // none on the dish: half the usual 3 oz
 });
 
 test('names match on what the ingredient is, not how it is bought', () => {
@@ -121,13 +138,13 @@ test('modifier costs add up per dish and feed the margins', () => {
 
   // Answered: extra mozzarella is 3 oz; the gluten-free crust replaces the dough.
   const answers = {
-    adds: { [modifierKey(mod('++ Extra Mozzarella', 'Toppings'))]: [p('mozz', 3, 'oz')], [modifierKey(gf)]: [p('gf-crust', 1, 'each')] },
+    adds: { [modifierKey(mod('++ Extra Mozzarella', 'Toppings'))]: [{ item: { kind: 'product' as const, id: 'mozz' }, share: 0.5 }], [modifierKey(gf)]: [p('gf-crust', 1, 'each')] },
     removes: { '*|gluten sensitive crust|gluten sensitive crust': { kind: 'product' as const, id: 'dough' } },
   };
   const after = modifierCosts(book, sales, dishFor, answers);
   assert.equal(after.questions.length, 0);
-  // Margherita: 10 × 3 oz mozzarella ($1.125) + 5 × (crust $3 − dough $0.40).
-  close(after.byItem.get('V-MARG|margherita'), 10 * 1.125 + 5 * 2.6);
+  // Margherita: 10 × 1.5 oz mozzarella ($0.5625) + 5 × (crust $3 − dough $0.40).
+  close(after.byItem.get('V-MARG|margherita'), 10 * 0.5625 + 5 * 2.6);
   close(after.byItem.get('V-CAL|calabria'), -4 * 0.6 + 2 * 2.6);
   close(after.usage.products.get('dough'), -7);
   const crust = after.modifiers.find((m) => m.key === modifierKey(gf))!;
@@ -141,7 +158,7 @@ test('modifier costs add up per dish and feed the margins', () => {
     { modifierCosts: after.byItem },
   );
   const marg = report.dishes[0]!;
-  close(marg.modifierCost, (10 * 1.125 + 5 * 2.6) / 100);
+  close(marg.modifierCost, (10 * 0.5625 + 5 * 2.6) / 100);
   close(marg.plateCost, 1.625 + marg.modifierCost);
   close(marg.contribution, 15.4 - marg.plateCost);
 });
