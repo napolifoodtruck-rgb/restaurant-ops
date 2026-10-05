@@ -15,6 +15,9 @@ CREATE TABLE restaurants (
   pos_system          text NOT NULL DEFAULT 'square' CHECK (pos_system IN ('square', 'toast')),
   pos_merchant_id     text,
   pos_location_id     text,
+  -- House conventions, learned from a restaurant's first answers rather than written into the code:
+  -- {"staffMealPattern": "\\bshift\\b", "extraShare": 0.5, "modifierWords": {...}}.
+  settings            jsonb NOT NULL DEFAULT '{}',
   created_at          timestamptz NOT NULL DEFAULT now(),
   UNIQUE (pos_system, pos_merchant_id, pos_location_id)
 );
@@ -37,11 +40,51 @@ CREATE TABLE staff (
 );
 
 -- Default permissions for each job title, e.g. 'Line Cook' → {prep.view, prep.log, counts.prep}.
+-- The role level sets what a job title sees beyond its own station: a line cook sees their
+-- station; a sous chef or chef sees every station live; managers and owners also see trends.
 CREATE TABLE job_title_permissions (
   restaurant_id       uuid NOT NULL REFERENCES restaurants ON DELETE CASCADE,
   job_title           text NOT NULL,
   permissions         text[] NOT NULL DEFAULT '{}',
+  role_level          text NOT NULL DEFAULT 'line' CHECK (role_level IN ('line', 'lead', 'sous', 'chef', 'manager', 'owner')),
   PRIMARY KEY (restaurant_id, job_title)
+);
+
+-- Stations ----------------------------------------------------------------------
+-- Where work happens: pizza, sauté, garde manger, pastry, bar, prep. Prep lists, counts and
+-- to-do items are built per station, so whoever works a station tonight sees its work.
+
+CREATE TABLE stations (
+  id                  uuid NOT NULL DEFAULT gen_random_uuid(),
+  restaurant_id       uuid NOT NULL REFERENCES restaurants ON DELETE CASCADE,
+  name                text NOT NULL,
+  sort_order          integer NOT NULL DEFAULT 0,
+  active              boolean NOT NULL DEFAULT true,
+  PRIMARY KEY (id),
+  UNIQUE (restaurant_id, id),
+  UNIQUE (restaurant_id, name)
+);
+
+-- Which stations a job title works by default (a Square job title such as 'Pizza Cook').
+CREATE TABLE job_title_stations (
+  restaurant_id       uuid NOT NULL,
+  job_title           text NOT NULL,
+  station_id          uuid NOT NULL,
+  PRIMARY KEY (restaurant_id, job_title, station_id),
+  FOREIGN KEY (restaurant_id, job_title) REFERENCES job_title_permissions (restaurant_id, job_title) ON DELETE CASCADE,
+  FOREIGN KEY (restaurant_id, station_id) REFERENCES stations (restaurant_id, id) ON DELETE CASCADE
+);
+
+-- Who works which station on a given day: from the Square schedule, or set by hand.
+CREATE TABLE station_assignments (
+  restaurant_id       uuid NOT NULL,
+  business_date       date NOT NULL,
+  station_id          uuid NOT NULL,
+  staff_id            uuid NOT NULL,
+  source              text NOT NULL DEFAULT 'schedule' CHECK (source IN ('schedule', 'manual')),
+  PRIMARY KEY (restaurant_id, business_date, station_id, staff_id),
+  FOREIGN KEY (restaurant_id, station_id) REFERENCES stations (restaurant_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (restaurant_id, staff_id) REFERENCES staff (restaurant_id, id) ON DELETE CASCADE
 );
 
 -- Vendors and products ---------------------------------------------------------
@@ -172,7 +215,10 @@ CREATE TABLE recipes (
   id                  uuid NOT NULL DEFAULT gen_random_uuid(),
   restaurant_id       uuid NOT NULL REFERENCES restaurants ON DELETE CASCADE,
   name                text NOT NULL,
-  kind                text NOT NULL CHECK (kind IN ('prep', 'dish', 'modifier')),
+  -- breakdown: one thing in, several weighed things out (a whole fish into fillets, trim,
+  -- bones and waste); its outputs are in breakdown_outputs, its input in recipe_ingredients.
+  kind                text NOT NULL CHECK (kind IN ('prep', 'dish', 'modifier', 'breakdown')),
+  station_id          uuid,                       -- the station that makes it (prep lists go there)
   yield_amount        numeric NOT NULL CHECK (yield_amount > 0),
   yield_unit          text NOT NULL,
   grams_per_ml        numeric CHECK (grams_per_ml > 0),
@@ -185,7 +231,8 @@ CREATE TABLE recipes (
   PRIMARY KEY (id),
   UNIQUE (restaurant_id, id),
   -- Dishes and modifiers yield portions.
-  CHECK (kind = 'prep' OR yield_unit = 'each')
+  CHECK (kind IN ('prep', 'breakdown') OR yield_unit = 'each'),
+  FOREIGN KEY (restaurant_id, station_id) REFERENCES stations (restaurant_id, id) ON DELETE SET NULL (station_id)
 );
 
 CREATE TABLE recipe_ingredients (
@@ -222,6 +269,100 @@ CREATE TABLE custom_units (
   FOREIGN KEY (restaurant_id, recipe_id) REFERENCES recipes (restaurant_id, id) ON DELETE CASCADE
 );
 
+-- What a breakdown yields, as shares of the input's weight. The input's cost is split by
+-- valuing by-products first (bones at $0/lb, trim at what it's worth to you) and letting the
+-- main cuts carry the rest, in proportion to weight × relative value. Waste is an output
+-- too, so it shows instead of hiding in a yield percentage.
+CREATE TABLE breakdown_outputs (
+  id                  uuid NOT NULL DEFAULT gen_random_uuid(),
+  restaurant_id       uuid NOT NULL,
+  recipe_id           uuid NOT NULL,              -- the breakdown
+  name                text NOT NULL,              -- 'Fillets', 'Trim', 'Bones & heads', 'Waste'
+  output_product_id   uuid,                       -- what it becomes in inventory
+  output_recipe_id    uuid,
+  standard_share      numeric NOT NULL CHECK (standard_share > 0 AND standard_share <= 1),
+  valuation           text NOT NULL CHECK (valuation IN ('main', 'fixed', 'waste')),
+  relative_value      numeric NOT NULL DEFAULT 1 CHECK (relative_value > 0),  -- among main cuts
+  fixed_price         numeric(12,4) CHECK (fixed_price >= 0),                 -- per fixed_per_unit
+  fixed_per_unit      text,
+  sort_order          integer NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE (restaurant_id, id),
+  UNIQUE (recipe_id, name),
+  CHECK (num_nonnulls(output_product_id, output_recipe_id) <= 1),
+  CHECK (valuation <> 'waste' OR num_nonnulls(output_product_id, output_recipe_id) = 0),
+  CHECK (valuation <> 'fixed' OR (fixed_price IS NOT NULL AND fixed_per_unit IS NOT NULL)),
+  FOREIGN KEY (restaurant_id, recipe_id) REFERENCES recipes (restaurant_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (restaurant_id, output_product_id) REFERENCES products (restaurant_id, id),
+  FOREIGN KEY (restaurant_id, output_recipe_id) REFERENCES recipes (restaurant_id, id)
+);
+
+-- Each real breakdown, weighed: actual yields against the standard ("fillet yield fell to 38%").
+CREATE TABLE breakdown_logs (
+  id                  uuid NOT NULL DEFAULT gen_random_uuid(),
+  restaurant_id       uuid NOT NULL,
+  recipe_id           uuid NOT NULL,
+  input_amount        numeric NOT NULL CHECK (input_amount > 0),
+  input_unit          text NOT NULL,
+  invoice_line_id     uuid,                       -- the delivery it came from, for supplier comparisons
+  performed_by        uuid,
+  performed_at        timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (id),
+  UNIQUE (restaurant_id, id),
+  FOREIGN KEY (restaurant_id, recipe_id) REFERENCES recipes (restaurant_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (restaurant_id, invoice_line_id) REFERENCES invoice_lines (restaurant_id, id) ON DELETE SET NULL (invoice_line_id),
+  FOREIGN KEY (restaurant_id, performed_by) REFERENCES staff (restaurant_id, id) ON DELETE SET NULL (performed_by)
+);
+
+CREATE TABLE breakdown_log_outputs (
+  restaurant_id       uuid NOT NULL,
+  log_id              uuid NOT NULL,
+  output_id           uuid NOT NULL,
+  amount              numeric NOT NULL CHECK (amount >= 0),
+  unit                text NOT NULL,
+  PRIMARY KEY (log_id, output_id),
+  FOREIGN KEY (restaurant_id, log_id) REFERENCES breakdown_logs (restaurant_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (restaurant_id, output_id) REFERENCES breakdown_outputs (restaurant_id, id) ON DELETE CASCADE
+);
+
+-- Menus ---------------------------------------------------------------------------------
+-- The app's menu is the source of truth for the food: which dishes are on, which recipe
+-- version, since when. Square stays read-only and supplies buttons, prices and sales;
+-- anything that doesn't line up becomes a to-do item.
+
+CREATE TABLE menus (
+  id                  uuid NOT NULL DEFAULT gen_random_uuid(),
+  restaurant_id       uuid NOT NULL REFERENCES restaurants ON DELETE CASCADE,
+  name                text NOT NULL,              -- 'Dinner', 'Brunch', 'Bar', 'Tasting'
+  sort_order          integer NOT NULL DEFAULT 0,
+  active              boolean NOT NULL DEFAULT true,
+  PRIMARY KEY (id),
+  UNIQUE (restaurant_id, id),
+  UNIQUE (restaurant_id, name)
+);
+
+-- A dish on a menu for a stretch of time. Seasonal versions are separate entries (and
+-- separate recipes), so they never overlap and can be compared fairly.
+CREATE TABLE menu_entries (
+  id                  uuid NOT NULL DEFAULT gen_random_uuid(),
+  restaurant_id       uuid NOT NULL,
+  menu_id             uuid NOT NULL,
+  recipe_id           uuid NOT NULL,
+  section             text,                       -- 'Pizza', 'Apps', 'Specials'
+  starts_on           date NOT NULL,
+  ends_on             date,                       -- NULL: still on
+  -- How the dates were set: by a manager, or from the first and last day it sold.
+  dates_from          text NOT NULL DEFAULT 'manager' CHECK (dates_from IN ('manager', 'sales')),
+  PRIMARY KEY (id),
+  UNIQUE (restaurant_id, id),
+  CHECK (ends_on IS NULL OR ends_on >= starts_on),
+  FOREIGN KEY (restaurant_id, menu_id) REFERENCES menus (restaurant_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (restaurant_id, recipe_id) REFERENCES recipes (restaurant_id, id)
+);
+CREATE INDEX menu_entries_current ON menu_entries (restaurant_id, menu_id) WHERE ends_on IS NULL;
+
+-- POS links -----------------------------------------------------------------------------
+
 -- POS menu items and modifiers attach straight to recipes: no separate dish to create.
 -- Links are kept by the POS id, so a rename in the POS never breaks them. Square keeps the
 -- id when an item is renamed (and restaurants reuse items for rotating specials), so a
@@ -231,25 +372,76 @@ CREATE TABLE menu_links (
   restaurant_id       uuid NOT NULL,
   pos_catalog_id      text NOT NULL,              -- Square catalog object id (item variation or modifier)
   pos_name_key        text NOT NULL,              -- the name, normalized by the app (menuLinks.nameKey)
-  kind                text NOT NULL CHECK (kind IN ('item', 'modifier')),
-  pos_name            text NOT NULL,              -- the name as the POS showed it
-  recipe_id           uuid,                       -- NULL: confirmed as no food cost (gift card, fee), or awaiting a recipe
-  awaiting_recipe     boolean NOT NULL DEFAULT false,  -- a new dish whose card isn't in yet
   -- Seasonal versions share one POS button: each recipe version starts on its own date, and
   -- a sale is costed with the version in force that day. -infinity: from the beginning.
   effective_from      date NOT NULL DEFAULT '-infinity',
-  portion_amount      numeric CHECK (portion_amount > 0),  -- NULL: one yield of the recipe
-  portion_unit        text,
+  kind                text NOT NULL CHECK (kind IN ('item', 'modifier')),
+  pos_name            text NOT NULL,              -- the name as the POS showed it
+  -- linked: costs through menu_link_components. no_food_cost: a gift card, a fee.
+  -- awaiting_recipe: a new dish whose card isn't in yet.
+  status              text NOT NULL DEFAULT 'linked' CHECK (status IN ('linked', 'no_food_cost', 'awaiting_recipe')),
+  -- What one sale counts in: NULL for each, or 'lb' / 'oz' / 'kg' for a deli sold by weight.
+  -- Component amounts are per one sale unit.
+  sale_unit           text,
+  -- For items built from choices ("4oz Gelato" + a flavor, "pick two sides"): how much of
+  -- each chosen recipe one choice uses, unless the choice's own link says otherwise.
+  choice_amount       numeric CHECK (choice_amount > 0),
+  choice_unit         text,
   matched_by          text NOT NULL CHECK (matched_by IN ('name', 'alias', 'manager')),
   confirmed_by        uuid,
   created_at          timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (restaurant_id, pos_catalog_id, pos_name_key, effective_from),
-  CHECK ((portion_amount IS NULL) = (portion_unit IS NULL)),
-  CHECK (portion_amount IS NULL OR recipe_id IS NOT NULL),
-  CHECK (NOT awaiting_recipe OR recipe_id IS NULL),
+  CHECK ((choice_amount IS NULL) = (choice_unit IS NULL)),
   CHECK (matched_by <> 'manager' OR confirmed_by IS NOT NULL),
-  FOREIGN KEY (restaurant_id, recipe_id) REFERENCES recipes (restaurant_id, id) ON DELETE CASCADE,
   FOREIGN KEY (restaurant_id, confirmed_by) REFERENCES staff (restaurant_id, id)
+);
+
+-- What one sale uses: usually one recipe portion, but a size (0.75× the recipe), a set
+-- (a tasting menu, a combo, a party package), a glass from a bottle, or a canned drink
+-- with no recipe at all are just different component lists.
+CREATE TABLE menu_link_components (
+  id                  uuid NOT NULL DEFAULT gen_random_uuid(),
+  restaurant_id       uuid NOT NULL,
+  pos_catalog_id      text NOT NULL,
+  pos_name_key        text NOT NULL,
+  effective_from      date NOT NULL,
+  recipe_id           uuid,
+  product_id          uuid,
+  amount              numeric CHECK (amount > 0), -- NULL: one yield of the recipe (or the item's choice amount)
+  unit                text,
+  PRIMARY KEY (id),
+  CHECK (num_nonnulls(recipe_id, product_id) = 1),
+  CHECK ((amount IS NULL) = (unit IS NULL)),
+  FOREIGN KEY (restaurant_id, pos_catalog_id, pos_name_key, effective_from)
+    REFERENCES menu_links (restaurant_id, pos_catalog_id, pos_name_key, effective_from) ON DELETE CASCADE,
+  FOREIGN KEY (restaurant_id, recipe_id) REFERENCES recipes (restaurant_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (restaurant_id, product_id) REFERENCES products (restaurant_id, id)
+);
+
+-- What a modifier does to food, for every dish or one dish: an add-on, a "no X", a swap.
+-- Proposed portions are applied and marked 'assumed' for review; answers are 'manager'.
+CREATE TABLE modifier_effects (
+  id                  uuid NOT NULL DEFAULT gen_random_uuid(),
+  restaurant_id       uuid NOT NULL REFERENCES restaurants ON DELETE CASCADE,
+  modifier_key        text NOT NULL,              -- list + name, normalized (modifiers.modifierKey)
+  dish_recipe_id      uuid,                       -- NULL: every dish
+  effect              text NOT NULL CHECK (effect IN ('add', 'remove', 'none', 'waiting')),
+  recipe_id           uuid,
+  product_id          uuid,
+  amount              numeric CHECK (amount > 0),
+  unit                text,
+  share_of_dish       numeric CHECK (share_of_dish > 0),  -- extra = half again the dish's own portion
+  source              text NOT NULL DEFAULT 'manager' CHECK (source IN ('assumed', 'manager')),
+  note                text,
+  PRIMARY KEY (id),
+  UNIQUE NULLS NOT DISTINCT (restaurant_id, modifier_key, dish_recipe_id, effect, recipe_id, product_id),
+  CHECK (num_nonnulls(recipe_id, product_id) <= 1),
+  CHECK (effect IN ('none', 'waiting') OR num_nonnulls(recipe_id, product_id) = 1),
+  CHECK (effect <> 'add' OR num_nonnulls(amount, share_of_dish) = 1),
+  CHECK ((amount IS NULL) = (unit IS NULL)),
+  FOREIGN KEY (restaurant_id, dish_recipe_id) REFERENCES recipes (restaurant_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (restaurant_id, recipe_id) REFERENCES recipes (restaurant_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (restaurant_id, product_id) REFERENCES products (restaurant_id, id)
 );
 
 -- Names a manager has confirmed, so the same name links elsewhere without asking again.
@@ -279,6 +471,41 @@ CREATE TABLE prep_batches (
   FOREIGN KEY (restaurant_id, prepped_by) REFERENCES staff (restaurant_id, id) ON DELETE SET NULL (prepped_by)
 );
 CREATE INDEX prep_batches_active ON prep_batches (restaurant_id, recipe_id, use_by) WHERE status = 'active';
+
+-- The day's prep, one task per item per station, in the suggested order (sub-preps first,
+-- what service needs earliest first, what's about to expire first). Every check-off keeps
+-- who and when, so a chef sees each station live and the app learns how long tasks take.
+CREATE TABLE prep_tasks (
+  id                  uuid NOT NULL DEFAULT gen_random_uuid(),
+  restaurant_id       uuid NOT NULL,
+  business_date       date NOT NULL,
+  station_id          uuid,
+  recipe_id           uuid NOT NULL,
+  amount              numeric NOT NULL CHECK (amount > 0),
+  unit                text NOT NULL,
+  suggested_order     integer NOT NULL,
+  needed_by           timestamptz,
+  assigned_to         uuid,
+  status              text NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'started', 'done', 'skipped')),
+  started_at          timestamptz,                -- optional tap on long tasks
+  started_by          uuid,
+  completed_at        timestamptz,
+  completed_by        uuid,
+  prep_batch_id       uuid,                       -- the batch it produced
+  note                text,
+  PRIMARY KEY (id),
+  UNIQUE (restaurant_id, id),
+  CHECK (status <> 'done' OR (completed_at IS NOT NULL AND completed_by IS NOT NULL)),
+  CHECK (status <> 'started' OR started_at IS NOT NULL),
+  CHECK (started_at IS NULL OR completed_at IS NULL OR completed_at >= started_at),
+  FOREIGN KEY (restaurant_id, station_id) REFERENCES stations (restaurant_id, id) ON DELETE SET NULL (station_id),
+  FOREIGN KEY (restaurant_id, recipe_id) REFERENCES recipes (restaurant_id, id),
+  FOREIGN KEY (restaurant_id, assigned_to) REFERENCES staff (restaurant_id, id) ON DELETE SET NULL (assigned_to),
+  FOREIGN KEY (restaurant_id, started_by) REFERENCES staff (restaurant_id, id) ON DELETE SET NULL (started_by),
+  FOREIGN KEY (restaurant_id, completed_by) REFERENCES staff (restaurant_id, id) ON DELETE SET NULL (completed_by),
+  FOREIGN KEY (restaurant_id, prep_batch_id) REFERENCES prep_batches (restaurant_id, id) ON DELETE SET NULL (prep_batch_id)
+);
+CREATE INDEX prep_tasks_day ON prep_tasks (restaurant_id, business_date, station_id, suggested_order);
 
 -- Counts -----------------------------------------------------------------------------
 
