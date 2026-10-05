@@ -16,7 +16,7 @@
 
 import { addDays } from './forecast.ts';
 import { confirmLink, markNewDish, type LinkState, type PosMenuItem } from './menuLinks.ts';
-import { modifierKey } from './modifiers.ts';
+import { modifierKey, readModifier } from './modifiers.ts';
 import type { LinkLookup, SaleLine, SellingSpan } from './sales.ts';
 
 export interface MenuEntry {
@@ -245,16 +245,17 @@ function dishChanges(modifiers: readonly DatedModifierLine[], sales: readonly Sa
     const key = modifierKey({ name: m.modifierName, ...(m.listName ? { listName: m.listName } : {}) });
     itemsUsing.set(key, (itemsUsing.get(key) ?? new Set()).add(m.catalogId));
   }
-  interface Use { name: string; first: string; last: string; uses: number }
+  interface Use { name: string; listName?: string; first: string; last: string; uses: number; days: { date: string; quantity: number }[] }
   const perItem = new Map<string, Map<string, Use>>();
   for (const m of modifiers) {
     const key = modifierKey({ name: m.modifierName, ...(m.listName ? { listName: m.listName } : {}) });
     if (itemsUsing.get(key)!.size > 1 || !(m.quantity > 0)) continue;
     const uses = perItem.get(m.catalogId) ?? new Map<string, Use>();
-    const u = uses.get(key) ?? { name: m.modifierName, first: m.date, last: m.date, uses: 0 };
+    const u = uses.get(key) ?? { name: m.modifierName, ...(m.listName ? { listName: m.listName } : {}), first: m.date, last: m.date, uses: 0, days: [] };
     if (m.date < u.first) u.first = m.date;
     if (m.date > u.last) u.last = m.date;
     u.uses += m.quantity;
+    u.days.push({ date: m.date, quantity: m.quantity });
     uses.set(key, u);
     perItem.set(m.catalogId, uses);
   }
@@ -273,6 +274,16 @@ function dishChanges(modifiers: readonly DatedModifierLine[], sales: readonly Sa
     }
     if (!best) continue;
     const { stopped, started } = best;
+    // A dish that changed loses its "no X" buttons together. If the dish's other removal
+    // buttons ("No Chorizo", "No Goat" on a Calabria unchanged for years) carry on through the
+    // change and were used more than the one that stopped, a rarely used button simply fell
+    // out of use: not a new version.
+    const carriedOn = list
+      .filter((u) => u !== stopped && u !== started && readModifier({ name: u.name, ...(u.listName ? { listName: u.listName } : {}) }).action === 'remove')
+      .filter((u) => u.first <= stopped.last && u.last >= started.first)
+      .reduce((sum, u) => sum + u.days.filter((d) => d.date <= stopped.last).reduce((s, d) => s + d.quantity, 0), 0);
+    const stoppedBefore = stopped.days.reduce((s, d) => s + d.quantity, 0);
+    if (carriedOn > stoppedBefore) continue;
     // The change happened on a day the item sold between the old button's last use and the new
     // one's first. Menus usually change over a closed day, so the day after the longest
     // closure in that window is the best guess; with no closure, the first day after.

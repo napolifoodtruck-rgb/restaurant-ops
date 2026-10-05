@@ -104,3 +104,24 @@ test("a dish's own modifier buttons changing suggests a new version", () => {
   assert.equal(changed[0]!.suggestedDate, '2026-08-18');
   assert.match(changed[0]!.title, /"-- No Pistachio" was last used 2026-08-14 and "-- No Tomato Jam" first used 2026-08-20/);
 });
+
+test('a rarely used button falling out of use on an unchanged dish is not a new version', () => {
+  const today = '2026-10-04';
+  const links = confirmLink(emptyLinkState(), { catalogId: 'V-CAL', itemName: 'Calabria' }, 'calabria');
+  const entries: MenuEntry[] = [{ id: 'c1', menuId: 'dinner', recipeId: 'calabria', name: 'Calabria', startsOn: '2020-01-01', datesFrom: 'manager' }];
+  const sales = daily('V-CAL', 'Calabria', '2026-07-07', '2026-10-03', 12, 18);
+  const mod = (modifierName: string, date: string): DatedModifierLine => ({ catalogId: 'V-CAL', modifierName, listName: 'Calabria', date, quantity: 1 });
+  const weekly = (name: string, from: string, to: string) => {
+    const out: DatedModifierLine[] = [];
+    for (let d = from; d <= to; d = addDays(d, 3)) out.push(mod(name, d));
+    return out;
+  };
+  const modifiers = [
+    ...['2026-07-10', '2026-07-24', '2026-08-01', '2026-08-07', '2026-08-12'].map((d) => mod('-- No Garlic', d)), // rare, then gone
+    ...['2026-08-21', '2026-09-04', '2026-09-25'].map((d) => mod('** Sub Tomato Base', d)), // rare, then appears
+    ...weekly('-- No Chorizo', '2026-07-08', '2026-10-02'), // the dish's usual removals carry on
+    ...weekly('-- No Goat', '2026-07-09', '2026-10-01'),
+  ];
+  const checks = menuChecks({ entries, sales, modifiers, lookup: linkLookup(links), recipeName, today });
+  assert.deepEqual(checks.filter((c) => c.kind === 'dishChanged'), []);
+});
