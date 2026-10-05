@@ -2,18 +2,21 @@
  * Real margins: what each dish actually sold for in the POS against what it costs to make
  * at today's invoice prices. Prices come from the POS, never typed in.
  *
- * Dishes are sorted into the four menu-engineering groups, compared only with their own
- * category (a salad isn't held to a pizza's margin):
- *  - star: sells well and earns well. Keep it as it is.
- *  - workhorse: sells well, earns less per plate. Look at portion or price first.
- *  - puzzle: earns well, sells slowly. Move it on the menu, have servers push it.
- *  - dog: sells slowly and earns less. A candidate to cut or rework.
+ * Dishes are judged by the money they bring in overall (what each plate leaves after food
+ * cost × how many sold), not by the plate alone: a cheap-to-make pizza that sells all night
+ * is the best thing on the menu even if a pricier one leaves more per plate. Within each
+ * category (a salad isn't held to a pizza's numbers):
+ *  - earner: the dishes that together bring in most of the category's money (80% by default).
+ *    Protect them: portions, consistency, price.
+ *  - sellMore: leaves at least the category's average per plate but sells too little to be an
+ *    earner. Worth a push: servers, the specials board, a better spot on the menu.
+ *  - minor: small money overall and below average per plate. A candidate to rework or cut.
  */
 
 import type { CostResult, RecipeBook } from './recipes.ts';
 import type { LinkLookup, SaleLine } from './sales.ts';
 
-export type MenuClass = 'star' | 'workhorse' | 'puzzle' | 'dog';
+export type DishRole = 'earner' | 'sellMore' | 'minor';
 
 export interface MarginSaleLine extends SaleLine {
   category?: string;
@@ -53,8 +56,10 @@ export interface DishMargin {
   /** Average price − cost: what each plate leaves to pay for everything else. */
   contribution: number;
   totalContribution: number;
-  /** Undefined for staff meals and items with no sales. */
-  menuClass?: MenuClass;
+  /** Share of its category's total contribution (0 to 1). */
+  profitShare?: number;
+  /** See the header. Undefined for staff meals and items with no sales. */
+  role?: DishRole;
 }
 
 export interface StaffMealCost {
@@ -78,8 +83,8 @@ export interface MarginReport {
 }
 
 export interface MarginOptions {
-  /** Popular when a dish sells at least this share of its category's average. Default 0.7, the usual menu-engineering line. */
-  popularityLine?: number;
+  /** Earners are the top dishes that together bring in this share of a category's contribution. Default 0.8. */
+  earnerShare?: number;
   /** Lines with no catalog id (gift cards, custom amounts, fees) are left out of coverage. Default true. */
   skipNonMenu?: boolean;
   /** `${POS catalog id}|${recipe id}` → modifiers' total food cost over the same period (modifiers.ts byItem). */
@@ -87,7 +92,7 @@ export interface MarginOptions {
 }
 
 export function menuMargins(book: RecipeBook, lookup: LinkLookup, sales: readonly MarginSaleLine[], options: MarginOptions = {}): MarginReport {
-  const popularityLine = options.popularityLine ?? 0.7;
+  const earnerShare = options.earnerShare ?? 0.8;
   const skipNonMenu = options.skipNonMenu ?? true;
 
   interface Group {
@@ -165,17 +170,21 @@ export function menuMargins(book: RecipeBook, lookup: LinkLookup, sales: readonl
     });
   }
 
-  // Menu engineering, within each category.
+  // Roles, within each category, by total money brought in.
   const byCategory = new Map<string, DishMargin[]>();
   for (const d of dishes) byCategory.set(d.category, [...(byCategory.get(d.category) ?? []), d]);
   for (const list of byCategory.values()) {
+    list.sort((a, b) => b.totalContribution - a.totalContribution);
     const units = list.reduce((s, d) => s + d.quantity, 0);
-    const averageShare = 1 / list.length;
-    const averageContribution = list.reduce((s, d) => s + d.totalContribution, 0) / units;
+    const total = list.reduce((s, d) => s + d.totalContribution, 0);
+    const averagePerPlate = total / units;
+    let before = 0;
     for (const d of list) {
-      const popular = d.quantity / units >= popularityLine * averageShare;
-      const earns = d.contribution >= averageContribution;
-      d.menuClass = popular ? (earns ? 'star' : 'workhorse') : earns ? 'puzzle' : 'dog';
+      d.profitShare = total > 0 ? d.totalContribution / total : 0;
+      // An earner if the dishes ahead of it haven't yet reached the earner share.
+      if (total > 0 && before < earnerShare && d.totalContribution > 0) d.role = 'earner';
+      else d.role = d.contribution >= averagePerPlate ? 'sellMore' : 'minor';
+      before += d.profitShare;
     }
   }
 

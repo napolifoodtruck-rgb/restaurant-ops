@@ -90,17 +90,19 @@ test('seasonal versions of one button are compared as separate dishes', () => {
   close(report.dishes.find((d) => d.recipeId === 'special')?.contribution, 14 - 5.4);
 });
 
-test('dishes are sorted into menu-engineering groups within their category', () => {
+test('dishes are judged by the money they bring in overall, within their category', () => {
   const report = menuMargins(book, linkLookup(state), sales);
-  const groups = Object.fromEntries(report.dishes.map((d) => [d.recipeId, d.menuClass]));
-  // Pizza: 180 plates over 4 pizzas, average contribution $2,734 / 180 = $15.19.
-  assert.equal(groups.parma, 'star'); // popular, $18.60 a plate
-  assert.equal(groups.margherita, 'workhorse'); // the most popular, $13.00 a plate
-  assert.equal(groups.special, 'puzzle'); // slow, $18.60 a plate
-  assert.equal(groups.marinara, 'dog'); // slow, $13.20 a plate
-  // Apps: the salad sells most and earns most per plate.
-  assert.equal(groups.salad, 'star');
-  assert.equal(groups.sauce, 'dog');
+  const roles = Object.fromEntries(report.dishes.map((d) => [d.recipeId, d.role]));
+  // Pizza brings in $2,734: Margherita $1,300 (47.5%), Parma $1,116, Special $186, Marinara $132.
+  // Margherita leaves less per plate than Parma ($13.00 vs $18.60) but sells the most: an earner.
+  assert.equal(roles.margherita, 'earner');
+  assert.equal(roles.parma, 'earner'); // takes the pizzas past 80%
+  assert.equal(roles.special, 'sellMore'); // $18.60 a plate, above the $15.19 average, but only 10 sold
+  assert.equal(roles.marinara, 'minor'); // $13.20 a plate and little money overall
+  close(report.dishes.find((d) => d.recipeId === 'margherita')?.profitShare, 1300 / 2734);
+  // Apps: the salad brings in nearly all of it.
+  assert.equal(roles.salad, 'earner');
+  assert.equal(roles.sauce, 'minor');
 });
 
 test('theoretical usage follows the same links, portions included', () => {
