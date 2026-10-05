@@ -124,3 +124,8 @@ input[type=date] { height: 40px; border: 1px solid var(--line); border-radius: 1
 .lchip:disabled { cursor: default; opacity: 1; }
 .lkey { width: 12px; height: 12px; border-radius: 3px; border: 2px solid; }
 .lkey.line { height: 4px; border-width: 1px; border-radius: 2px; width: 16px; }
+.linkish { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; }
+.mrow .name.linkish { font-weight: 600; font-size: 15px; }
+.plate-detail { padding: 6px 0 14px 16px; border-top: 1px dashed var(--line); display: flex; flex-direction: column; gap: 6px; max-width: 640px; }
+.plate-detail .list > div { padding: 6px 0; font-size: 14px; }
+input.amount { width: 90px; height: 40px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; font-size: 15px; }

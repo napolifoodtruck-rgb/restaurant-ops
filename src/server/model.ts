@@ -50,10 +50,39 @@ export type Answer =
   | { type: 'link'; catalogId: string; itemName: string; variationName?: string; recipe: string; from?: string }
   | { type: 'newDish'; catalogId: string; itemName: string; variationName?: string; from?: string; note?: string }
   | { type: 'notFood'; catalogId: string; itemName: string; variationName?: string }
-  | { type: 'dismiss'; dedupeKey: string; note?: string };
+  | { type: 'dismiss'; dedupeKey: string; note?: string }
+  /** What one unit of a product holds or weighs, so a recipe's units convert to how it's bought. */
+  | { type: 'conversion'; productId: string; fact: 'gramsPerEach' | 'gramsPerMl' | 'customUnit'; unit?: string; amount: number; amountUnit: string }
+  /** A price for a product the invoices don't give one for. */
+  | { type: 'price'; productId: string; price: number; amount: number; unit: string };
+
+export const PRODUCT_ANSWERS = new Set(['conversion', 'price']);
+
+/** The product answers with one more answer folded in. Throws on units that don't make sense. */
+export function withProductAnswer(current: PilotImportAnswers, a: Extract<Answer, { type: 'conversion' | 'price' }>, today: string): PilotImportAnswers {
+  const next: PilotImportAnswers = { ...current, conversions: { ...(current.conversions ?? {}) }, manualPrices: { ...(current.manualPrices ?? {}) } };
+  if (a.type === 'price') {
+    next.manualPrices![a.productId] = { price: a.price, per: { amount: a.amount, unit: a.unit }, date: today, note: 'entered in the app' };
+    return next;
+  }
+  const was = next.conversions![a.productId] ?? {};
+  if (a.fact === 'gramsPerEach') next.conversions![a.productId] = { ...was, gramsPerEach: convert({ amount: a.amount, unit: a.amountUnit }, 'g') };
+  else if (a.fact === 'gramsPerMl') {
+    const ml = convert({ amount: 1, unit: a.unit ?? '' }, 'ml');
+    next.conversions![a.productId] = { ...was, gramsPerMl: convert({ amount: a.amount, unit: a.amountUnit }, 'g') / ml };
+  } else next.conversions![a.productId] = { ...was, customUnits: { ...(was.customUnits ?? {}), [a.unit ?? '']: { amount: a.amount, unit: a.amountUnit } } };
+  return next;
+}
 
 export function answerProblem(a: any): string | undefined {
   if (!a || typeof a !== 'object') return 'Missing answer.';
+  if (a.type === 'price') return typeof a.productId === 'string' && a.price > 0 && a.amount > 0 && typeof a.unit === 'string' && a.unit ? undefined : 'A price needs the amount it buys, e.g. $25.99 for 25 lb.';
+  if (a.type === 'conversion') {
+    if (typeof a.productId !== 'string' || !['gramsPerEach', 'gramsPerMl', 'customUnit'].includes(a.fact)) return 'Unknown answer.';
+    if (!(a.amount > 0) || typeof a.amountUnit !== 'string' || !a.amountUnit) return 'How much, and in what unit?';
+    if (a.fact !== 'gramsPerEach' && (typeof a.unit !== 'string' || !a.unit)) return 'Missing which unit.';
+    return undefined;
+  }
   if (a.type === 'dismiss') return typeof a.dedupeKey === 'string' && a.dedupeKey ? undefined : 'Missing which to-do.';
   if (!['link', 'newDish', 'notFood'].includes(a.type)) return 'Unknown answer.';
   if (typeof a.catalogId !== 'string' || typeof a.itemName !== 'string' || !a.itemName) return 'Missing which item.';
@@ -63,7 +92,7 @@ export function answerProblem(a: any): string | undefined {
 }
 
 /** The link answers with one more answer folded in. Later answers about the same item replace earlier ones. */
-export function withAnswer(current: LinkAnswers, a: Answer): LinkAnswers {
+export function withAnswer(current: LinkAnswers, a: Exclude<Answer, { type: 'conversion' | 'price' }>): LinkAnswers {
   const next: LinkAnswers = { confirm: [...current.confirm], newDish: [...current.newDish], notFood: [...(current.notFood ?? [])], dismissed: [...(current.dismissed ?? [])] };
   if (a.type === 'dismiss') {
     if (!next.dismissed!.some((d) => d.dedupeKey === a.dedupeKey)) next.dismissed!.push({ dedupeKey: a.dedupeKey, ...(a.note ? { note: a.note } : {}) });

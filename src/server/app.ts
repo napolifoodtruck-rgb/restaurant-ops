@@ -31,7 +31,7 @@ import {
   type SignedIn, type SignInResult,
 } from './auth.ts';
 import { localDateHour, marginEdgeApiFrom, runSync, squareApiFrom, type SyncSettings } from './scheduler.ts';
-import { BOOK_KEYS, answerProblem, bookProblem, getModel, loadBook, saveBook, withAnswer, type Answer } from './model.ts';
+import { BOOK_KEYS, PRODUCT_ANSWERS, answerProblem, bookProblem, getModel, loadBook, saveBook, withAnswer, withProductAnswer, type Answer } from './model.ts';
 import { marginsView, menuView } from './views.ts';
 
 export interface AppConfig {
@@ -305,9 +305,20 @@ export function createApp(config: AppConfig) {
         const b = await body(req);
         const problem = answerProblem(b);
         if (problem) throw new HttpError(400, problem);
+        if (PRODUCT_ANSWERS.has(String(b.type))) {
+          const book = await loadBook(db, who.restaurantId);
+          let next;
+          try {
+            next = withProductAnswer(book.importAnswers ?? {}, b as any, await today());
+          } catch (err) {
+            throw new HttpError(400, `That unit doesn’t work here: ${(err as Error).message}`);
+          }
+          await saveBook(db, who.restaurantId, 'importAnswers', next, who.staffId);
+          return send(res, 200, { ok: true });
+        }
         const current = (await loadBook(db, who.restaurantId)).linkAnswers ?? { confirm: [], newDish: [] };
         if (b.type === 'link' && !(await getModel(db, who.restaurantId, await today())).recipes.some((r) => r.name === b.recipe)) throw new HttpError(400, 'No recipe card by that name.');
-        await saveBook(db, who.restaurantId, 'linkAnswers', withAnswer(current, b as unknown as Answer), who.staffId);
+        await saveBook(db, who.restaurantId, 'linkAnswers', withAnswer(current, b as unknown as Exclude<Answer, { type: 'conversion' | 'price' }>), who.staffId);
         return send(res, 200, { ok: true });
       }
 

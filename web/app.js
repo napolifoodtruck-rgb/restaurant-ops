@@ -12,7 +12,7 @@ function h(tag, props = {}, ...children) {
     else if (k === 'text') el.textContent = v;
     else el.setAttribute(k, v === true ? '' : v);
   }
-  for (const c of children.flat()) if (c !== null && c !== undefined && c !== false) el.append(c instanceof Node ? c : String(c));
+  for (const c of children.flat(Infinity)) if (c !== null && c !== undefined && c !== false) el.append(c instanceof Node ? c : String(c));
   return el;
 }
 
@@ -310,8 +310,9 @@ function renderMargins(me, state, m) {
     const value = perDay ? d.leftPerDay ?? 0 : d.leftTotal;
     const other = perDay ? `${dollars(d.leftTotal)} in all` : d.leftPerDay !== undefined ? `${dollars(d.leftPerDay)} a day` : '';
     const note = d.offSince ? `off the menu since ${shortDate(d.offSince)}` : partOfPeriod(d) ? `on the menu ${d.daysOn} of ${m.openDays} days, since ${shortDate(d.firstSold)}` : null;
-    return h('div', { class: `mrow${d.offSince ? ' off' : ''}` },
-      h('div', {}, h('div', { class: 'name', text: d.name }), note ? h('div', { class: 'small muted', text: note }) : null),
+    const opened = state.open?.includes(d.name);
+    const row = h('div', { class: `mrow${d.offSince ? ' off' : ''}` },
+      h('div', {}, h('button', { class: 'name linkish', 'aria-expanded': opened ? 'true' : 'false', title: 'Show the plate, ingredient by ingredient', onclick: () => again({ open: opened ? state.open.filter((n) => n !== d.name) : [...(state.open ?? []), d.name] }) }, d.name, h('span', { class: 'muted', text: opened ? ' ▾' : ' ▸' })), note ? h('div', { class: 'small muted', text: note }) : null),
       h('div', { class: 'row tight' }, plate, h('span', { class: 'small muted', text: `${dollars(d.averagePrice, { cents: true })}` })),
       h('div', { class: 'small', text: `${dollars(d.plateCost, { cents: true })}${d.estimated ? '*' : ''} food · ${dollars(d.leftPerPlate, { cents: true })} left` }),
       h('div', { class: 'num' }, h('div', { text: d.sold.toLocaleString() }), d.soldPerDay !== undefined ? h('div', { class: 'small muted', text: `${d.soldPerDay}/day` }) : null),
@@ -320,6 +321,7 @@ function renderMargins(me, state, m) {
       // Roles judge money over the whole period; in the per-day view, a dish that joined partway is just marked new.
       h('div', {}, d.offSince ? null : perDay ? (partOfPeriod(d) ? h('span', { class: 'tag blue', text: 'New' }) : null) : h('span', { class: `tag ${roleCls}`, text: roleText })),
     );
+    return opened ? [row, plateDetail(d)] : row;
   });
   const headCell = (c) => {
     const active = c.key === column.key;
@@ -348,7 +350,68 @@ function renderMargins(me, state, m) {
   const noCard = cat.noCard.length ? h('section', { class: 'card' },
     h('h2', { text: `Selling with no recipe card: ${dollars(cat.noCardSales)} in sales not counted above` }),
     h('div', { class: 'small', text: cat.noCard.map((x) => `${x.name} ${dollars(x.netSales)}`).join(' · ') })) : null;
-  show(shell(me, 'margins', [header, h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, picker), modeSwitch), early, missingNote(m.missing), table, noCard]));
+  show(shell(me, 'margins', [header, h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, picker), modeSwitch), early, missingNote(m.missing), gapsCard(me, state, cat), table, noCard]));
+}
+
+const UNIT_CHOICES = ['lb', 'oz', 'g', 'kg', 'gal', 'qt', 'pt', 'cup', 'floz', 'l', 'ml', 'each'];
+const unitName = (u) => ({ each: 'each', floz: 'fl oz' }[u] ?? u);
+
+/** One dish's plate: each raw ingredient's amount and cost; gaps flagged. */
+function plateDetail(d) {
+  return h('div', { class: 'plate-detail' },
+    h('div', { class: 'small muted', text: `One plate of ${d.name}, as the recipe card says, broken down to what you buy. Add-ons and removals are on top: ${dollars(d.plateCost, { cents: true })} on average.` }),
+    h('div', { class: 'list' }, d.lines.map((l) => h('div', {},
+      h('span', { class: 'grow', text: l.name }),
+      h('span', { class: 'small muted nowrap', text: `${l.amount < 0.01 ? l.amount.toPrecision(2) : +l.amount.toFixed(3)} ${unitName(l.unit)}` }),
+      l.cost === undefined ? h('span', { class: 'tag warn', text: 'no cost yet' }) : h('b', { class: 'nowrap', text: `$${l.cost.toFixed(2)}` })))));
+}
+
+/** The questions that would complete plate costs, one per product. */
+function gapsCard(me, state, cat) {
+  if (!cat.gaps?.length) return null;
+  const rows = cat.gaps.map((g) => {
+    const row = h('div', { class: 'ask' });
+    const err = h('div', { class: 'error' });
+    const amount = h('input', { inputmode: 'decimal', class: 'amount', 'aria-label': 'Amount', placeholder: 'amount' });
+    const unitSelect = (choices, selected) => h('select', { 'aria-label': 'Unit' }, choices.map((u) => h('option', { value: u, text: unitName(u), selected: u === selected ? true : undefined })));
+    const save = async (body) => {
+      const res = await api('POST', '/api/answers', body);
+      if (!res.ok) return (err.textContent = res.data.error ?? 'That didn’t save.');
+      marginsScreen(me, state);
+    };
+    const affects = h('div', { class: 'small muted', text: `Affects ${g.dishes.join(', ')} · ${g.plates.toLocaleString()} plates in this period` });
+    let question, form;
+    if (g.kind === 'price') {
+      const price = h('input', { inputmode: 'decimal', class: 'amount', 'aria-label': 'Price', placeholder: '$' });
+      const unit = unitSelect(UNIT_CHOICES, 'lb');
+      question = `No recent invoice price for ${g.product}. What does it cost?`;
+      form = h('div', { class: 'row wrap' }, h('span', { text: '$' }), price, h('span', { class: 'muted', text: 'for' }), amount, unit,
+        h('button', { class: 'btn small-btn dark', text: 'Save', onclick: () => save({ type: 'price', productId: g.productId, price: Number(price.value), amount: Number(amount.value), unit: unit.value }) }));
+    } else if (g.needed === 'gramsPerEach') {
+      const unit = unitSelect(['lb', 'oz', 'g', 'kg'], 'lb');
+      question = `${g.product} is bought by the piece, but the recipes measure it in ${unitName(g.from)}. How much does one weigh, as it comes from the vendor?`;
+      form = h('div', { class: 'row wrap' }, h('span', { class: 'muted', text: 'One weighs' }), amount, unit,
+        h('button', { class: 'btn small-btn dark', text: 'Save', onclick: () => save({ type: 'conversion', productId: g.productId, fact: 'gramsPerEach', amount: Number(amount.value), amountUnit: unit.value }) }));
+    } else if (g.needed === 'gramsPerMl') {
+      const volume = ['gal', 'qt', 'pt', 'cup', 'floz', 'l', 'ml', 'tbsp', 'tsp'].includes(g.from) ? g.from : g.to;
+      const unit = unitSelect(['oz', 'lb', 'g', 'kg'], 'oz');
+      question = `How much does 1 ${unitName(volume)} of ${g.product} weigh?`;
+      form = h('div', { class: 'row wrap' }, h('span', { class: 'muted', text: `1 ${unitName(volume)} weighs` }), amount, unit,
+        h('button', { class: 'btn small-btn dark', text: 'Save', onclick: () => save({ type: 'conversion', productId: g.productId, fact: 'gramsPerMl', unit: volume, amount: Number(amount.value), amountUnit: unit.value }) }));
+    } else {
+      const named = g.to;
+      const unit = unitSelect(UNIT_CHOICES, 'lb');
+      question = `${g.product} comes by the ${named}. What’s in one ${named}?`;
+      form = h('div', { class: 'row wrap' }, h('span', { class: 'muted', text: `One ${named} holds` }), amount, unit,
+        h('button', { class: 'btn small-btn dark', text: 'Save', onclick: () => save({ type: 'conversion', productId: g.productId, fact: 'customUnit', unit: named, amount: Number(amount.value), amountUnit: unit.value }) }));
+    }
+    row.append(h('div', { text: question }), affects, form, err);
+    return row;
+  });
+  return h('section', { class: 'card' },
+    h('div', { class: 'row' }, h('h2', { class: 'grow', text: `Plate costs with gaps (${cat.gaps.length})` }), h('span', { class: 'small muted', text: 'One answer fixes every dish that uses it.' })),
+    h('div', { class: 'small muted', text: 'Dishes marked * leave these out of their cost, so they look cheaper than they are.' }),
+    h('div', { class: 'asks' }, rows));
 }
 
 // ------------------------------------------------------------------ charts

@@ -15,6 +15,27 @@ function addDays(day: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/**
+ * What keeps plate costs from being complete, one question per product (a single answer fixes
+ * every dish that uses it), most plates affected first.
+ */
+function gapsOf(model: Model, dishes: Model['margins']['dishes']) {
+  const gaps = new Map<string, { key: string; kind: string; productId: string; product: string; needed?: string; from?: string; to?: string; dishes: string[]; plates: number }>();
+  for (const d of dishes) {
+    for (const issue of d.cost.issues) {
+      let g;
+      if (issue.type === 'missingCost') g = { key: `price:${issue.productId}`, kind: 'price', productId: issue.productId, product: issue.productName };
+      else if (issue.type === 'missingConversion' && issue.item.kind === 'product') g = { key: `conv:${issue.item.id}:${issue.needed}${issue.needed === 'unknownUnit' ? `:${issue.to}` : ''}`, kind: 'conversion', productId: issue.item.id, product: issue.itemName, needed: issue.needed, from: issue.from, to: issue.to };
+      else continue;
+      const seen = gaps.get(g.key) ?? { ...g, dishes: [], plates: 0 };
+      if (!seen.dishes.includes(d.name)) seen.dishes.push(d.name);
+      seen.plates += d.quantity;
+      gaps.set(g.key, seen);
+    }
+  }
+  return [...gaps.values()].sort((a, b) => b.plates - a.plates).map((g) => ({ ...g, plates: Math.round(g.plates) }));
+}
+
 /** Margins by category, biggest money first. Only categories with at least one dish that has a recipe. */
 export function marginsView(model: Model) {
   const stillOn = addDays(model.today, -7);
@@ -100,6 +121,7 @@ export function marginsView(model: Model) {
       netSales: money(netSales),
       leftOver: money(netSales - food),
       foodCostShare: share(netSales > 0 ? food / netSales : 0),
+      gaps: gapsOf(model, dishes),
       dishes: dishes.map((d) => ({
         name: d.name,
         sold: Math.round(d.quantity),
@@ -119,6 +141,10 @@ export function marginsView(model: Model) {
         })(),
         ...(trendOf(d.recipeId) ? { trend: trendOf(d.recipeId) } : {}),
         weeklyLeft: weeklyLeftOf(d.recipeId, d.plateCost),
+        // The plate, ingredient by ingredient (raw products, after preps are broken down).
+        lines: d.cost.lines
+          .map((l) => ({ productId: l.productId, name: l.productName, amount: Math.round(l.amount * 1000) / 1000, unit: model.book.products.get(l.productId)?.baseUnit ?? '', ...(l.cost !== undefined ? { cost: Math.round(l.cost * 1000) / 1000 } : {}) }))
+          .sort((a, b) => (b.cost ?? -1) - (a.cost ?? -1)),
         // Came off the menu during the period: its money is real, but it's not a dish to work on.
         ...((lastSold.get(d.recipeId) ?? model.today) < stillOn ? { offSince: lastSold.get(d.recipeId) } : {}),
       })),

@@ -29,3 +29,17 @@ test('answers are checked before saving', () => {
   assert.match(answerProblem({ type: 'delete everything' })!, /Unknown/);
   assert.match(answerProblem({ type: 'dismiss' })!, /which/);
 });
+
+test('product answers: weights, densities, pack contents and prices fold into the import answers', async () => {
+  const { withProductAnswer } = await import('../src/server/model.ts');
+  let a = withProductAnswer({}, { type: 'conversion', productId: 'spinach', fact: 'gramsPerEach', amount: 4, amountUnit: 'lb' }, '2026-10-05');
+  assert.ok(Math.abs(a.conversions!.spinach!.gramsPerEach! - 4 * 453.59237) < 1e-6);
+  a = withProductAnswer(a, { type: 'conversion', productId: 'tomatoes', fact: 'gramsPerMl', unit: 'pt', amount: 12, amountUnit: 'oz' }, '2026-10-05');
+  assert.ok(Math.abs(a.conversions!.tomatoes!.gramsPerMl! - (12 * 28.349523125) / 473.176473) < 1e-3);
+  a = withProductAnswer(a, { type: 'conversion', productId: 'chili', fact: 'customUnit', unit: 'case', amount: 6, amountUnit: 'lb' }, '2026-10-05');
+  assert.deepEqual(a.conversions!.chili!.customUnits, { case: { amount: 6, unit: 'lb' } });
+  a = withProductAnswer(a, { type: 'price', productId: 'panko', price: 18.5, amount: 5, unit: 'lb' }, '2026-10-05');
+  assert.deepEqual(a.manualPrices!.panko, { price: 18.5, per: { amount: 5, unit: 'lb' }, date: '2026-10-05', note: 'entered in the app' });
+  assert.ok(a.conversions!.spinach, 'earlier answers are kept');
+  assert.throws(() => withProductAnswer({}, { type: 'conversion', productId: 'x', fact: 'gramsPerEach', amount: 1, amountUnit: 'qt' }, '2026-10-05'));
+});
