@@ -124,7 +124,7 @@ async function bulkSuggestions(db: Db, restaurantId: string, batchItems: Item[],
   return out;
 }
 
-async function view(db: Db, who: SignedIn, stationId: string, date: string) {
+export async function view(db: Db, who: SignedIn, stationId: string, date: string) {
   const st = await station(db, who.restaurantId, stationId);
   const list = await listFor(db, who.restaurantId, stationId, date);
   const all = await items(db, who.restaurantId, stationId);

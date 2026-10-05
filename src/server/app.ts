@@ -28,6 +28,7 @@
  *   POST /api/answers            answer a menu question: link, new dish, not food, dismiss (manager or up)
  *   /api/prep/…                  station prep lists: see prep.ts
  *   /api/plans/…                 dishes coming to the menu: see plans.ts
+ *   GET  /api/today              what needs someone today: see today.ts
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -44,6 +45,7 @@ import { BOOK_KEYS, PRODUCT_ANSWERS, answerProblem, bookProblem, getModel, loadB
 import { marginsView, menuView } from './views.ts';
 import { prepRoutes } from './prep.ts';
 import { planRoutes } from './plans.ts';
+import { todayView } from './today.ts';
 
 export interface AppConfig {
   db: Db;
@@ -417,6 +419,15 @@ export function createApp(config: AppConfig) {
       const who = await signedIn(req);
       const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
       if (await planRoutes(db, req, res, path, method, who, localDateHour(tz).date)) return;
+    }
+
+    if (method === 'GET' && path === '/api/today') {
+      const who = await signedIn(req);
+      const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+      const local = localDateHour(tz);
+      // Staff on a station's iPad see that station; managers see the whole kitchen.
+      const device = atLeast(who.roleLevel, 'manager') ? undefined : await deviceFor(db, cookies(req)[DEVICE_COOKIE]);
+      return send(res, 200, await todayView(db, who, local.date, local.hour, device?.restaurantId === who.restaurantId ? device.stationId ?? undefined : undefined));
     }
 
     if (path.startsWith('/api/prep')) {

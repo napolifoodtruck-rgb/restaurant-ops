@@ -19,7 +19,7 @@ function addDays(day: string, n: number): string {
  * What keeps plate costs from being complete, one question per product (a single answer fixes
  * every dish that uses it), most plates affected first.
  */
-function gapsOf(model: Model, dishes: Model['margins']['dishes']) {
+export function gapsOf(model: Model, dishes: Model['margins']['dishes']) {
   const gaps = new Map<string, { key: string; kind: string; productId: string; product: string; needed?: string; from?: string; to?: string; dishes: string[]; plates: number }>();
   for (const d of dishes) {
     for (const issue of d.cost.issues) {

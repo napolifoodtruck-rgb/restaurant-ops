@@ -155,3 +155,32 @@ input[type=checkbox] { width: 20px; height: 20px; }
 .list > div > form.grow { flex: 1; display: grid; gap: 8px; min-width: 0; }
 .list select { max-width: 200px; }
 .list > div > form .grow > input { width: 100%; box-sizing: border-box; min-width: 0; }
+
+/* Today */
+.today { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; align-items: start; }
+.todos { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.todo { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 18px; display: grid; grid-template-columns: 96px minmax(0, 1fr) auto; gap: 16px; align-items: center; }
+.todo-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.todo.due .todo-label { color: var(--orange); }
+.todo.ask .todo-label { color: var(--blue); }
+.todo.alert .todo-label { color: var(--accent); }
+.todo-title { font-size: 16px; font-weight: 600; }
+.todo-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.todo-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.glance { display: flex; flex-direction: column; gap: 12px; }
+.card.tight { padding: 16px 18px; gap: 8px; }
+.strong { font-weight: 600; }
+.big { font-size: 30px; font-weight: 700; letter-spacing: -.01em; }
+.list.compact > div { padding: 7px 0; font-size: 14px; gap: 8px; }
+.right { text-align: right; }
+.chip { height: 40px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); font-size: 14px; color: var(--muted); cursor: pointer; }
+.chip.on { color: var(--ink); font-weight: 600; border-color: var(--ink); }
+@media (max-width: 1000px) {
+  .today { grid-template-columns: 1fr; }
+  .todo { grid-template-columns: 1fr; gap: 8px; }
+  .todo-actions { justify-content: flex-start; }
+}
+.todo.has-answers .todo-actions { grid-column: 2 / -1; justify-content: flex-start; align-items: center; }
+.todo .todo-label { align-self: start; padding-top: 3px; }
+header.row.wrap > .grow { flex: 1 1 280px; }
+@media (max-width: 1000px) { .todo.has-answers .todo-actions { grid-column: auto; } }

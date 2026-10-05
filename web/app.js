@@ -67,7 +67,7 @@ async function start() {
   // Cooks, and anyone on a kitchen iPad, land on Prep: on an iPad that belongs to a station, that station's list.
   if (me.ok) {
     const who = { ...me.data.me, ...(me.data.device ? { device: me.data.device } : {}) };
-    return who.device || !atLeast(who.roleLevel, 'manager') ? prepHome(who) : home(who);
+    return who.device || !atLeast(who.roleLevel, 'manager') ? prepHome(who) : todayScreen(who);
   }
   const device = await api('GET', '/api/devices/staff');
   if (device.ok) return pinNames(device.data);
@@ -200,7 +200,7 @@ function pinPad(person, device) {
 function shell(me, active, content) {
   const manager = atLeast(me.roleLevel, 'manager');
   const nav = [
-    ['today', 'Today', null], ['prep', 'Prep', prepHome], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['orders', 'Orders', null],
+    ['today', 'Today', todayScreen], ['prep', 'Prep', prepHome], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['orders', 'Orders', null],
   ];
   return h('div', { class: 'shell' },
     h('nav', { class: 'rail', 'aria-label': 'Main' },
@@ -1035,6 +1035,102 @@ async function comingUpCard(me) {
     h('div', { class: 'small muted', text: 'Plan a dish before it sells: its preps join the station lists the day before it starts, and the old dish’s own preps come off.' }),
     form, err, planRows.length ? h('div', { class: 'asks' }, planRows) : null);
   return box;
+}
+
+// ------------------------------------------------------------------ today
+
+const TODAY_FILTERS = [['all', 'All'], ['prep', 'Prep'], ['menu', 'Menu'], ['costs', 'Costs']];
+const TONE_CLASS = { due: 'due', ask: 'ask', alert: 'alert', info: 'info' };
+const longDay = (d) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+const weekdayName = (d) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long' });
+
+async function todayScreen(me, filter = 'all') {
+  loadingScreen(me, 'today', 'Today');
+  const r = await api('GET', '/api/today');
+  if (!r.ok) return show(shell(me, 'today', [h('h1', { text: 'Today' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const t = r.data;
+  const go = (g) => ({
+    count: () => prepCount(me, g.stationId, g.date), review: () => prepReview(me, g.stationId, g.date), work: () => prepWork(me, g.stationId, g.date),
+    menu: () => menuScreen(me), performance: () => marginsScreen(me), settings: () => home(me),
+  })[g.to]?.();
+  const answer = async (row, body) => {
+    row.querySelectorAll('button').forEach((b) => (b.disabled = true));
+    const res = await api('POST', '/api/answers', body);
+    if (!res.ok) {
+      row.querySelectorAll('button').forEach((b) => (b.disabled = false));
+      return row.append(h('div', { class: 'error', text: res.data.error ?? 'That didn’t save.' }));
+    }
+    todayScreen(me, filter);
+  };
+  const itemRow = (i) => {
+    const row = h('article', { class: `todo ${TONE_CLASS[i.tone] ?? ''}${i.answers?.length ? ' has-answers' : ''}` });
+    fill(row,
+      h('div', { class: 'todo-label', text: i.label }),
+      h('div', { class: 'todo-body' }, h('div', { class: 'todo-title', text: i.title }), i.detail ? h('div', { class: 'small muted', text: i.detail }) : null),
+      h('div', { class: 'todo-actions' },
+        (i.answers ?? []).map((a, n) => h('button', { class: `btn small-btn${n === 0 ? ' blue' : ''}`, text: a.label, onclick: () => answer(row, a.body) })),
+        i.answers?.length ? h('button', { class: 'link', text: `More on ${i.go.to === 'menu' ? 'Menu' : 'its screen'}`, onclick: () => go(i.go) })
+          : h('button', { class: 'btn small-btn dark', text: i.button, onclick: () => go(i.go) })));
+    return row;
+  };
+  const shown = t.items.filter((i) => filter === 'all' || i.group === filter || (filter === 'costs' && i.group === 'setup'));
+  const groups = new Set(t.items.map((i) => (i.group === 'setup' ? 'costs' : i.group)));
+  const chips = t.items.length > 4 && groups.size > 1 ? h('div', { class: 'row wrap', role: 'group', 'aria-label': 'Show' },
+    TODAY_FILTERS.filter(([k]) => k === 'all' || groups.has(k)).map(([k, label]) => h('button', { class: `chip${filter === k ? ' on' : ''}`, 'aria-pressed': String(filter === k), text: label, onclick: () => todayScreen(me, k) }))) : null;
+
+  const need = t.items.filter((i) => i.tone !== 'info').length;
+  const sub = [
+    t.openToday ? null : `Closed today. Next service ${weekdayName(t.nextOpen)}.`,
+    need ? `${need} thing${need === 1 ? '' : 's'} need${need === 1 ? 's' : ''} someone: deadlines first, then by dollars.` : 'Nothing needs anyone right now.',
+  ].filter(Boolean).join(' ');
+
+  show(shell(me, 'today', [
+    h('header', { class: 'row wrap' },
+      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${longDay(t.today)} · ${me.restaurantName}` }), h('h1', { text: 'Today' }), h('div', { class: 'sub', text: sub })),
+      chips),
+    h('div', { class: 'today' },
+      h('section', { class: 'todos', 'aria-label': 'To do' }, shown.length ? shown.map(itemRow) : h('div', { class: 'card small muted', text: 'All clear.' })),
+      h('aside', { class: 'glance', 'aria-label': 'At a glance' }, glanceCards(me, t))),
+  ]));
+}
+
+function glanceCards(me, t) {
+  const g = t.glance;
+  const cards = [];
+  const versus = (now, then, words) => {
+    if (!then) return null;
+    const c = now / then - 1;
+    return h('div', { class: `small ${c >= 0.03 ? 'trend-up' : c <= -0.03 ? 'trend-down' : 'trend-flat'}`, text: `${c >= 0 ? '+' : '−'}${Math.abs(Math.round(c * 100))}% ${words}` });
+  };
+  if (g?.lastDay) cards.push(h('div', { class: 'card tight' },
+    h('div', { class: 'small muted strong', text: `Last service · ${weekdayName(g.lastDay.date)} ${shortDate(g.lastDay.date)}` }),
+    h('div', { class: 'big', text: dollars(g.lastDay.netSales, { exact: true }) }),
+    versus(g.lastDay.netSales, g.lastDay.usual, `vs a usual ${weekdayName(g.lastDay.date)} (${dollars(g.lastDay.usual, { exact: true })})`)));
+  if (g?.weekToDate) cards.push(h('div', { class: 'card tight' },
+    h('div', { class: 'small muted strong', text: `This week, through ${weekdayName(g.weekToDate.to)}` }),
+    h('div', { class: 'big', text: dollars(g.weekToDate.netSales, { exact: true }) }),
+    versus(g.weekToDate.netSales, g.weekToDate.lastWeek, 'vs the same days last week')));
+  else if (g?.lastWeek?.netSales) cards.push(h('div', { class: 'card tight' },
+    h('div', { class: 'small muted strong', text: `Last week, ${shortDate(g.lastWeek.from)} – ${shortDate(g.lastWeek.to)}` }),
+    h('div', { class: 'big', text: dollars(g.lastWeek.netSales, { exact: true }) }),
+    versus(g.lastWeek.netSales, g.lastWeek.before, 'vs the week before')));
+  if (g?.earners?.length) cards.push(h('div', { class: 'card tight' },
+    h('div', { class: 'small muted strong', text: 'Earning most, last 7 days' }),
+    h('div', { class: 'list compact' }, g.earners.map((d) => h('div', {}, h('span', { class: 'grow', text: d.name }), h('span', { class: 'small muted', text: `${d.sold} sold` }), h('b', { text: dollars(d.left, { exact: true }) })))),
+    h('div', { class: 'small muted', text: 'What’s left after food cost.' + (g.foodCost !== undefined ? ` Food cost over 90 days: ${pct(g.foodCost)}.` : '') })));
+  if (t.prep.length) cards.push(h('div', { class: 'card tight' },
+    h('div', { class: 'small muted strong', text: 'Prep' }),
+    h('div', { class: 'list compact' }, t.prep.map((s) => {
+      const today = s.today;
+      const now = !t.openToday ? null : !today?.total ? 'nothing today' : !today.approved ? 'not approved' : today.left ? `${today.total - today.left} of ${today.total} done` : 'done';
+      const next = s.next.approved ? `${weekdayName(s.next.date)}: approved` : s.next.toCount ? `${weekdayName(s.next.date)}: ${s.next.counted ? `${s.next.counted}/${s.next.toCount} counted` : 'not counted'}` : null;
+      return h('div', {}, h('span', { class: 'grow', text: s.station }), h('span', { class: 'small muted right', text: [now, next].filter(Boolean).join(' · ') }));
+    }))));
+  if (g?.noCard?.length) cards.push(h('div', { class: 'card tight' },
+    h('div', { class: 'small muted strong', text: 'Selling without a recipe card' }),
+    h('div', { class: 'small', text: g.noCard.map((d) => d.name).join(' · ') }),
+    h('div', { class: 'small muted', text: 'Their food cost isn’t counted until a card is in.' })));
+  return cards;
 }
 
 // ------------------------------------------------------------------ settings

@@ -220,6 +220,19 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.equal((await call('POST', `/api/devices/${thisIpad.id}`, { body: { revoke: true }, cookies: ownerSession })).status, 200);
   assert.equal((await call('GET', '/api/me', { cookies: onIpad })).status, 401); // its sessions end with it
 
+  // Today: prep for everyone (only this iPad's station for staff), the rest for managers.
+  const ipad2 = (await call('POST', '/api/devices', { body: { name: 'Expo iPad', stationId: expo }, cookies: ownerSession })).cookies;
+  const marcoOnExpo = [...(await call('POST', '/api/login/pin', { body: { staffId: cookId, pin: '8024' }, cookies: ipad2 })).cookies, ...ipad2];
+  const ownerToday = (await call('GET', '/api/today', { cookies: ownerSession })).json;
+  assert.ok(ownerToday.glance);
+  assert.ok(ownerToday.items.every((i: any) => i.title && i.go && i.button));
+  assert.deepEqual(ownerToday.prep.map((p: any) => p.station).sort(), ['Bulk', 'Expo', 'Pizza']);
+  assert.ok(ownerToday.items.some((i: any) => i.key === `plan:${planId}`) === false); // applied plans don't ask again
+  const cookToday = (await call('GET', '/api/today', { cookies: marcoOnExpo })).json;
+  assert.equal(cookToday.glance, undefined);
+  assert.deepEqual(cookToday.prep.map((p: any) => p.station), ['Expo']);
+  assert.ok(cookToday.items.every((i: any) => i.group === 'prep'));
+
   // Nothing secret is stored in the clear.
   const stored = await db!.query<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = $1', [cookId]);
   assert.match(stored.rows[0]!.pin_hash, /^scrypt\$/);
