@@ -18,11 +18,27 @@ function addDays(day: string, n: number): string {
 /** Margins by category, biggest money first. Only categories with at least one dish that has a recipe. */
 export function marginsView(model: Model) {
   const stillOn = addDays(model.today, -7);
-  const lastSold = new Map<string, string>();
-  for (const sp of model.spans) {
-    const link = model.lookup(sp.catalogId, sp.name, sp.last);
-    if (link && (lastSold.get(link.recipeId) ?? '') < sp.last) lastSold.set(link.recipeId, sp.last);
+  // When each recipe was on the menu, from the days it sold (by version, so a summer and a
+  // fall dish on one button each get their own days), and which days the restaurant was open.
+  const openDays = new Set<string>();
+  const sold = new Map<string, { first: string; last: string }>();
+  for (const l of model.sales) {
+    if (!l.date || !(l.quantity > 0)) continue;
+    openDays.add(l.date);
+    const link = model.lookup(l.catalogId, l.name, l.date);
+    if (!link) continue;
+    const s = sold.get(link.recipeId);
+    sold.set(link.recipeId, s ? { first: s.first < l.date ? s.first : l.date, last: s.last > l.date ? s.last : l.date } : { first: l.date, last: l.date });
   }
+  const open = [...openDays].sort();
+  const lastSold = new Map([...sold].map(([id, s]) => [id, s.last]));
+  /** Open days a dish was on the menu: first sale to last, or to the period's end if it's still on. */
+  const daysOn = (recipeId: string): number | undefined => {
+    const s = sold.get(recipeId);
+    if (!s) return undefined;
+    const end = s.last >= stillOn ? model.today : s.last;
+    return open.filter((d) => d >= s.first && d <= end).length || undefined;
+  };
   const byCategory = new Map<string, Model['margins']['dishes']>();
   for (const d of model.margins.dishes) byCategory.set(d.category, [...(byCategory.get(d.category) ?? []), d]);
   const categories = [...byCategory].map(([name, dishes]) => {
@@ -46,6 +62,11 @@ export function marginsView(model: Model) {
         profitShare: share(d.profitShare),
         role: d.role,
         estimated: !d.cost.complete,
+        // For dishes on only part of the period: what it brings in per open day it was there.
+        ...(() => {
+          const n = daysOn(d.recipeId);
+          return n ? { daysOn: n, firstSold: sold.get(d.recipeId)!.first, leftPerDay: money(d.totalContribution / n), soldPerDay: Math.round((d.quantity / n) * 10) / 10 } : {};
+        })(),
         // Came off the menu during the period: its money is real, but it's not a dish to work on.
         ...((lastSold.get(d.recipeId) ?? model.today) < stillOn ? { offSince: lastSold.get(d.recipeId) } : {}),
       })),
@@ -59,6 +80,7 @@ export function marginsView(model: Model) {
     from: model.from,
     to: model.today,
     dataFrom: model.dataFrom,
+    openDays: openDays.size,
     missing: model.missing,
     totals: { netSales: money(t.netSales), foodCostShare: share(t.foodCostShare), leftOver: money(t.contribution), coverage: share(model.margins.coverage) },
     categories,

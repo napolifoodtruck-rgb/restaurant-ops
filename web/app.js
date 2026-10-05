@@ -207,24 +207,24 @@ function presetRanges() {
   ];
 }
 
-function rangePicker(me, category, range, m) {
+function rangePicker(me, category, range, m, by) {
   const same = (a, b) => (!a && !b) || (a && b && a.from === b.from && a.to === b.to);
   const fromInput = h('input', { type: 'date', value: m.from, min: m.dataFrom, max: iso(new Date()), 'aria-label': 'From' });
   const toInput = h('input', { type: 'date', value: m.to, min: m.dataFrom, max: iso(new Date()), 'aria-label': 'To' });
   return h('div', { class: 'row wrap' },
-    presetRanges().map(([label, r]) => h('button', { class: `btn small-btn${same(r, range) ? ' dark' : ''}`, text: label, onclick: () => marginsScreen(me, category, r) })),
+    presetRanges().map(([label, r]) => h('button', { class: `btn small-btn${same(r, range) ? ' dark' : ''}`, text: label, onclick: () => marginsScreen(me, category, r, by) })),
     h('span', { class: 'row tight' }, fromInput, h('span', { class: 'muted', text: 'to' }), toInput,
-      h('button', { class: 'btn small-btn', text: 'Show', onclick: () => fromInput.value && toInput.value && marginsScreen(me, category, { from: fromInput.value, to: toInput.value }) })),
+      h('button', { class: 'btn small-btn', text: 'Show', onclick: () => fromInput.value && toInput.value && marginsScreen(me, category, { from: fromInput.value, to: toInput.value }, by) })),
   );
 }
 
-async function marginsScreen(me, category, range) {
+async function marginsScreen(me, category, range, by = 'total') {
   loadingScreen(me, 'margins', 'Where the money comes from');
   const r = await api('GET', range ? `/api/margins?from=${range.from}&to=${range.to}` : '/api/margins');
   if (!r.ok) return show(shell(me, 'margins', [h('h1', { text: 'Margins' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const m = r.data;
   const cat = m.categories.find((c) => c.name === category) ?? m.categories[0];
-  const tabs = h('div', { class: 'row' }, m.categories.map((c) => h('button', { class: `btn${c === cat ? ' dark' : ''}`, onclick: () => marginsScreen(me, c.name, range), text: c.name })));
+  const tabs = h('div', { class: 'row' }, m.categories.map((c) => h('button', { class: `btn${c === cat ? ' dark' : ''}`, onclick: () => marginsScreen(me, c.name, range, by), text: c.name })));
   const start = m.dataFrom && m.dataFrom > m.from ? m.dataFrom : m.from;
   const days = Math.round((Date.parse(m.to) - Date.parse(start)) / 86400000) + 1;
   const early = m.dataFrom && m.from < m.dataFrom ? h('div', { class: 'note', text: `Sales are stored from ${shortDate(m.dataFrom)}, so this period starts there.` }) : null;
@@ -234,28 +234,39 @@ async function marginsScreen(me, category, range) {
       h('h1', { text: 'Where the money comes from' }),
       h('div', { class: 'sub', text: `Food cost ${pct(m.totals.foodCostShare)} on dishes with recipe cards. ${dollars(m.totals.leftOver)} left after food in ${days} days. Costs are priced as of ${shortDate(m.to)}.` })),
     tabs);
-  const picker = rangePicker(me, cat?.name, range, m);
+  const picker = rangePicker(me, cat?.name, range, m, by);
   if (!cat) return show(shell(me, 'margins', [header, picker, missingNote(m.missing), h('p', { class: 'muted', text: 'No dishes with recipe cards sold in this period.' })]));
 
-  const maxPrice = Math.max(...cat.dishes.map((d) => d.averagePrice), 1);
-  const maxTotal = Math.max(...cat.dishes.map((d) => d.leftTotal), 1);
+  const perDay = by === 'day';
+  const dishes = perDay ? [...cat.dishes].sort((a, b) => (b.leftPerDay ?? 0) - (a.leftPerDay ?? 0)) : cat.dishes;
+  const maxPrice = Math.max(...dishes.map((d) => d.averagePrice), 1);
+  const maxValue = Math.max(...dishes.map((d) => (perDay ? d.leftPerDay ?? 0 : d.leftTotal)), 1);
   const bar = (cls, width) => { const b = h('div', { class: cls }); b.style.width = `${Math.max(0, width)}px`; return b; };
-  const rows = cat.dishes.map((d) => {
+  const partOfPeriod = (d) => d.daysOn && d.daysOn < m.openDays;
+  const rows = dishes.map((d) => {
     const plate = h('div', { class: 'pricebar' }, bar('food', (d.plateCost / maxPrice) * 220), bar('left', ((d.averagePrice - d.plateCost) / maxPrice) * 220));
     const [roleText, roleCls] = ROLE[d.role] ?? ['', ''];
+    const value = perDay ? d.leftPerDay ?? 0 : d.leftTotal;
+    const other = perDay ? `${dollars(d.leftTotal)} in all` : d.leftPerDay !== undefined ? `${dollars(d.leftPerDay)} a day` : '';
+    const note = d.offSince ? `off the menu since ${shortDate(d.offSince)}` : partOfPeriod(d) ? `on the menu ${d.daysOn} of ${m.openDays} days, since ${shortDate(d.firstSold)}` : null;
     return h('div', { class: `mrow${d.offSince ? ' off' : ''}` },
-      h('div', {}, h('div', { class: 'name', text: d.name }), d.offSince ? h('div', { class: 'small muted', text: `off the menu since ${shortDate(d.offSince)}` }) : null),
+      h('div', {}, h('div', { class: 'name', text: d.name }), note ? h('div', { class: 'small muted', text: note }) : null),
       h('div', { class: 'row tight' }, plate, h('span', { class: 'small muted', text: `${dollars(d.averagePrice, { cents: true })}` })),
       h('div', { class: 'small', text: `${dollars(d.plateCost, { cents: true })}${d.estimated ? '*' : ''} food · ${dollars(d.leftPerPlate, { cents: true })} left` }),
-      h('div', { class: 'num', text: d.sold.toLocaleString() }),
-      h('div', { class: 'row tight' }, bar('total', (d.leftTotal / maxTotal) * 200), h('b', { text: dollars(d.leftTotal) })),
-      h('div', {}, d.offSince ? null : h('span', { class: `tag ${roleCls}`, text: roleText })),
+      h('div', { class: 'num' }, h('div', { text: d.sold.toLocaleString() }), d.soldPerDay !== undefined ? h('div', { class: 'small muted', text: `${d.soldPerDay}/day` }) : null),
+      h('div', {}, h('div', { class: 'row tight' }, bar('total', (value / maxValue) * 200), h('b', { text: dollars(value) })), other ? h('div', { class: 'small muted', text: other }) : null),
+      // Roles judge money over the whole period; in the per-day view, a dish that joined partway is just marked new.
+      h('div', {}, d.offSince ? null : perDay ? (partOfPeriod(d) ? h('span', { class: 'tag blue', text: 'New' }) : null) : h('span', { class: `tag ${roleCls}`, text: roleText })),
     );
   });
+  const toggle = h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Rank by' }),
+    h('button', { class: `btn small-btn${perDay ? '' : ' dark'}`, text: 'All of it', onclick: () => marginsScreen(me, cat.name, range, 'total') }),
+    h('button', { class: `btn small-btn${perDay ? ' dark' : ''}`, text: 'Per day on the menu', onclick: () => marginsScreen(me, cat.name, range, 'day') }));
   const table = h('section', { class: 'card' },
-    h('div', { class: 'mrow head' }, h('div', { text: 'Dish' }), h('div', { text: 'One plate: food | left over' }), h('div', { text: 'Per plate' }), h('div', { class: 'num', text: 'Sold' }), h('div', { text: 'Left over, all of them' }), h('div')),
+    h('div', { class: 'row' }, h('div', { class: 'grow small muted', text: perDay ? 'Left over per open day the dish was on the menu: fair to new dishes and specials that weren’t there the whole time.' : 'Left over across every plate sold in the period.' }), toggle),
+    h('div', { class: 'mrow head' }, h('div', { text: 'Dish' }), h('div', { text: 'One plate: food | left over' }), h('div', { text: 'Per plate' }), h('div', { class: 'num', text: 'Sold' }), h('div', { text: perDay ? 'Left over per day on the menu' : 'Left over, all of them' }), h('div')),
     rows,
-    h('div', { class: 'small muted', text: 'Price is what guests paid on average, after discounts. * part of the card still uses an estimated price. Top earners together bring in 80% of the money.' }),
+    h('div', { class: 'small muted', text: 'Price is what guests paid on average, after discounts. * part of the card still uses an estimated price. Top earners together bring in 80% of the money in the period.' }),
   );
   const noCard = cat.noCard.length ? h('section', { class: 'card' },
     h('h2', { text: `Selling with no recipe card: ${dollars(cat.noCardSales)} in sales not counted above` }),
