@@ -110,3 +110,37 @@ export function theoreticalUsage(book: RecipeBook, links: Links, sales: SaleLine
     coverage: totalSales > 0 ? coveredSales / totalSales : 0,
   };
 }
+
+export interface SellingSpan {
+  catalogId: string;
+  name: string;
+  /** First and last day sold (YYYY-MM-DD). */
+  first: string;
+  last: string;
+  quantity: number;
+  /** Days with at least one sale. */
+  days: number;
+}
+
+/**
+ * First and last day each POS item sold under each name, from daily sales. For a dish that
+ * sells every day it's open, these are the dates it was on the menu: the start dates for
+ * seasonal recipe versions come from here rather than from anyone's memory.
+ */
+export function sellingSpans(sales: readonly SaleLine[]): SellingSpan[] {
+  const spans = new Map<string, SellingSpan>();
+  for (const line of sales) {
+    if (!line.date || !(line.quantity > 0)) continue;
+    const key = `${line.catalogId}|${line.name}`;
+    const span = spans.get(key);
+    if (!span) {
+      spans.set(key, { catalogId: line.catalogId, name: line.name, first: line.date, last: line.date, quantity: line.quantity, days: 1 });
+      continue;
+    }
+    if (line.date < span.first) span.first = line.date;
+    if (line.date > span.last) span.last = line.date;
+    span.quantity += line.quantity;
+    span.days++;
+  }
+  return [...spans.values()].sort((a, b) => a.first.localeCompare(b.first) || a.name.localeCompare(b.name));
+}

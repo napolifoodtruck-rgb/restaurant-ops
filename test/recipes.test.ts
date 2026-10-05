@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { RecipeBook, type Recipe } from '../src/core/recipes.ts';
-import { theoreticalUsage } from '../src/core/sales.ts';
+import { sellingSpans, theoreticalUsage } from '../src/core/sales.ts';
 import { book, links, products, recipes } from './fixtures.ts';
 
 const close = (actual: number | undefined, expected: number, tolerance = 1e-9) =>
@@ -164,4 +164,21 @@ test('modifiers can remove ingredients with negative amounts', () => {
     { catalogId: 'SQ-RIGATONI', name: 'Rigatoni alla vodka', quantity: 2, netSales: 36, modifiers: [{ catalogId: 'SQ-NO-PARM', name: 'No parmesan' }] },
   ]);
   close(result.usage.products.get('parmesan'), 0);
+});
+
+test('selling spans give the dates a dish was on the menu', () => {
+  const day = (catalogId: string, name: string, date: string, quantity: number) => ({ catalogId, name, date, quantity, netSales: quantity * 12 });
+  const spans = sellingSpans([
+    day('B', 'Ricotta Appetizer', '2026-06-05', 10),
+    day('A', 'House-Made Ricotta', '2025-12-31', 4),
+    day('A', 'House-Made Ricotta', '2026-05-23', 6),
+    day('B', 'Ricotta Bruschetta', '2026-05-26', 11),
+    day('B', 'Ricotta Appetizer', '2026-10-03', 13),
+    day('B', 'Ricotta Appetizer', '2026-08-01', 0), // nothing sold: ignored
+  ]);
+  assert.deepEqual(spans.map((s) => [s.name, s.first, s.last, s.quantity, s.days]), [
+    ['House-Made Ricotta', '2025-12-31', '2026-05-23', 10, 2],
+    ['Ricotta Bruschetta', '2026-05-26', '2026-05-26', 11, 1],
+    ['Ricotta Appetizer', '2026-06-05', '2026-10-03', 23, 2],
+  ]);
 });
