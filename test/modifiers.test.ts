@@ -143,6 +143,10 @@ test('modifier costs add up per dish and feed the margins', () => {
   };
   const after = modifierCosts(book, sales, dishFor, answers);
   assert.equal(after.questions.length, 0);
+  // Waiting on a recipe: not costed and not asked again.
+  const waiting = modifierCosts(book, sales, dishFor, { ...emptyModifierAnswers(), waiting: { [modifierKey(gf)]: 'card not in yet' } });
+  assert.deepEqual(waiting.questions.map((q) => q.modifier.name), ['++ Extra Mozzarella']);
+  assert.equal(waiting.modifiers.find((m) => m.key === modifierKey(gf))?.complete, false);
   // Margherita: 10 × 1.5 oz mozzarella ($0.5625) + 5 × (crust $3 − dough $0.40).
   close(after.byItem.get('V-MARG|margherita'), 10 * 0.5625 + 5 * 2.6);
   close(after.byItem.get('V-CAL|calabria'), -4 * 0.6 + 2 * 2.6);

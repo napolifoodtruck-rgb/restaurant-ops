@@ -174,6 +174,8 @@ test('several yields become conversions', () => {
   close(conversions.gramsPerEach, 30100 / 120); // one portion of dough
   // "1 Batch or 30 Ounces": tracked in ounces, a batch is 30 oz.
   assert.deepEqual(yieldsToConversions([{ amount: 1, unit: 'batch' }, { amount: 30, unit: 'oz' }]), { primary: { amount: 30, unit: 'oz' }, conversions: { customUnits: { batch: { amount: 30, unit: 'oz' } } } });
+  // "1 Batch or 30 Portions" (the gluten-free dough): tracked in portions.
+  assert.deepEqual(yieldsToConversions([{ amount: 1, unit: 'batch' }, { amount: 30, unit: 'each' }]), { primary: { amount: 30, unit: 'each' }, conversions: { customUnits: { batch: { amount: 30, unit: 'each' } } } });
 });
 
 test('yield % scales up what is bought, and portions of dough convert to grams', () => {

@@ -286,7 +286,9 @@ export const FREE_PRODUCTS: ImportedProduct[] = [
  */
 export function yieldsToConversions(yields: Quantity[]): { primary?: Quantity; conversions: ItemConversions } {
   const measured = yields.find((q) => dimensionOf(q.unit) === 'mass' || dimensionOf(q.unit) === 'volume');
-  const primary = measured ?? yields[0];
+  // "1 Batch or 30 Portions": tracked in portions, a batch is 30.
+  const counted = yields.find((q) => dimensionOf(q.unit) === 'count');
+  const primary = measured ?? counted ?? yields[0];
   const conversions: ItemConversions = {};
   if (!primary) return { conversions };
 

@@ -91,6 +91,8 @@ export interface ModifierAnswers {
    * `*|${modifier key}` answers for every dish ("the gluten-free crust replaces the dough").
    */
   removes: Record<string, ItemRef | null>;
+  /** Modifier key → why it can't be costed yet ("lamb meatballs: Katahdin card not in yet"). Not asked again. */
+  waiting?: Record<string, string>;
 }
 
 /**
@@ -327,6 +329,10 @@ export function modifierCosts(
     if (!dishId) {
       // The dish has no recipe yet; that is asked about elsewhere.
       if (readModifier(line.modifier).action !== 'none') summary.complete = false;
+      continue;
+    }
+    if (answers.waiting && key in answers.waiting) {
+      summary.complete = false;
       continue;
     }
     const result = resolveModifier(book, dishId, line.modifier, answers);
