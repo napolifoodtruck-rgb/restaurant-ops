@@ -131,6 +131,30 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   const cleaned = (await call('POST', `/api/prep/${expo}/${day}/check`, { body: { checklistId: worked.checklist[0].id, done: true }, cookies: cookAgain })).json;
   assert.equal(cleaned.checklist[0].doneBy, 'Marco');
 
+  // Bulk prep as inventory: a count sets it, a station fill draws it down, the bulk list suggests batches.
+  const bulkFile = { format: 'prep-lists', stations: [
+    { name: 'Pizza', items: [{ name: 'Spinach Panna', unit: '1/6 pan', kind: 'count', par: 4 }] },
+    { name: 'Bulk', items: [{ name: 'Spinach Panna', kind: 'batch' }] },
+  ] };
+  await call('POST', '/api/prep/import', { body: bulkFile, cookies: ownerSession });
+  const stations = (await call('GET', '/api/prep', { cookies: ownerSession })).json.stations;
+  const pizza = stations.find((x: any) => x.name === 'Pizza').id, bulkSt = stations.find((x: any) => x.name === 'Bulk').id;
+  const bulkItem = (await call('GET', `/api/prep/${bulkSt}/setup`, { cookies: ownerSession })).json.items[0];
+  const pizzaItem = (await call('GET', `/api/prep/${pizza}/setup`, { cookies: ownerSession })).json.items[0];
+  await call('POST', `/api/prep/items/${bulkItem.id}`, { body: { bulkUnit: 'qt', batchYield: 8 }, cookies: ownerSession });
+  await call('POST', `/api/prep/items/${pizzaItem.id}`, { body: { sourceItemId: bulkItem.id, holds: 2 }, cookies: ownerSession });
+  await call('POST', `/api/prep/${bulkSt}/${day}/count`, { body: { itemId: bulkItem.id, counted: 5 }, cookies: cookAgain }); // 5 qt in the walk-in
+  await call('POST', `/api/prep/${pizza}/${day}/count`, { body: { itemId: pizzaItem.id, counted: 0 }, cookies: cookAgain }); // pizza fills 4 sixth pans = 8 qt
+  const bulkView = (await call('GET', `/api/prep/${bulkSt}/${day}`, { cookies: ownerSession })).json.lines[0];
+  assert.deepEqual([bulkView.suggested, bulkView.onHand.amount], [1, 5]);
+  assert.match(bulkView.reason, /Pizza fills 4 1\/6 pan \(8 qt\); 5 qt on hand: make 1 batch \(8 qt\)/);
+  await call('POST', `/api/prep/${pizza}/${day}/approve`, { body: {}, cookies: ownerSession });
+  await call('POST', `/api/prep/${pizza}/${day}/done`, { body: { itemId: pizzaItem.id, state: 'done' }, cookies: cookAgain });
+  const afterFill = (await call('GET', `/api/prep/${bulkSt}/${day}`, { cookies: ownerSession })).json.lines[0].onHand;
+  assert.deepEqual(afterFill, { amount: 0, estimated: true, countedAt: afterFill.countedAt }); // 5 − 8, never below 0
+  await call('POST', `/api/prep/${pizza}/${day}/done`, { body: { itemId: pizzaItem.id, state: 'undo' }, cookies: cookAgain });
+  assert.equal((await call('GET', `/api/prep/${bulkSt}/${day}`, { cookies: ownerSession })).json.lines[0].onHand.amount, 5); // undo puts it back
+
   // Nothing secret is stored in the clear.
   const stored = await db!.query<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = $1', [cookId]);
   assert.match(stored.rows[0]!.pin_hash, /^scrypt\$/);

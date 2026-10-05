@@ -99,43 +99,71 @@ export function dayLines(items: readonly StationItem[], date: string, share: { s
 
 const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0$/, ''));
 
-// ---------------------------------------------------------------- bulk batches
+// ---------------------------------------------------------------- bulk prep as inventory
 
 export interface StationNeed {
   station: string;
   item: string;
   unit?: string;
-  /** What that station will make tomorrow, in its own units; undefined when not counted yet. */
+  /** What that station will fill tomorrow, in its own units; undefined when not counted yet. */
   toMake?: number;
-  /** Station units one batch fills. */
-  perBatch?: number;
+  /** Bulk units one station unit holds (one 1/6 pan holds 2 qt). */
+  holds?: number;
+}
+
+export interface BulkOnHand {
+  amount: number;
+  /** False right after a count; true when it's been moved by fills and batches since. */
+  estimated: boolean;
+  /** The last count, if any. */
+  countedAt?: string;
 }
 
 export interface BatchSuggestion {
-  suggested: number;
+  suggested?: number;
+  /** What the stations will draw, in bulk units. */
+  need: number;
   reason: string;
-  /** Linked station items that couldn't be counted in (no count yet, or batch size unknown). */
+  /** Linked station items left out (not counted, or no conversion yet). */
   missing: string[];
 }
 
 /**
- * Batches of a bulk item to make: what the stations it fills will draw tomorrow, less what's
- * left in backup, in whole batches. A small shortfall (under a fifth of a batch) waits a day.
+ * Batches of a bulk item to make: tomorrow's station fills, converted to the bulk's unit,
+ * less what's on hand, in whole batches. A shortfall under a fifth of a batch waits a day.
  */
-export function batchSuggestion(needs: readonly StationNeed[], backup: number | undefined, name: string): BatchSuggestion | undefined {
+export function batchSuggestion(needs: readonly StationNeed[], onHand: BulkOnHand | undefined, bulk: { name: string; unit?: string; batchYield?: number }): BatchSuggestion | undefined {
   if (!needs.length) return undefined;
+  const u = bulk.unit ? ` ${bulk.unit}` : '';
   const missing: string[] = [];
-  let batches = 0;
   const parts: string[] = [];
+  let need = 0;
   for (const n of needs) {
     if (n.toMake === undefined) { missing.push(`${n.station} ${n.item} (not counted)`); continue; }
-    if (!n.perBatch) { missing.push(`${n.station} ${n.item} (batch size unknown)`); continue; }
-    if (n.toMake > 0) parts.push(`${n.station} needs ${fmt(n.toMake)} ${n.unit ?? ''}`.trim());
-    batches += n.toMake / n.perBatch;
+    if (!n.holds) { missing.push(`${n.station} ${n.item} (how much one ${n.unit ?? 'container'} holds)`); continue; }
+    if (n.toMake > 0) parts.push(`${n.station} fills ${fmt(n.toMake)} ${n.unit ?? ''} (${fmt(n.toMake * n.holds)}${u})`.replace(/ +/g, ' '));
+    need += n.toMake * n.holds;
   }
-  const short = batches - (backup ?? 0);
-  const suggested = short > 0.2 ? Math.ceil(short - 1e-9) : 0;
-  const drawn = parts.length ? `${parts.join(', ')} (${fmt(Math.round(batches * 100) / 100)} batch${batches === 1 ? '' : 'es'})` : 'No station needs any';
-  const reason = `${drawn}; ${backup === undefined ? 'backup not counted' : `${fmt(backup)} in backup`}: ${suggested ? `make ${suggested} batch${suggested === 1 ? '' : 'es'} of ${name}` : 'no batch needed'}.`;
-  return { suggested, reason, missing };
+  const have = onHand?.amount ?? 0;
+  const haveText = onHand ? `${onHand.estimated ? 'about ' : ''}${fmt(Math.round(have * 100) / 100)}${u} on hand${onHand.estimated ? (onHand.countedAt ? ' (estimated since the last count)' : ' (estimated, never counted)') : ''}` : `nothing on hand recorded`;
+  const drawn = parts.length ? parts.join(', ') : 'No station fills any';
+  const short = need - have;
+  if (!bulk.batchYield) {
+    return { need, missing, reason: `${drawn}; ${haveText}. Set how much one batch makes to get a suggestion.` };
+  }
+  const suggested = short > 0.2 * bulk.batchYield ? Math.ceil(short / bulk.batchYield - 1e-9) : 0;
+  const makes = suggested ? `make ${suggested} batch${suggested === 1 ? '' : 'es'} (${fmt(suggested * bulk.batchYield)}${u})` : 'no batch needed';
+  return { suggested, need, missing, reason: `${drawn}; ${haveText}: ${makes}.` };
+}
+
+/** On hand from the ledger: the last count, moved by everything after it. */
+export function onHandFrom(entries: readonly { at: string; kind: 'made' | 'filled' | 'counted' | 'waste'; change?: number; setTo?: number }[]): BulkOnHand | undefined {
+  if (!entries.length) return undefined;
+  const sorted = [...entries].sort((a, b) => a.at.localeCompare(b.at));
+  let lastCount = -1;
+  sorted.forEach((e, i) => { if (e.kind === 'counted') lastCount = i; });
+  let amount = lastCount >= 0 ? sorted[lastCount]!.setTo ?? 0 : 0;
+  const after = sorted.slice(lastCount + 1);
+  for (const e of after) amount += e.change ?? 0;
+  return { amount: Math.max(0, amount), estimated: after.length > 0 || lastCount < 0, ...(lastCount >= 0 ? { countedAt: sorted[lastCount]!.at } : {}) };
 }

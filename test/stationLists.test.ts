@@ -43,16 +43,27 @@ test('par scaled to the day, rounded up in halves or wholes; to make is par minu
   assert.deepEqual(friday.map((l) => [l.item.id, l.dayPar, l.suggested]), [['dressing', 3, undefined], ['bresaola', 14, undefined], ['saba', 0.25, undefined], ['togo', 8, 8], ['ham', undefined, undefined]]);
 });
 
-test('bulk batches follow what the stations they fill will draw', async () => {
-  const { batchSuggestion } = await import('../src/core/stationLists.ts');
-  // One Spinach Panna batch fills 3 sixth pans. Pizza needs 2, expo none; a quarter batch in backup.
-  const s = batchSuggestion([{ station: 'Pizza', item: 'Spinach Panna', unit: '1/6 pan', toMake: 2, perBatch: 3 }], 0.25, 'Spinach Panna')!;
-  assert.equal(s.suggested, 1);
-  assert.equal(s.reason, 'Pizza needs 2 1/6 pan (0.67 batches); 0.25 in backup: make 1 batch of Spinach Panna.');
-  // Enough in backup: wait.
-  assert.equal(batchSuggestion([{ station: 'Pizza', item: 'Spinach Panna', toMake: 2, perBatch: 3 }], 0.75, 'Spinach Panna')!.suggested, 0);
-  // Not counted or no batch size: said so, not guessed.
-  const unknown = batchSuggestion([{ station: 'Expo', item: 'Ricotta (fill)', toMake: undefined, perBatch: 4 }, { station: 'Pizza', item: 'Ricotta', toMake: 1 }], undefined, 'Ricotta')!;
-  assert.deepEqual([unknown.suggested, unknown.missing], [0, ['Expo Ricotta (fill) (not counted)', 'Pizza Ricotta (batch size unknown)']]);
-  assert.equal(batchSuggestion([], 0, 'X'), undefined);
+test('bulk prep is inventory: fills draw it down, batches add, counts reset it', async () => {
+  const { batchSuggestion, onHandFrom } = await import('../src/core/stationLists.ts');
+  const ledger = [
+    { at: '2026-10-02T15:00:00Z', kind: 'counted' as const, setTo: 6 },
+    { at: '2026-10-03T14:00:00Z', kind: 'filled' as const, change: -4 }, // pizza filled 2 sixth pans
+    { at: '2026-10-03T16:00:00Z', kind: 'made' as const, change: 8 },
+    { at: '2026-10-04T14:00:00Z', kind: 'filled' as const, change: -7 },
+  ];
+  assert.deepEqual(onHandFrom(ledger), { amount: 3, estimated: true, countedAt: '2026-10-02T15:00:00Z' });
+  assert.deepEqual(onHandFrom([...ledger, { at: '2026-10-04T23:00:00Z', kind: 'counted', setTo: 2.5 }]), { amount: 2.5, estimated: false, countedAt: '2026-10-04T23:00:00Z' });
+  assert.equal(onHandFrom([]), undefined);
+
+  // Pizza fills 3 sixth pans tomorrow at 2 qt each = 6 qt; about 3 qt on hand; a batch makes 8 qt.
+  const s = batchSuggestion([{ station: 'Pizza', item: 'Spinach Panna', unit: '1/6 pan', toMake: 3, holds: 2 }], onHandFrom(ledger), { name: 'Spinach Panna', unit: 'qt', batchYield: 8 })!;
+  assert.deepEqual([s.suggested, s.need], [1, 6]);
+  assert.equal(s.reason, 'Pizza fills 3 1/6 pan (6 qt); about 3 qt on hand (estimated since the last count): make 1 batch (8 qt).');
+  // Enough on hand, or a small shortfall: wait a day.
+  assert.equal(batchSuggestion([{ station: 'Pizza', item: 'Spinach Panna', toMake: 2, holds: 2 }], { amount: 3, estimated: false }, { name: 'S', unit: 'qt', batchYield: 8 })!.suggested, 0);
+  // Missing pieces are said, not guessed.
+  const unknown = batchSuggestion([{ station: 'Expo', item: 'Ricotta (fill)', unit: '1/9 pan', toMake: 1 }, { station: 'Pizza', item: 'Ricotta', toMake: undefined, holds: 1 }], undefined, { name: 'Ricotta', unit: 'qt' })!;
+  assert.equal(unknown.suggested, undefined);
+  assert.deepEqual(unknown.missing, ['Expo Ricotta (fill) (how much one 1/9 pan holds)', 'Pizza Ricotta (not counted)']);
+  assert.match(unknown.reason, /Set how much one batch makes/);
 });

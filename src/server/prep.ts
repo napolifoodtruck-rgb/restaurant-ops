@@ -20,7 +20,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
-import { batchSuggestion, dayLines, dayShare, weekdayOf, type StationItem, type StationNeed } from '../core/stationLists.ts';
+import { batchSuggestion, dayLines, dayShare, onHandFrom, weekdayOf, type BulkOnHand, type StationItem, type StationNeed } from '../core/stationLists.ts';
 
 const UUID = '[0-9a-f-]{36}';
 const DATE = '\\d{4}-\\d{2}-\\d{2}';
@@ -31,8 +31,8 @@ function addDays(day: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-interface ItemRow { id: string; name: string; unit: string | null; kind: StationItem['kind']; par: string | null; weekdays: number[] | null; recipe_name: string | null; note: string | null; sort_order: number; source_item_id: string | null; per_batch: string | null }
-const toItem = (r: ItemRow): StationItem & { note?: string; recipeName?: string; sourceItemId?: string; perBatch?: number } => ({
+interface ItemRow { id: string; name: string; unit: string | null; kind: StationItem['kind']; par: string | null; weekdays: number[] | null; recipe_name: string | null; note: string | null; sort_order: number; source_item_id: string | null; per_batch: string | null; bulk_unit: string | null; batch_yield: string | null; holds: string | null }
+const toItem = (r: ItemRow): StationItem & { note?: string; recipeName?: string; sourceItemId?: string; bulkUnit?: string; batchYield?: number; holds?: number } => ({
   id: r.id, name: r.name, kind: r.kind,
   ...(r.unit ? { unit: r.unit } : {}),
   ...(r.par !== null && r.par !== undefined ? { par: Number(r.par) } : {}),
@@ -40,7 +40,9 @@ const toItem = (r: ItemRow): StationItem & { note?: string; recipeName?: string;
   ...(r.note ? { note: r.note } : {}),
   ...(r.recipe_name ? { recipeName: r.recipe_name } : {}),
   ...(r.source_item_id ? { sourceItemId: r.source_item_id } : {}),
-  ...(r.per_batch !== null && r.per_batch !== undefined ? { perBatch: Number(r.per_batch) } : {}),
+  ...(r.bulk_unit ? { bulkUnit: r.bulk_unit } : {}),
+  ...(r.batch_yield !== null && r.batch_yield !== undefined ? { batchYield: Number(r.batch_yield) } : {}),
+  ...(r.holds !== null && r.holds !== undefined ? { holds: Number(r.holds) } : {}),
 });
 type Item = ReturnType<typeof toItem>;
 const arr = (v: unknown) => (typeof v === 'string' ? JSON.parse(v) : v);
@@ -52,7 +54,7 @@ async function station(db: Db, restaurantId: string, id: string) {
 }
 
 async function items(db: Db, restaurantId: string, stationId: string) {
-  return (await db.query<ItemRow>('SELECT id, name, unit, kind, par, weekdays, recipe_name, note, sort_order, source_item_id, per_batch FROM station_items WHERE restaurant_id = $1 AND station_id = $2 AND active ORDER BY sort_order, name', [restaurantId, stationId])).rows.map((r) => toItem({ ...r, weekdays: arr(r.weekdays) }));
+  return (await db.query<ItemRow>('SELECT id, name, unit, kind, par, weekdays, recipe_name, note, sort_order, source_item_id, per_batch, bulk_unit, batch_yield, holds FROM station_items WHERE restaurant_id = $1 AND station_id = $2 AND active ORDER BY sort_order, name', [restaurantId, stationId])).rows.map((r) => toItem({ ...r, weekdays: arr(r.weekdays) }));
 }
 
 async function listFor(db: Db, restaurantId: string, stationId: string, date: string) {
@@ -82,12 +84,26 @@ async function stationToMake(db: Db, restaurantId: string, stationId: string, da
   return out;
 }
 
+/** Bulk on hand from the ledger, per bulk item. */
+async function bulkOnHand(db: Db, restaurantId: string, ids: string[]): Promise<Map<string, BulkOnHand>> {
+  const out = new Map<string, BulkOnHand>();
+  if (!ids.length) return out;
+  const rows = (await db.query<{ item_id: string; at: string; kind: 'made' | 'filled' | 'counted' | 'waste'; change: string | null; set_to: string | null }>(
+    'SELECT item_id, at, kind, change, set_to FROM bulk_ledger WHERE restaurant_id = $1 AND item_id = ANY(string_to_array($2, \',\')::uuid[])', [restaurantId, ids.join(',')])).rows;
+  for (const id of ids) {
+    const mine = rows.filter((r) => r.item_id === id).map((r) => ({ at: new Date(r.at).toISOString(), kind: r.kind, ...(r.change !== null ? { change: Number(r.change) } : {}), ...(r.set_to !== null ? { setTo: Number(r.set_to) } : {}) }));
+    const oh = onHandFrom(mine);
+    if (oh) out.set(id, oh);
+  }
+  return out;
+}
+
 /** For each bulk item on a station: what the stations it fills will draw, as a batch suggestion. */
-async function bulkSuggestions(db: Db, restaurantId: string, batchItems: Item[], date: string, share: ReturnType<typeof dayShare>, backups: Map<string, number>) {
+async function bulkSuggestions(db: Db, restaurantId: string, batchItems: Item[], date: string, share: ReturnType<typeof dayShare>, onHand: Map<string, BulkOnHand>) {
   const out = new Map<string, ReturnType<typeof batchSuggestion>>();
   if (!batchItems.length) return out;
   const linked = (await db.query<ItemRow & { station_id: string; station_name: string }>(
-    `SELECT i.id, i.name, i.unit, i.kind, i.par, i.weekdays, i.recipe_name, i.note, i.sort_order, i.source_item_id, i.per_batch, i.station_id, s.name AS station_name
+    `SELECT i.id, i.name, i.unit, i.kind, i.par, i.weekdays, i.recipe_name, i.note, i.sort_order, i.source_item_id, i.per_batch, i.bulk_unit, i.batch_yield, i.holds, i.station_id, s.name AS station_name
        FROM station_items i JOIN stations s ON s.id = i.station_id
       WHERE i.restaurant_id = $1 AND i.active AND i.source_item_id = ANY(string_to_array($2, ',')::uuid[])`,
     [restaurantId, batchItems.map((b) => b.id).join(',')])).rows;
@@ -96,9 +112,9 @@ async function bulkSuggestions(db: Db, restaurantId: string, batchItems: Item[],
   for (const b of batchItems) {
     const needs: StationNeed[] = linked.filter((l) => l.source_item_id === b.id).map((l) => {
       const made = byStation.get(l.station_id)!;
-      return { station: l.station_name, item: l.name, ...(l.unit ? { unit: l.unit } : {}), ...(made.has(l.id) ? { toMake: made.get(l.id) } : { toMake: 0 }), ...(l.per_batch ? { perBatch: Number(l.per_batch) } : {}) };
+      return { station: l.station_name, item: l.name, ...(l.unit ? { unit: l.unit } : {}), ...(made.has(l.id) ? { toMake: made.get(l.id) } : { toMake: 0 }), ...(l.holds ? { holds: Number(l.holds) } : {}) };
     });
-    const s = batchSuggestion(needs, backups.get(b.id), b.name);
+    const s = batchSuggestion(needs, onHand.get(b.id), { name: b.name, ...(b.bulkUnit ? { unit: b.bulkUnit } : {}), ...(b.batchYield ? { batchYield: b.batchYield } : {}) });
     if (s) out.set(b.id, s);
   }
   return out;
@@ -115,7 +131,9 @@ async function view(db: Db, who: SignedIn, stationId: string, date: string) {
   const counts = new Map(lines.filter((l) => l.counted !== null).map((l) => [l.item_id, Number(l.counted)]));
   const share = dayShare(await recentSales(db, who.restaurantId, date), weekdayOf(date));
   const day = dayLines(all, date, share, counts);
-  const bulk = await bulkSuggestions(db, who.restaurantId, all.filter((i) => i.kind === 'batch'), date, share, counts);
+  const batchItems = all.filter((i) => i.kind === 'batch');
+  const onHand = await bulkOnHand(db, who.restaurantId, batchItems.map((b) => b.id));
+  const bulk = await bulkSuggestions(db, who.restaurantId, batchItems, date, share, onHand);
 
   // Cleaning: daily tasks, weekly ones on their day, and weekly ones with no day until done that week.
   const weekStart = addDays(date, -((weekdayOf(date) + 6) % 7)); // Monday
@@ -149,8 +167,11 @@ async function view(db: Db, who: SignedIn, stationId: string, date: string) {
       const l = byItem.get(d.item.id);
       const chosen = l?.to_make !== null && l?.to_make !== undefined ? Number(l.to_make) : undefined;
       const b = bulk.get(d.item.id);
-      if (b) { d.suggested = b.suggested; d.reason = b.reason + (b.missing.length ? ` Not counted in: ${b.missing.join(', ')}.` : ''); }
+      if (b) { if (b.suggested !== undefined) d.suggested = b.suggested; d.reason = b.reason + (b.missing.length ? ` Left out: ${b.missing.join(', ')}.` : ''); }
+      const oh = onHand.get(d.item.id);
       return {
+        ...(oh ? { onHand: { amount: Math.round(oh.amount * 100) / 100, estimated: oh.estimated, ...(oh.countedAt ? { countedAt: oh.countedAt } : {}) } } : {}),
+        ...(d.reason && d.suggested === undefined ? { reason: d.reason } : {}),
         ...d.item,
         ...(d.dayPar !== undefined ? { dayPar: d.dayPar } : {}),
         ...(l?.counted !== null && l?.counted !== undefined ? { counted: Number(l.counted) } : {}),
@@ -205,11 +226,13 @@ function itemFields(b: Record<string, unknown>, partial: boolean): Record<string
     if (b.sourceItemId !== null && !(typeof b.sourceItemId === 'string' && /^[0-9a-f-]{36}$/.test(b.sourceItemId))) throw new HttpError(400, 'Pick a bulk item.');
     out.source_item_id = b.sourceItemId;
   }
-  if (b.perBatch !== undefined) {
-    const n = num(b.perBatch, 'Batch size');
-    if (n === 0) throw new HttpError(400, 'A batch fills more than 0.');
-    out.per_batch = n;
+  for (const [key, col, what] of [['batchYield', 'batch_yield', 'A batch'], ['holds', 'holds', 'A container']] as const) {
+    if (b[key] === undefined) continue;
+    const n = num(b[key], what);
+    if (n === 0) throw new HttpError(400, `${what} holds more than 0.`);
+    out[col] = n;
   }
+  if (b.bulkUnit !== undefined) out.bulk_unit = typeof b.bulkUnit === 'string' && b.bulkUnit.trim() ? b.bulkUnit.trim() : null;
   if (b.active === false) out.active = false;
   return out;
 }
@@ -307,8 +330,8 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     chef();
     const st = await station(db, who.restaurantId, m[1]!);
     const checklist = (await db.query('SELECT id, name, frequency, weekday FROM station_checklist WHERE restaurant_id = $1 AND station_id = $2 AND active ORDER BY frequency, sort_order, name', [who.restaurantId, st.id])).rows;
-    const batchItems = (await db.query<{ id: string; name: string; station: string }>(
-      "SELECT i.id, i.name, s.name AS station FROM station_items i JOIN stations s ON s.id = i.station_id WHERE i.restaurant_id = $1 AND i.active AND i.kind = 'batch' ORDER BY s.sort_order, i.sort_order", [who.restaurantId])).rows;
+    const batchItems = (await db.query<{ id: string; name: string; station: string; bulk_unit: string | null }>(
+      "SELECT i.id, i.name, s.name AS station, i.bulk_unit FROM station_items i JOIN stations s ON s.id = i.station_id WHERE i.restaurant_id = $1 AND i.active AND i.kind = 'batch' ORDER BY s.sort_order, i.sort_order", [who.restaurantId])).rows;
     return send(res, 200, { station: st, items: await items(db, who.restaurantId, st.id), checklist, batchItems }), true;
   }
 
@@ -344,8 +367,12 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     const b = await body(req);
     const list = await listFor(db, who.restaurantId, stationId, date);
     if (action === 'count') {
-      if (list.status === 'approved') throw new HttpError(409, 'This list is already approved. A chef can reopen it.');
-      await setLine(db, who, stationId, date, String(b.itemId), { counted: num(b.counted, 'Count') });
+      const kind = (await db.query<{ kind: string }>('SELECT kind FROM station_items WHERE restaurant_id = $1 AND id = $2', [who.restaurantId, String(b.itemId)])).rows[0]?.kind;
+      if (list.status === 'approved' && kind !== 'batch') throw new HttpError(409, 'This list is already approved. A chef can reopen it.');
+      const counted = num(b.counted, 'Count');
+      await setLine(db, who, stationId, date, String(b.itemId), { counted });
+      // A bulk count resets what's on hand.
+      if (kind === 'batch' && counted !== null) await db.query("INSERT INTO bulk_ledger (restaurant_id, item_id, kind, set_to, by_staff) VALUES ($1, $2, 'counted', $3, $4)", [who.restaurantId, String(b.itemId), counted, who.staffId]);
       await db.query('UPDATE prep_lists SET counted_at = now(), counted_by = $1 WHERE id = $2', [who.staffId, list.id]);
     } else if (action === 'make') {
       chef();
@@ -360,7 +387,16 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
       const set = state === 'start' ? { started_at: new Date(), started_by: who.staffId }
         : state === 'done' ? { done_at: new Date(), done_by: who.staffId }
         : { done_at: null, done_by: null, started_at: null, started_by: null };
-      await setLine(db, who, stationId, date, String(b.itemId), set);
+      const itemId = String(b.itemId);
+      const before = (await view(db, who, stationId, date)).lines.find((l) => l.id === itemId);
+      await setLine(db, who, stationId, date, itemId, set);
+      // Bulk moves: a batch made adds to it; a station fill takes out of it; an undo reverses.
+      await db.query("DELETE FROM bulk_ledger WHERE list_id = $1 AND line_item_id = $2 AND kind IN ('made', 'filled')", [list.id, itemId]);
+      if (state === 'done' && before && (before.toMake ?? 0) > 0) {
+        const item = (await db.query<{ kind: string; source_item_id: string | null; holds: string | null; batch_yield: string | null }>('SELECT kind, source_item_id, holds, batch_yield FROM station_items WHERE id = $1', [itemId])).rows[0]!;
+        if (item.kind === 'batch' && item.batch_yield) await db.query("INSERT INTO bulk_ledger (restaurant_id, item_id, kind, change, list_id, line_item_id, by_staff) VALUES ($1, $2, 'made', $3, $4, $2, $5)", [who.restaurantId, itemId, before.toMake! * Number(item.batch_yield), list.id, who.staffId]);
+        if (item.source_item_id && item.holds) await db.query("INSERT INTO bulk_ledger (restaurant_id, item_id, kind, change, list_id, line_item_id, by_staff) VALUES ($1, $2, 'filled', $3, $4, $5, $6)", [who.restaurantId, item.source_item_id, -before.toMake! * Number(item.holds), list.id, itemId, who.staffId]);
+      }
     } else if (action === 'check') {
       const c = (await db.query('SELECT 1 FROM station_checklist WHERE restaurant_id = $1 AND station_id = $2 AND id = $3', [who.restaurantId, stationId, String(b.checklistId)])).rows[0];
       if (!c) throw new HttpError(404, 'Not on this station’s checklist.');
