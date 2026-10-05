@@ -20,6 +20,7 @@ Back-of-house foundation:
 | `src/core/prep.ts` | Prep batches with use-by dates from shelf life, the nightly count sheet (walk-in order, oldest first, expiring batches flagged), and one-tap discards that log waste. |
 | `src/core/forecast.ts` | Sales forecast per menu item from the same weekday in recent weeks, open days only; specials only on days they're available; a reservation adjustment. |
 | `src/core/prepList.ts` | Tomorrow's prep list: forecast demand + buffer − usable on hand, in whole batches, with sub-preps (chopped garlic for the sauce) listed first. Bigger buffer when the count was skipped. |
+| `src/core/stationPrep.ts` | Prep by station, live: line cooks see their station, sous chefs and up see every station with work left and projected finish against service. Learns task times from check-offs (start taps or gaps, batch check-offs left out), shows suggested vs actual order and per-cook pace on the same task. |
 | `src/core/prepChecks.ts` | Surplus-special suggestions for batches that won't sell through before their use-by, and the daily prep check ranked by dollar value. |
 | `src/connectors/marginedge.ts` | Reads a MarginEdge export into vendors, products, pack sizes, invoices and price history, and runs the invoice self-checks (line math, invoice totals, unknown units, missing pack sizes). |
 | `src/connectors/marginedgeRecipes.ts` | Reads MarginEdge recipe cards and recipe costing PDFs (text, or OCR when the PDF fonts are garbled) into nested recipes, with yield %, several yields and shelf life. |
