@@ -35,8 +35,10 @@ export interface MenuLink {
   catalogId: string;
   /** The POS name the link was confirmed under. */
   posName: string;
-  /** Null when confirmed as having no food cost to track (a gift card, a fee). */
+  /** Null when confirmed as having no food cost to track (a gift card, a fee), or while awaiting a recipe. */
   recipeId: string | null;
+  /** A new dish whose recipe isn't in yet: it counts as missing a recipe, and links once its card arrives. */
+  awaitingRecipe?: true;
   /** How much of the recipe one sale uses. Defaults to one yield of the recipe. */
   portion?: Quantity;
   matchedBy: 'name' | 'alias' | 'manager';
@@ -218,13 +220,20 @@ export function matchMenu(items: readonly SoldItem[], recipes: readonly Recipe[]
   // linked before its new name is looked at, whatever order the sales come in.
   for (const item of items) {
     const name = posName(item);
-    if (linkStatus(working, item.catalogId, name).status !== 'unlinked') {
+    const status = linkStatus(working, item.catalogId, name);
+    const awaiting = status.status === 'linked' && status.link.awaitingRecipe;
+    if (status.status !== 'unlinked' && !awaiting) {
       later.push(item);
       continue;
     }
     const key = nameKey(name);
     let link: MenuLink | undefined;
-    if (key in working.aliases) {
+    if (awaiting) {
+      // Waiting on its card: link as soon as a dish with the same name exists, otherwise stay quiet.
+      const exact = recipes.filter((r) => r.kind !== 'prep' && nameKey(r.name) === key && key !== '');
+      if (exact.length === 1) link = { catalogId: item.catalogId, posName: name, recipeId: exact[0]!.id, matchedBy: 'name' };
+      if (!link) continue;
+    } else if (key in working.aliases) {
       link = { catalogId: item.catalogId, posName: name, recipeId: working.aliases[key] ?? null, matchedBy: 'alias' };
     } else {
       // Exact on the full name only: two sizes of one item share an item name but not a portion.
@@ -233,7 +242,7 @@ export function matchMenu(items: readonly SoldItem[], recipes: readonly Recipe[]
     }
     if (link) {
       newLinks.push(link);
-      working.links.push(link);
+      working.links = replaceLink(working.links, link);
     } else {
       later.push(item);
     }
@@ -260,8 +269,23 @@ export function matchMenu(items: readonly SoldItem[], recipes: readonly Recipe[]
 }
 
 /** Adds links made by matching. */
+function replaceLink(links: readonly MenuLink[], link: MenuLink): MenuLink[] {
+  const key = nameKey(link.posName);
+  return [...links.filter((l) => !(l.catalogId === link.catalogId && nameKey(l.posName) === key)), link];
+}
+
+/** Adds links made by matching, replacing any under the same id and name. */
 export function applyLinks(state: LinkState, links: readonly MenuLink[]): LinkState {
-  return { links: [...state.links, ...links], aliases: state.aliases };
+  return { links: links.reduce(replaceLink, [...state.links]), aliases: state.aliases };
+}
+
+/**
+ * Records that an item (usually a renamed one) is a new dish whose recipe isn't in yet.
+ * It stops asking, shows as missing a recipe, and links once a card with its name arrives.
+ */
+export function markNewDish(state: LinkState, item: PosMenuItem): LinkState {
+  const link: MenuLink = { catalogId: item.catalogId, posName: posName(item), recipeId: null, awaitingRecipe: true, matchedBy: 'manager' };
+  return { links: replaceLink(state.links, link), aliases: state.aliases };
 }
 
 /**
@@ -272,8 +296,7 @@ export function confirmLink(state: LinkState, item: PosMenuItem, recipeId: strin
   const name = posName(item);
   const key = nameKey(name);
   const link: MenuLink = { catalogId: item.catalogId, posName: name, recipeId, matchedBy: 'manager', ...(portion ? { portion } : {}) };
-  const links = state.links.filter((l) => !(l.catalogId === item.catalogId && nameKey(l.posName) === key));
-  return { links: [...links, link], aliases: key ? { ...state.aliases, [key]: recipeId } : state.aliases };
+  return { links: replaceLink(state.links, link), aliases: key ? { ...state.aliases, [key]: recipeId } : state.aliases };
 }
 
 /** The question in the words a chef would use. */

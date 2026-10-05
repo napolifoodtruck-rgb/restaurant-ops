@@ -7,6 +7,7 @@ import {
   emptyLinkState,
   linkLookup,
   linkStatus,
+  markNewDish,
   matchMenu,
   nameKey,
   nameSimilarity,
@@ -103,6 +104,24 @@ test('a rename keeps the link by id and asks once whether it is the same dish', 
   assert.equal(linkLookup(state)('V-LAMB', 'Katahdin Pizza'), undefined);
   assert.equal(linkLookup(state)('V-LAMB', 'Merguez')?.recipeId, 'merguez');
   assert.equal(matchMenu(items, recipes, state).questions.length, 0);
+});
+
+test('a new dish on a reused id waits for its card, then links on its own', () => {
+  const items = [sold('V-LAMB', 'Merguez', 3400), sold('V-LAMB', 'Katahdin Pizza', 5300)];
+  let state = applyLinks(emptyLinkState(), matchMenu(items, recipes, emptyLinkState()).newLinks);
+  state = markNewDish(state, { catalogId: 'V-LAMB', itemName: 'Katahdin Pizza' });
+  // No more questions, and its sales count as missing a recipe.
+  assert.equal(matchMenu(items, recipes, state).questions.length, 0);
+  assert.equal(linkLookup(state)('V-LAMB', 'Katahdin Pizza'), undefined);
+
+  // The card arrives.
+  const withCard = [...recipes, dish('katahdin', 'Katahdin')];
+  const { newLinks } = matchMenu(items, withCard, state);
+  assert.deepEqual(newLinks.map((l) => [l.posName, l.recipeId]), [['Katahdin Pizza', 'katahdin']]);
+  state = applyLinks(state, newLinks);
+  assert.equal(linkLookup(state)('V-LAMB', 'Katahdin Pizza')?.recipeId, 'katahdin');
+  assert.equal(linkLookup(state)('V-LAMB', 'Merguez')?.recipeId, 'merguez');
+  assert.equal(state.links.filter((l) => l.catalogId === 'V-LAMB').length, 2);
 });
 
 test('a rename that only adds "Special:" is the same dish', () => {

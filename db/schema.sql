@@ -233,7 +233,8 @@ CREATE TABLE menu_links (
   pos_name_key        text NOT NULL,              -- the name, normalized by the app (menuLinks.nameKey)
   kind                text NOT NULL CHECK (kind IN ('item', 'modifier')),
   pos_name            text NOT NULL,              -- the name as the POS showed it
-  recipe_id           uuid,                       -- NULL: confirmed as no food cost (gift card, fee)
+  recipe_id           uuid,                       -- NULL: confirmed as no food cost (gift card, fee), or awaiting a recipe
+  awaiting_recipe     boolean NOT NULL DEFAULT false,  -- a new dish whose card isn't in yet
   portion_amount      numeric CHECK (portion_amount > 0),  -- NULL: one yield of the recipe
   portion_unit        text,
   matched_by          text NOT NULL CHECK (matched_by IN ('name', 'alias', 'manager')),
@@ -242,6 +243,7 @@ CREATE TABLE menu_links (
   PRIMARY KEY (restaurant_id, pos_catalog_id, pos_name_key),
   CHECK ((portion_amount IS NULL) = (portion_unit IS NULL)),
   CHECK (portion_amount IS NULL OR recipe_id IS NOT NULL),
+  CHECK (NOT awaiting_recipe OR recipe_id IS NULL),
   CHECK (matched_by <> 'manager' OR confirmed_by IS NOT NULL),
   FOREIGN KEY (restaurant_id, recipe_id) REFERENCES recipes (restaurant_id, id) ON DELETE CASCADE,
   FOREIGN KEY (restaurant_id, confirmed_by) REFERENCES staff (restaurant_id, id)
