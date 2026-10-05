@@ -286,6 +286,17 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   const configured = (await call('GET', '/api/orders', { cookies: ownerSession })).json.vendors;
   assert.deepEqual(configured.map((v: any) => [v.vendorId, v.weekdays, v.cutoff, v.method]), [['v1', [4], { daysBefore: 1, time: '14:00' }, 'email']]);
 
+  // The restaurant's logo: set by an admin, shown to anyone (the sign-in screens use it).
+  assert.equal((await call('GET', '/api/brand')).json.logo, null);
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  assert.equal((await call('POST', '/api/brand/logo', { body: { dataUrl: `data:image/png;base64,${png}` }, cookies: marcoOnExpo })).status, 403);
+  assert.equal((await call('POST', '/api/brand/logo', { body: { dataUrl: 'data:image/svg+xml;base64,PHN2Zy8+' }, cookies: ownerSession })).status, 400); // no SVG
+  assert.equal((await call('POST', '/api/brand/logo', { body: { dataUrl: `data:image/png;base64,${png}` }, cookies: ownerSession })).status, 200);
+  const brand = (await call('GET', '/api/brand')).json;
+  assert.deepEqual([brand.name, brand.logo.startsWith('/brand/logo')], ['Napoli', true]);
+  const logo = await fetch(base + '/brand/logo');
+  assert.deepEqual([logo.status, logo.headers.get('content-type'), Buffer.from(await logo.arrayBuffer()).toString('base64')], [200, 'image/png', png]);
+
   // The recipe book: anyone can read it, by side and section; costs are for managers.
   const bookForCook = (await call('GET', '/api/recipes', { cookies: marcoOnExpo })).json;
   assert.deepEqual(bookForCook.bar.map((s: any) => [s.section, s.cards.map((c: any) => c.name)]), [['Drinks', ['House Soda', 'Lemonade']], ['Bar preps', ['Lemon Juice', 'Simple Syrup 1:1']]]);

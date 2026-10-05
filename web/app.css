@@ -278,3 +278,75 @@ input[type=time] { height: 40px; border: 1px solid var(--line); border-radius: 1
   .rail, header .btn, .order-foot, .settings, .others, .row.wrap > .btn, button { display: none !important; }
   main { padding: 0; }
 }
+
+/* ------------------------------------------------------------------ the restaurant's look
+   Napoli: black and white, a wide-set geometric wordmark in a thin frame. Jost stands in for
+   Twentieth Century (no web license); colour is kept for meaning only: late, due, done. */
+:root {
+  --bg: #EDEDEA; --card: #FFFFFF; --ink: #000000; --muted: #5C5C58; --line: #D4D4CF; --soft: #E9E9E5;
+  --accent: #B3261E; --blue: #1F4F8F; --orange: #A04F00; --green: #2B6B43; --rail: #000000;
+  --radius: 4px;
+}
+html, body { font-family: 'Jost', 'Futura', 'Century Gothic', system-ui, sans-serif; font-size: 16px; }
+h1, h2, .big, .btn, .tag, label { font-family: inherit; }
+
+/* Page titles take the wordmark's spacing; everything else stays sentence case. */
+header h1 { font-weight: 400; text-transform: uppercase; letter-spacing: .16em; font-size: 30px; line-height: 1.15; }
+h2 { font-weight: 600; letter-spacing: .01em; }
+.kicker { letter-spacing: .02em; }
+.big { font-weight: 500; letter-spacing: .01em; }
+
+/* The bar at the left: the logo at the top, the section you're in framed like the logo. */
+.rail { width: 96px; padding: 16px 0; gap: 4px; }
+.logo { width: 80px; height: auto; background: none; border-radius: 0; margin: 0 0 18px; display: block; }
+.brand-logo.rail { width: 80px; display: block; }
+.brand-word { color: #fff; border: 1px solid #fff; text-align: center; letter-spacing: .3em; font-weight: 400; }
+.brand-word.rail { font-size: 11px; padding: 10px 0 10px .3em; }
+.rail button { width: 80px; border-radius: 0; border: 1px solid transparent; color: #BDBDB8; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; padding: 11px 0 9px; }
+.rail button.on { background: none; border-color: #fff; color: #fff; }
+.rail button:not(.on):not(:disabled):hover { color: #fff; }
+
+/* Square-cornered, thin-lined, like the frame around the name. */
+.card, .note, .panel, .todo, .btn, .chip, .seg, select, input[type=text], input[type=email], input[type=password], input[type=search], input[type=date], input[type=time], input[inputmode=numeric], input[inputmode=decimal], input.short, .names button, .pinpad button, .check, table.ingredients, pre.order-text { border-radius: var(--radius); }
+.btn { font-weight: 500; letter-spacing: .02em; }
+.btn.dark, .pinpad button.go { background: #000; border-color: #000; }
+.seg button.on { background: #000; }
+.chip.on { border-color: #000; }
+.tag { border-radius: 2px; font-weight: 600; letter-spacing: .02em; }
+.note { background: #F7F7F5; border-color: var(--line); border-left: 3px solid #000; }
+input:focus-visible, button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid #000; outline-offset: 2px; }
+.rail button:focus-visible { outline-color: #fff; }
+
+/* Today's labels: colour carries the urgency; no shouting. */
+.todo-label { text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 600; }
+.todo { border-color: var(--line); }
+
+/* Sign-in: the mark on black, the form beneath it. */
+.center { background: #000; }
+.stage { width: 100%; max-width: 900px; display: flex; flex-direction: column; align-items: center; gap: 28px; }
+.stage > .panel { max-width: 420px; }
+.brand-logo.stage { width: min(360px, 80vw); display: block; }
+.brand-word.stage { font-size: 34px; padding: 22px 28px 22px calc(28px + .3em); }
+.names-wrap { color: #fff; }
+.names-wrap .sub, .names-wrap .kicker { color: #BDBDB8; }
+.names-wrap .link { color: #fff; text-decoration: underline; text-underline-offset: 3px; }
+.names button { border-color: #fff; background: #000; color: #fff; font-weight: 500; letter-spacing: .04em; }
+.names button:hover { background: #fff; color: #000; }
+.stage > .panel .link { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+.logo-preview { background: #000; padding: 18px; display: flex; justify-content: center; }
+.logo-preview .brand-logo { width: 240px; }
+
+@media (max-width: 700px) {
+  .rail { width: 100%; padding: 8px 12px; }
+  .logo { width: 72px; margin: 0 8px 0 0; }
+  .brand-logo.rail { width: 72px; }
+  .rail button { width: 72px; }
+  header h1 { font-size: 24px; letter-spacing: .12em; }
+}
+.trow input[type=text], .irow input, .editor textarea, .book-item { border-radius: var(--radius); }
+.rail { width: 108px; }
+.logo, .brand-logo.rail { width: 96px; }
+.rail button { width: 92px; letter-spacing: .08em; font-size: 10px; }
+.btn.blue { background: #000; border-color: #000; }
+.panel h1 { font-weight: 400; text-transform: uppercase; letter-spacing: .14em; font-size: 22px; }
+@media (max-width: 700px) { .rail { width: 100%; } .logo, .brand-logo.rail { width: 72px; } .rail button { width: 76px; } }

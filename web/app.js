@@ -68,7 +68,26 @@ function when(iso) {
 
 // ------------------------------------------------------------------ start
 
+/** The restaurant's own look: its name and logo (set under Settings). */
+let BRAND = { name: null, logo: null };
+async function loadBrand() {
+  const r = await api('GET', '/api/brand');
+  if (r.ok) BRAND = r.data;
+  if (BRAND.name) document.title = `${BRAND.name} · Kitchen`;
+}
+/** The logo, white on black, or the name set in a frame the same way when there's no logo yet. */
+function brandMark(size = 'rail') {
+  if (BRAND.logo) return h('img', { class: `brand-logo ${size}`, src: BRAND.logo, alt: BRAND.name ?? 'Logo' });
+  return h('div', { class: `brand-word ${size}`, text: (BRAND.name ?? 'Kitchen').toUpperCase() });
+}
+
+/** Sign-in screens: the restaurant's mark on black, the form beneath. */
+function stage(...children) {
+  return h('div', { class: 'center' }, h('div', { class: 'stage' }, brandMark('stage'), ...children));
+}
+
 async function start() {
+  if (!BRAND.name) await loadBrand();
   const invite = location.hash.match(/^#invite=([A-Za-z0-9_-]+)$/);
   if (invite) return inviteScreen(invite[1]);
   const me = await api('GET', '/api/me');
@@ -110,7 +129,7 @@ function setupScreen() {
     err,
     h('button', { class: 'btn dark', type: 'submit', text: 'Create and sign in' }),
   );
-  show(h('div', { class: 'center' }, form));
+  show(stage(form));
 }
 
 // ------------------------------------------------------------------ manager sign-in
@@ -131,7 +150,7 @@ function emailSignIn(backToPins) {
     h('button', { class: 'btn dark', type: 'submit', text: 'Sign in' }),
     backToPins ? h('button', { class: 'link', type: 'button', onclick: start, text: '← Back to names' }) : null,
   );
-  show(h('div', { class: 'center' }, form));
+  show(stage(form));
 }
 
 // ------------------------------------------------------------------ invite: set a password
@@ -140,7 +159,7 @@ async function inviteScreen(token) {
   const r = await api('GET', `/api/invites/${token}`);
   const leave = () => { history.replaceState(null, '', '/'); start(); };
   if (!r.ok) {
-    return show(h('div', { class: 'center' }, h('div', { class: 'panel' },
+    return show(stage(h('div', { class: 'panel' },
       h('h1', { text: 'Invite' }), h('div', { class: 'error', text: r.data.error ?? 'This link isn’t valid.' }),
       h('button', { class: 'btn', onclick: leave, text: 'Go to sign in' }))));
   }
@@ -161,14 +180,14 @@ async function inviteScreen(token) {
     err,
     h('button', { class: 'btn dark', type: 'submit', text: 'Set password and sign in' }),
   );
-  show(h('div', { class: 'center' }, form));
+  show(stage(form));
 }
 
 // ------------------------------------------------------------------ kitchen iPad: name, then PIN
 
 function pinNames({ device, staff }) {
   const withPin = staff.filter((s) => s.hasPin);
-  show(h('div', { class: 'center' }, h('div', { class: 'names-wrap' },
+  show(stage(h('div', { class: 'names-wrap' },
     h('div', { class: 'kicker', text: device }),
     h('h1', { text: 'Who’s working?' }),
     h('div', { class: 'sub', text: withPin.length ? 'Tap your name.' : 'No one has a PIN yet. A manager can set PINs under Settings.' }),
@@ -192,7 +211,7 @@ function pinPad(person, device) {
   };
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => h('button', { onclick: () => press(d), text: d }));
   draw();
-  show(h('div', { class: 'center' }, h('div', { class: 'panel' },
+  show(stage(h('div', { class: 'panel' },
     h('div', {}, h('div', { class: 'kicker', text: device }), h('h1', { text: person.name }), h('div', { class: 'sub', text: 'Enter your PIN.' })),
     dots, err,
     h('div', { class: 'pinpad' }, keys,
@@ -213,7 +232,7 @@ function shell(me, active, content) {
   ];
   return h('div', { class: 'shell' },
     h('nav', { class: 'rail', 'aria-label': 'Main' },
-      h('div', { class: 'logo', text: (me.restaurantName ?? 'N')[0] }),
+      h('div', { class: 'logo' }, brandMark('rail')),
       nav.map(([key, label, go]) => h('button', { class: active === key ? 'on' : '', disabled: !go, title: go ? label : 'Coming next', onclick: go ? () => go(me) : undefined }, icon(key), label)),
       h('div', { class: 'spacer' }),
       h('button', { class: active === 'settings' ? 'on' : '', onclick: () => home(me) }, icon('settings'), 'Settings'),
@@ -1760,6 +1779,7 @@ async function home(me) {
     signOut);
   const cards = [ownPinCard(me)];
   if (manager) cards.unshift(await syncCard('square'), await syncCard('marginedge'), await importCard(), await prepImportCard(), await teamCard(me), await areasCard(), await deviceCard());
+  if (canAdminister(me)) cards.push(brandCard(me));
   show(shell(me, 'settings', [header, h('div', { class: 'grid' }, cards)]));
 }
 
@@ -1974,6 +1994,38 @@ function ownPinCard(me) {
       pinForm(slot, { id: me.staffId, name: me.name }, () => { draw(); box.append(h('div', { class: 'tag ok', text: 'Saved' })); }, draw);
     } })),
   );
+  draw();
+  return box;
+}
+
+// The restaurant's logo: on the bar at the left and on the sign-in screens.
+function brandCard(me) {
+  const box = h('section', { class: 'card', 'aria-label': 'Logo' });
+  const err = h('div', { class: 'error' });
+  const input = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', 'aria-label': 'Logo file' });
+  const draw = () => fill(box,
+    h('h2', { text: 'Logo' }),
+    h('div', { class: 'small muted', text: 'Shown on the bar at the left and on the sign-in screens. A light logo on a dark background suits it best.' }),
+    h('div', { class: 'logo-preview' }, brandMark('stage')),
+    h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, input),
+      h('button', { class: 'btn dark', text: 'Upload', onclick: async () => {
+        const file = input.files?.[0];
+        if (!file) return (err.textContent = 'Choose the file first.');
+        // Scaled down to 800 px wide: sharp on any screen, small to load.
+        const img = new Image();
+        img.src = await new Promise((done) => { const fr = new FileReader(); fr.onload = () => done(fr.result); fr.readAsDataURL(file); });
+        try { await img.decode(); } catch { return (err.textContent = 'That file isn’t an image.'); }
+        const scale = Math.min(1, 800 / img.naturalWidth);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.naturalWidth * scale); canvas.height = Math.round(img.naturalHeight * scale);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        const res = await api('POST', '/api/brand/logo', { dataUrl: canvas.toDataURL('image/png') });
+        if (!res.ok) return (err.textContent = res.data.error ?? 'Not saved.');
+        await loadBrand();
+        home(me);
+      } }),
+      BRAND.logo ? h('button', { class: 'link', text: 'Remove', onclick: async () => { await api('POST', '/api/brand/logo', { dataUrl: null }); await loadBrand(); home(me); } }) : null),
+    err);
   draw();
   return box;
 }

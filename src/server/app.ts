@@ -128,6 +128,33 @@ export function createApp(config: AppConfig) {
       return;
     }
 
+    // The restaurant's own look. Public: the sign-in screens show it. (One restaurant per app for now.)
+    if (method === 'GET' && path === '/api/brand') {
+      const r = (await db.query<{ name: string; has_logo: boolean; logo_updated_at: Date | null }>('SELECT name, logo IS NOT NULL AS has_logo, logo_updated_at FROM restaurants LIMIT 1')).rows[0];
+      return send(res, 200, r ? { name: r.name, logo: r.has_logo ? `/brand/logo?v=${r.logo_updated_at ? new Date(r.logo_updated_at).getTime() : 0}` : null } : { name: null, logo: null });
+    }
+    if (method === 'GET' && path === '/brand/logo') {
+      const r = (await db.query<{ logo: string | null; logo_type: string | null }>('SELECT encode(logo, \'base64\') AS logo, logo_type FROM restaurants LIMIT 1')).rows[0];
+      if (!r?.logo || !r.logo_type) throw new HttpError(404, 'No logo.');
+      res.writeHead(200, { 'content-type': r.logo_type, 'cache-control': 'public, max-age=86400', 'x-content-type-options': 'nosniff' });
+      res.end(Buffer.from(r.logo, 'base64'));
+      return;
+    }
+    if (method === 'POST' && path === '/api/brand/logo') {
+      const who = await signedIn(req);
+      if (!canAdminister(who)) throw new HttpError(403, 'Only the account owner or an administrator changes the logo.');
+      const b = await body(req, 3 * 1024 * 1024);
+      if (b.dataUrl === null) {
+        await db.query('UPDATE restaurants SET logo = NULL, logo_type = NULL, logo_updated_at = now() WHERE id = $1', [who.restaurantId]);
+        return send(res, 200, { ok: true });
+      }
+      const m = typeof b.dataUrl === 'string' ? b.dataUrl.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/) : null;
+      if (!m) throw new HttpError(400, 'Use a PNG, JPEG or WebP image.');
+      if (m[2]!.length > 2_000_000) throw new HttpError(400, 'Use an image under 1.5 MB.');
+      await db.query('UPDATE restaurants SET logo = decode($1, \'base64\'), logo_type = $2, logo_updated_at = now() WHERE id = $3', [m[2], m[1], who.restaurantId]);
+      return send(res, 200, { ok: true });
+    }
+
     if (method === 'GET' && path === '/api/setup') {
       const { rows } = await db.query<{ n: string }>('SELECT count(*) AS n FROM restaurants');
       return send(res, 200, { open: Boolean(config.setupToken) && Number(rows[0]?.n) === 0 });
