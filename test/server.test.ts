@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
+import { readdir } from 'node:fs/promises';
 import { migrate } from '../src/server/db.ts';
 import { createApp } from '../src/server/app.ts';
 import { startTestDb } from './support/psqlDb.ts';
@@ -14,7 +15,7 @@ const db = startTestDb();
 test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for tests (or running as root)' }, async (t) => {
   t.after(() => db!.close());
   const migrations = fileURLToPath(new URL('../db/migrations', import.meta.url));
-  assert.deepEqual(await migrate(db!, migrations), ['0001_schema.sql', '0002_logins.sql', '0003_pos_data.sql', '0004_book.sql']);
+  assert.deepEqual(await migrate(db!, migrations), (await readdir(migrations)).filter((f) => f.endsWith('.sql')).sort());
   assert.deepEqual(await migrate(db!, migrations), []); // each applied once
 
   const server = createServer(createApp({ db: db!, setupToken: 'setup-secret', secureCookies: false }));
@@ -105,6 +106,30 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.equal((await call('GET', '/api/margins?from=2026-09-30&to=2026-09-01', { cookies: ownerSession })).status, 400);
   assert.equal((await call('GET', '/api/margins?from=Sept', { cookies: ownerSession })).status, 400);
   assert.equal((await call('POST', '/api/sync/square', { cookies: ownerSession })).status, 409); // not connected in this test
+
+  // Prep lists: import, count, a chef approves, then the station works it.
+  const cookAgain = [...(await call('POST', '/api/login/pin', { body: { staffId: cookId, pin: '8024' }, cookies: device })).cookies, ...device];
+  const prepFile = { format: 'prep-lists', stations: [{ name: 'Expo', items: [{ name: 'House dressing', unit: 'bottle', kind: 'count', par: 3 }, { name: 'Ready the ham', kind: 'task' }, { name: 'To-go salads', unit: 'each', kind: 'count', par: 8, weekdays: [5] }], checklist: [{ name: 'Clean cooler', frequency: 'daily' }] }] };
+  assert.equal((await call('POST', '/api/prep/import', { body: prepFile, cookies: cookAgain })).status, 403);
+  assert.deepEqual((await call('POST', '/api/prep/import', { body: prepFile, cookies: ownerSession })).json, { stations: 1, items: 3 });
+  const prep = (await call('GET', '/api/prep', { cookies: ownerSession })).json;
+  const expo = prep.stations[0].id;
+  const day = '2026-10-06'; // a Tuesday: the Friday-only to-go salads aren't on it
+  const draft = (await call('GET', `/api/prep/${expo}/${day}`, { cookies: cookAgain })).json;
+  assert.deepEqual(draft.lines.map((l: any) => l.name), ['House dressing', 'Ready the ham']);
+  const dressing = draft.lines[0].id;
+  const counted = (await call('POST', `/api/prep/${expo}/${day}/count`, { body: { itemId: dressing, counted: 1 }, cookies: cookAgain })).json;
+  assert.equal(counted.lines[0].toMake, 2); // no sales history here: Friday's par of 3, minus 1
+  assert.equal((await call('POST', `/api/prep/${expo}/${day}/done`, { body: { itemId: dressing, state: 'done' }, cookies: cookAgain })).status, 409); // not approved yet
+  assert.equal((await call('POST', `/api/prep/${expo}/${day}/approve`, { body: {}, cookies: cookAgain })).status, 403); // cooks don't approve
+  await call('POST', `/api/prep/${expo}/${day}/make`, { body: { itemId: dressing, toMake: 2.5 }, cookies: ownerSession });
+  const approvedList = (await call('POST', `/api/prep/${expo}/${day}/approve`, { body: {}, cookies: ownerSession })).json;
+  assert.deepEqual([approvedList.status, approvedList.lines[0].toMake, approvedList.lines[0].suggested], ['approved', 2.5, 2]);
+  assert.equal((await call('POST', `/api/prep/${expo}/${day}/count`, { body: { itemId: dressing, counted: 0 }, cookies: cookAgain })).status, 409); // counts lock once approved
+  const worked = (await call('POST', `/api/prep/${expo}/${day}/done`, { body: { itemId: dressing, state: 'done' }, cookies: cookAgain })).json;
+  assert.equal(worked.lines[0].doneBy, 'Marco');
+  const cleaned = (await call('POST', `/api/prep/${expo}/${day}/check`, { body: { checklistId: worked.checklist[0].id, done: true }, cookies: cookAgain })).json;
+  assert.equal(cleaned.checklist[0].doneBy, 'Marco');
 
   // Nothing secret is stored in the clear.
   const stored = await db!.query<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = $1', [cookId]);

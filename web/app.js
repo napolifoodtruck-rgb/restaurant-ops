@@ -160,7 +160,7 @@ function pinPad(person, device) {
 function shell(me, active, content) {
   const manager = atLeast(me.roleLevel, 'manager');
   const nav = [
-    ['today', 'Today', null], ['prep', 'Prep', null], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['orders', 'Orders', null],
+    ['today', 'Today', null], ['prep', 'Prep', prepHome], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['orders', 'Orders', null],
   ];
   return h('div', { class: 'shell' },
     h('nav', { class: 'rail', 'aria-label': 'Main' },
@@ -615,6 +615,230 @@ function chartsView(state, cat, m, again) {
   return [plates, leftBars, foodCost];
 }
 
+// ------------------------------------------------------------------ prep lists
+
+const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const dayName = (d) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+const qty = (n) => (n === undefined || n === null ? '–' : Number.isInteger(n) ? String(n) : String(+n.toFixed(2)));
+const plural = (n, unit) => (!unit ? '' : n === 1 || unit.includes('/') ? unit : unit.endsWith('h') ? `${unit}es` : `${unit}s`);
+const amountText = (n, unit) => `${qty(n)}${unit ? ' ' + plural(n, unit) : ''}`;
+const timeOf = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+const remember = (k, v) => { try { v === undefined ? localStorage.getItem(k) : localStorage.setItem(k, v); } catch {} };
+const recall = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+
+async function prepHome(me) {
+  loadingScreen(me, 'prep', 'Prep');
+  const r = await api('GET', '/api/prep');
+  if (!r.ok) return show(shell(me, 'prep', [h('h1', { text: 'Prep' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const p = r.data;
+  if (!p.stations.length) {
+    return show(shell(me, 'prep', [h('header', {}, h('h1', { text: 'Prep' }), h('div', { class: 'sub', text: 'No station lists yet. A manager can import them under Settings → Prep lists.' }))]));
+  }
+  const status = (l, kind) => {
+    if (!l) return h('span', { class: 'tag', text: kind === 'tomorrow' ? 'Not counted' : 'No list' });
+    if (l.status === 'approved') return h('span', { class: 'tag ok', text: kind === 'today' ? `Approved · ${l.done}/${l.lines} done` : 'Approved' });
+    return Number(l.counted) ? h('span', { class: 'tag warn', text: `Counted · waiting for chef` }) : h('span', { class: 'tag', text: 'Not counted' });
+  };
+  const cards = p.stations.map((s) => h('section', { class: 'card' },
+    h('div', { class: 'row' }, h('h2', { class: 'grow', text: s.name }), p.canEdit ? h('button', { class: 'link', text: 'Edit list', onclick: () => prepEdit(me, s.id) }) : null),
+    h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'small muted', text: `Today · ${dayName(p.today)}` }), status(s.today, 'today')),
+      h('button', { class: 'btn dark', text: 'Today’s prep', onclick: () => { remember('station', s.id); prepWork(me, s.id, p.today); } })),
+    h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'small muted', text: `Tonight’s count for ${dayName(p.tomorrow)}` }), status(s.tomorrow, 'tomorrow')),
+      h('button', { class: 'btn', text: 'Count', onclick: () => prepCount(me, s.id, p.tomorrow) }),
+      p.canApprove ? h('button', { class: 'btn', text: 'Review', onclick: () => prepReview(me, s.id, p.tomorrow) }) : null)));
+  show(shell(me, 'prep', [
+    h('header', {}, h('div', { class: 'kicker', text: dayName(p.today) }), h('h1', { text: 'Prep' }),
+      h('div', { class: 'sub', text: 'At night: count each station. A chef reviews and approves. Next day: the station preps from the approved list, cleaning last.' })),
+    h('div', { class: 'grid' }, cards)]));
+}
+
+function prepHeader(me, v, title, sub, extra) {
+  return h('header', { class: 'row' },
+    h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${v.station.name} · ${dayName(v.date)}` }), h('h1', { text: title }), sub ? h('div', { class: 'sub', text: sub }) : null),
+    extra ?? null, h('button', { class: 'btn', text: '← Stations', onclick: () => prepHome(me) }));
+}
+
+function stepper(value, step, onChange, label) {
+  const input = h('input', { inputmode: 'decimal', class: 'amount', value: value === undefined || value === null ? '' : qty(value), 'aria-label': label, placeholder: '–' });
+  const set = (v) => { input.value = v === null ? '' : qty(v); onChange(v); };
+  input.addEventListener('change', () => set(input.value.trim() === '' ? null : Math.max(0, Number(input.value) || 0)));
+  return h('div', { class: 'stepper' },
+    h('button', { class: 'btn small-btn', 'aria-label': `Less ${label}`, text: '−', onclick: () => set(Math.max(0, (Number(input.value) || 0) - step)) }),
+    input,
+    h('button', { class: 'btn small-btn', 'aria-label': `More ${label}`, text: '+', onclick: () => set((Number(input.value) || 0) + step) }));
+}
+
+// Tonight: count what's left, in the station's own units.
+async function prepCount(me, stationId, date) {
+  const r = await api('GET', `/api/prep/${stationId}/${date}`);
+  if (!r.ok) return show(shell(me, 'prep', [h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const v = r.data;
+  const counted = v.lines.filter((l) => l.kind === 'count' && l.counted !== undefined).length;
+  const toCount = v.lines.filter((l) => l.kind === 'count').length;
+  const rows = v.lines.filter((l) => l.kind === 'count').map((l) => {
+    const need = h('span', { class: 'small muted nowrap', text: l.toMake !== undefined ? `make ${amountText(l.toMake, l.unit)}` : '' });
+    return h('div', { class: 'countrow' },
+      h('div', { class: 'grow' }, h('div', { class: 'name', text: l.name }), h('div', { class: 'small muted', text: `${l.unit ?? ''}${l.dayPar !== undefined ? ` · par ${qty(l.dayPar)}` : ''}${l.note ? ` · ${l.note}` : ''}` })),
+      need,
+      stepper(l.counted, l.dayPar !== undefined && l.dayPar < 4 ? 0.5 : 1, async (val) => {
+        const res = await api('POST', `/api/prep/${stationId}/${date}/count`, { itemId: l.id, counted: val });
+        if (res.ok) { const nl = res.data.lines.find((x) => x.id === l.id); need.textContent = nl?.toMake !== undefined ? `make ${amountText(nl.toMake, nl.unit)}` : ''; }
+        else need.textContent = res.data.error ?? 'Not saved';
+      }, `${l.name} on hand`));
+  });
+  show(shell(me, 'prep', [
+    prepHeader(me, v, 'Count', v.status === 'approved' ? 'Already approved for tomorrow. A chef can reopen it to change counts.' : `How much is left of each, in the station’s units. ${counted} of ${toCount} counted.`),
+    h('section', { class: 'card' }, h('div', { class: 'list' }, rows)),
+    h('div', { class: 'row' }, h('button', { class: 'btn dark', text: 'Done counting', onclick: () => prepHome(me) })),
+  ]));
+}
+
+// The chef's review: suggestions with reasons, any number can change, then approve.
+async function prepReview(me, stationId, date) {
+  const r = await api('GET', `/api/prep/${stationId}/${date}`);
+  if (!r.ok) return show(shell(me, 'prep', [h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const v = r.data;
+  const again = () => prepReview(me, stationId, date);
+  const make = (l, val) => api('POST', `/api/prep/${stationId}/${date}/make`, { itemId: l.id, toMake: val });
+  const uncounted = v.lines.filter((l) => l.kind === 'count' && l.counted === undefined);
+  const rows = v.lines.map((l) => {
+    if (l.kind === 'task') return h('div', { class: 'reviewrow' }, h('div', { class: 'grow' }, h('div', { class: 'name', text: l.name }), h('div', { class: 'small muted', text: 'Daily task' })));
+    const info = l.kind === 'batch'
+      ? 'Bulk: made as needed. Leave empty to skip tomorrow.'
+      : l.counted === undefined ? `Par ${qty(l.dayPar)} · not counted` : l.reason ?? '';
+    const changed = l.chosen !== undefined && l.suggested !== undefined && l.chosen !== l.suggested;
+    return h('div', { class: 'reviewrow' },
+      h('div', { class: 'grow' }, h('div', { class: 'name', text: l.name }), h('div', { class: 'small muted', text: `${l.unit ?? ''}${l.note ? ` · ${l.note}` : ''}` }), h('div', { class: `small${changed ? ' changed' : ' muted'}`, text: changed ? `${info} You changed it from ${qty(l.suggested)}.` : info })),
+      h('div', { class: 'small muted nowrap', text: 'Make' }),
+      stepper(l.toMake, l.dayPar !== undefined && l.dayPar < 4 ? 0.5 : 1, async (val) => { await make(l, val); }, `${l.name} to make`),
+      changed ? h('button', { class: 'link', text: 'Use suggestion', onclick: async () => { await make(l, null); again(); } }) : null);
+  });
+  const approved = v.status === 'approved';
+  const approve = h('button', { class: `btn ${approved ? '' : 'dark'}`, text: approved ? 'Reopen' : 'Approve', onclick: async () => {
+      const res = await api('POST', `/api/prep/${stationId}/${date}/approve`, { approved: !approved });
+      if (res.ok) again();
+    } });
+  const share = v.share !== undefined && v.share < 1 ? `${WEEKDAY[new Date(`${date}T12:00:00`).getDay()]} usually runs at ${Math.round(v.share * 100)}% of a ${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][v.busiest]}, so pars are scaled to that. ` : '';
+  show(shell(me, 'prep', [
+    prepHeader(me, v, approved ? 'Approved' : 'Review and approve',
+      approved ? `Approved by ${v.approvedBy ?? 'a chef'} ${v.approvedAt ? 'at ' + timeOf(v.approvedAt) : ''}. The station sees this list tomorrow.` : `${share}Counted by ${v.countedBy ?? 'nobody yet'}. Change any number, then approve.`, approve),
+    uncounted.length && !approved ? h('div', { class: 'note', text: `${uncounted.length} item${uncounted.length === 1 ? '' : 's'} not counted: ${uncounted.map((l) => l.name).join(', ')}. With no count, nothing is suggested for them.` }) : null,
+    h('section', { class: 'card' }, h('div', { class: 'list' }, rows)),
+  ]));
+}
+
+// The day's work: the approved list, then cleaning.
+async function prepWork(me, stationId, date) {
+  const r = await api('GET', `/api/prep/${stationId}/${date}`);
+  if (!r.ok) return show(shell(me, 'prep', [h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const v = r.data;
+  const again = () => prepWork(me, stationId, date);
+  if (v.status !== 'approved') {
+    return show(shell(me, 'prep', [prepHeader(me, v, 'Today’s prep', 'This list hasn’t been approved yet. A chef approves it after last night’s count.'),
+      v.canApprove ? h('button', { class: 'btn dark', text: 'Review it now', onclick: () => prepReview(me, stationId, date) }) : null]));
+  }
+  const work = v.lines.filter((l) => l.kind === 'task' || (l.toMake ?? 0) > 0);
+  const done = work.filter((l) => l.doneAt).length;
+  const act = async (l, state) => { const res = await api('POST', `/api/prep/${stationId}/${date}/done`, { itemId: l.id, state }); if (res.ok) again(); };
+  const rows = work.map((l) => h('div', { class: `workrow${l.doneAt ? ' done' : ''}` },
+    h('button', { class: `check${l.doneAt ? ' on' : l.startedAt ? ' started' : ''}`, 'aria-label': l.doneAt ? `Undo ${l.name}` : `Mark ${l.name} done`, onclick: () => act(l, l.doneAt ? 'undo' : 'done') }, l.doneAt ? '✓' : ''),
+    h('div', { class: 'grow' },
+      h('div', { class: 'name', text: l.name }),
+      h('div', { class: 'small', text: l.kind === 'task' ? 'Daily' : `Make ${amountText(l.toMake, l.unit)}${l.note ? ` · ${l.note}` : ''}` }),
+      h('div', { class: 'small muted', text: l.doneAt ? `Done by ${l.doneBy ?? ''} at ${timeOf(l.doneAt)}` : l.startedAt ? `Started by ${l.startedBy ?? ''} at ${timeOf(l.startedAt)}` : '' })),
+    !l.doneAt && !l.startedAt && l.kind !== 'task' ? h('button', { class: 'btn', text: 'Start', onclick: () => act(l, 'start') }) : null));
+  const cleaning = h('section', { class: 'card' }, h('h2', { text: 'Cleaning' }),
+    h('div', { class: 'list' }, v.checklist.map((c) => h('div', {},
+      h('button', { class: `check small${c.doneAt ? ' on' : ''}`, 'aria-label': c.doneAt ? `Undo ${c.name}` : `Mark ${c.name} done`, onclick: async () => { const res = await api('POST', `/api/prep/${stationId}/${date}/check`, { checklistId: c.id, done: !c.doneAt }); if (res.ok) again(); } }, c.doneAt ? '✓' : ''),
+      h('span', { class: 'grow', text: c.name }), c.frequency === 'weekly' ? h('span', { class: 'tag', text: 'weekly' }) : null,
+      c.doneAt ? h('span', { class: 'small muted nowrap', text: `${c.doneBy ?? ''} ${timeOf(c.doneAt)}` }) : null))));
+  show(shell(me, 'prep', [
+    prepHeader(me, v, `${v.station.name} prep`, `${done} of ${work.length} done · approved by ${v.approvedBy ?? 'the chef'}`),
+    h('section', { class: 'card' }, work.length ? h('div', { class: 'list' }, rows) : h('div', { class: 'muted', text: 'Nothing to make today.' })),
+    cleaning,
+  ]));
+}
+
+// Editing a station's list: items (name, unit, par, kind, days) and cleaning tasks.
+async function prepEdit(me, stationId) {
+  const r = await api('GET', `/api/prep/${stationId}/setup`);
+  if (!r.ok) return show(shell(me, 'prep', [h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const s = r.data;
+  const again = () => prepEdit(me, stationId);
+  const save = async (path, body) => { const res = await api('POST', path, body); if (!res.ok) alertLine.textContent = res.data.error ?? 'Not saved'; return res.ok; };
+  const alertLine = h('div', { class: 'error', role: 'alert' });
+  const move = async (list, i, dir, key) => {
+    const ids = list.map((x) => x.id);
+    const j = i + dir;
+    if (j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    await save(`/api/prep/${stationId}/order`, { [key]: ids });
+    again();
+  };
+  const itemRow = (it, i) => {
+    const name = h('input', { type: 'text', value: it.name, 'aria-label': 'Item name' });
+    const unit = h('input', { type: 'text', value: it.unit ?? '', placeholder: 'unit', class: 'unit-in', 'aria-label': 'Unit' });
+    const par = h('input', { inputmode: 'decimal', class: 'amount', value: it.par ?? '', placeholder: 'par', 'aria-label': 'Par' });
+    const kind = h('select', { 'aria-label': 'Kind' }, [['count', 'Count'], ['task', 'Daily task'], ['batch', 'Bulk, as needed']].map(([k, t]) => h('option', { value: k, text: t, selected: it.kind === k ? true : undefined })));
+    const days = it.weekdays ?? [];
+    const dayChips = h('div', { class: 'row tight wrap' }, WEEKDAY.map((d, n) => h('button', { class: `lchip${days.includes(n) ? ' on' : ''}`, 'aria-pressed': days.includes(n) ? 'true' : 'false', text: d, onclick: async () => {
+        const next = days.includes(n) ? days.filter((x) => x !== n) : [...days, n].sort();
+        if (await save(`/api/prep/items/${it.id}`, { weekdays: next.length ? next : null })) again();
+      } })));
+    const commit = () => save(`/api/prep/items/${it.id}`, { name: name.value, unit: unit.value, par: par.value.trim() === '' ? null : Number(par.value), kind: kind.value });
+    for (const el of [name, unit, par, kind]) el.addEventListener('change', commit);
+    return h('div', { class: 'editrow' },
+      h('div', { class: 'row tight' }, h('button', { class: 'btn small-btn', 'aria-label': 'Move up', text: '↑', onclick: () => move(s.items, i, -1, 'items') }), h('button', { class: 'btn small-btn', 'aria-label': 'Move down', text: '↓', onclick: () => move(s.items, i, 1, 'items') })),
+      h('div', { class: 'grow editfields' }, h('div', { class: 'row tight wrap' }, name, unit, par, kind),
+        h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: days.length ? 'Only on:' : 'Every day · or only on:' }), dayChips)),
+      h('button', { class: 'link', text: 'Remove', onclick: async () => { if (await save(`/api/prep/items/${it.id}`, { active: false })) again(); } }));
+  };
+  const checkRow = (c, i, list) => {
+    const name = h('input', { type: 'text', value: c.name, 'aria-label': 'Task' });
+    const freq = h('select', { 'aria-label': 'How often' }, [['daily', 'Daily'], ['weekly', 'Weekly']].map(([k, t]) => h('option', { value: k, text: t, selected: c.frequency === k ? true : undefined })));
+    for (const el of [name, freq]) el.addEventListener('change', async () => { if (await save(`/api/prep/checklist/${c.id}`, { name: name.value, frequency: freq.value })) again(); });
+    return h('div', { class: 'editrow' },
+      h('div', { class: 'row tight' }, h('button', { class: 'btn small-btn', 'aria-label': 'Move up', text: '↑', onclick: () => move(list, i, -1, 'checklist') }), h('button', { class: 'btn small-btn', 'aria-label': 'Move down', text: '↓', onclick: () => move(list, i, 1, 'checklist') })),
+      h('div', { class: 'grow row tight wrap' }, name, freq),
+      h('button', { class: 'link', text: 'Remove', onclick: async () => { if (await save(`/api/prep/checklist/${c.id}`, { active: false })) again(); } }));
+  };
+  const newItem = h('input', { type: 'text', placeholder: 'New item', 'aria-label': 'New item' });
+  const newTask = h('input', { type: 'text', placeholder: 'New cleaning task', 'aria-label': 'New cleaning task' });
+  show(shell(me, 'prep', [
+    h('header', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'kicker', text: 'Edit list' }), h('h1', { text: s.station.name }),
+      h('div', { class: 'sub', text: 'Changes save as you go. Par is the busiest day’s par; other days are scaled to their sales.' })),
+      h('button', { class: 'btn', text: '← Stations', onclick: () => prepHome(me) })),
+    alertLine,
+    h('section', { class: 'card' }, h('h2', { text: 'Prep items' }), h('div', { class: 'list' }, s.items.map(itemRow)),
+      h('div', { class: 'row' }, newItem, h('button', { class: 'btn dark', text: 'Add', onclick: async () => { if (newItem.value.trim() && await save(`/api/prep/${stationId}/items`, { name: newItem.value, kind: 'count' })) again(); } }))),
+    h('section', { class: 'card' }, h('h2', { text: 'Cleaning tasks' }),
+      h('div', { class: 'list' }, s.checklist.map((c, i) => checkRow(c, i, s.checklist))),
+      h('div', { class: 'row' }, newTask, h('button', { class: 'btn dark', text: 'Add', onclick: async () => { if (newTask.value.trim() && await save(`/api/prep/${stationId}/checklist`, { name: newTask.value, frequency: 'daily' })) again(); } }))),
+  ]));
+}
+
+// Settings card: load station lists from a prep-lists file.
+async function prepImportCard() {
+  const box = h('section', { class: 'card', 'aria-label': 'Prep lists' });
+  const err = h('div', { class: 'error' });
+  const input = h('input', { type: 'file', accept: '.json,application/json', 'aria-label': 'Prep-lists file' });
+  const button = h('button', { class: 'btn dark', text: 'Import', onclick: async () => {
+      const file = input.files?.[0];
+      if (!file) return (err.textContent = 'Choose the file first.');
+      let data;
+      try { data = JSON.parse(await file.text()); } catch { return (err.textContent = 'That file isn’t readable JSON.'); }
+      button.disabled = true;
+      const res = await api('POST', '/api/prep/import', data);
+      button.disabled = false;
+      if (!res.ok) return (err.textContent = res.data.error ?? 'Import failed.');
+      box.append(h('div', { class: 'tag ok', text: `Loaded ${res.data.stations} stations, ${res.data.items} items` }));
+    } });
+  box.append(h('h2', { text: 'Prep lists' }),
+    h('div', { class: 'small muted', text: 'Load station prep lists from a prep-lists file. Importing a station again replaces its list (past days stay as they were).' }),
+    h('div', { class: 'row' }, h('div', { class: 'grow' }, input), button), err);
+  return box;
+}
+
 // ------------------------------------------------------------------ menu
 
 async function menuScreen(me) {
@@ -690,7 +914,7 @@ async function home(me) {
       h('div', { class: 'sub', text: manager ? 'Connections, your team and kitchen iPads. Menu and Performance are in the bar on the left.' : 'Your prep list will show up here once your station is set up.' })),
     signOut);
   const cards = [ownPinCard(me)];
-  if (manager) cards.unshift(await syncCard('square'), await syncCard('marginedge'), await importCard(), await teamCard(me), deviceCard());
+  if (manager) cards.unshift(await syncCard('square'), await syncCard('marginedge'), await importCard(), await prepImportCard(), await teamCard(me), deviceCard());
   show(shell(me, 'settings', [header, h('div', { class: 'grid' }, cards)]));
 }
 

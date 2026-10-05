@@ -20,12 +20,14 @@
  *   GET  /api/margins            margins by category, last 90 days or ?from=&to= (manager or up)
  *   GET  /api/menu               the menu from sales, what came off, to-dos (manager or up)
  *   POST /api/answers            answer a menu question: link, new dish, not food, dismiss (manager or up)
+ *   /api/prep/…                  station prep lists: see prep.ts
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { Db } from './db.ts';
+import { HttpError, body, cookie, cookies, send, str } from './http.ts';
 import {
   atLeast, deviceFor, hashSecret, newToken, passwordProblem, pinProblem, sessionFor, signInWithPassword, signInWithPin, signOut,
   type SignedIn, type SignInResult,
@@ -33,6 +35,7 @@ import {
 import { localDateHour, marginEdgeApiFrom, runSync, squareApiFrom, type SyncSettings } from './scheduler.ts';
 import { BOOK_KEYS, PRODUCT_ANSWERS, answerProblem, bookProblem, getModel, loadBook, saveBook, withAnswer, withProductAnswer, type Answer } from './model.ts';
 import { marginsView, menuView } from './views.ts';
+import { prepRoutes } from './prep.ts';
 
 export interface AppConfig {
   db: Db;
@@ -45,56 +48,6 @@ export interface AppConfig {
 
 const SESSION_COOKIE = 'ops_session';
 const DEVICE_COOKIE = 'ops_device';
-const MAX_BODY = 64 * 1024;
-
-class HttpError extends Error {
-  readonly status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
-
-function cookies(req: IncomingMessage): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const part of (req.headers.cookie ?? '').split(';')) {
-    const i = part.indexOf('=');
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
-  }
-  return out;
-}
-
-function cookie(name: string, value: string, expires: Date, secure: boolean): string {
-  return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires.toUTCString()}${secure ? '; Secure' : ''}`;
-}
-
-async function body(req: IncomingMessage, max = MAX_BODY): Promise<Record<string, unknown>> {
-  if (!(req.headers['content-type'] ?? '').includes('application/json')) throw new HttpError(415, 'Send JSON.');
-  let size = 0;
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    size += (chunk as Buffer).length;
-    if (size > max) throw new HttpError(413, 'Too large.');
-    chunks.push(chunk as Buffer);
-  }
-  try {
-    const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-  } catch {}
-  throw new HttpError(400, 'Bad JSON.');
-}
-
-function str(b: Record<string, unknown>, key: string): string {
-  const v = b[key];
-  if (typeof v !== 'string' || !v.trim()) throw new HttpError(400, `Missing ${key}.`);
-  return v;
-}
-
-function send(res: ServerResponse, status: number, data: unknown, headers: Record<string, string | string[]> = {}): void {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers });
-  res.end(JSON.stringify(data));
-}
-
 function signInReply(res: ServerResponse, result: SignInResult, secure: boolean): void {
   if (!result.ok) {
     send(res, result.reason === 'locked' ? 423 : 401, result.reason === 'locked'
@@ -325,6 +278,12 @@ export function createApp(config: AppConfig) {
       if (method === 'GET' && path === '/api/menu') {
         return send(res, 200, menuView(await getModel(db, who.restaurantId, await today())));
       }
+    }
+
+    if (path.startsWith('/api/prep')) {
+      const who = await signedIn(req);
+      const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+      if (await prepRoutes(db, req, res, path, method, who, localDateHour(tz).date)) return;
     }
 
     throw new HttpError(404, 'Not found.');

@@ -129,3 +129,23 @@ input[type=date] { height: 40px; border: 1px solid var(--line); border-radius: 1
 .plate-detail { padding: 6px 0 14px 16px; border-top: 1px dashed var(--line); display: flex; flex-direction: column; gap: 6px; max-width: 640px; }
 .plate-detail .list > div { padding: 6px 0; font-size: 14px; }
 input.amount { width: 90px; height: 40px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; font-size: 15px; }
+
+/* Prep */
+.countrow, .reviewrow, .workrow, .editrow { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-top: 1px solid var(--soft); }
+.countrow .name, .reviewrow .name, .workrow .name { font-weight: 600; font-size: 16px; }
+.stepper { display: flex; align-items: center; gap: 6px; }
+.stepper .btn { width: 44px; padding: 0; font-size: 20px; }
+.stepper input.amount { width: 70px; text-align: center; height: 44px; }
+.changed { color: var(--orange); }
+.workrow .name { font-size: 18px; }
+.workrow.done { opacity: .55; }
+.check { width: 56px; height: 56px; flex: none; border-radius: 14px; border: 3px solid #CFCBC2; background: #fff; font-size: 26px; color: #fff; cursor: pointer; }
+.check.started { border-color: var(--orange); background: #FFF6EB; }
+.check.on { background: var(--green); border-color: var(--green); }
+.check.small { width: 40px; height: 40px; border-radius: 10px; font-size: 20px; }
+.editrow { align-items: flex-start; }
+.editfields { display: flex; flex-direction: column; gap: 8px; }
+.editrow input[type=text] { height: 40px; min-width: 220px; }
+.editrow .unit-in { min-width: 120px; width: 130px; }
+.row.wrap.tight { flex-wrap: wrap; }
+.countrow .grow, .reviewrow .grow, .workrow .grow, .editrow .grow { flex: 1; min-width: 0; }
