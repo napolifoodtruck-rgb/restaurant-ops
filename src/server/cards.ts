@@ -97,7 +97,7 @@ function cardProblem(c: any, model: Model, cards: RecipeCard[], previousName?: s
 }
 
 /** POS buttons linked to each recipe: answered links and exact-name matches, from sales in the period. */
-function linkedItems(model: Model) {
+export function linkedItems(model: Model) {
   const posItem = posItemOf(model);
   const out = new Map<string, { catalogId: string; itemName: string; variationName?: string; name: string; sold: number; netSales: number }[]>();
   const seen = new Set<string>();
@@ -120,7 +120,7 @@ function linkedItems(model: Model) {
   return out;
 }
 
-function cardView(model: Model, card: RecipeCard, linked: ReturnType<typeof linkedItems>, areaOf: AreaOf) {
+export function cardView(model: Model, card: RecipeCard, linked: ReturnType<typeof linkedItems>, areaOf: AreaOf) {
   const id = recipeId(card.name);
   const recipe = model.book.recipes.get(id);
   const kind = kindOf(card);
@@ -303,7 +303,7 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
   return false;
 }
 
-function yieldConversions(yields: { amount: number; unit: string }[]) {
+export function yieldConversions(yields: { amount: number; unit: string }[]) {
   // A card's yields name the same batch several ways (2 qt = 64 floz = 12 portions): each is a unit of it.
   const first = yields[0];
   if (!first) return {};

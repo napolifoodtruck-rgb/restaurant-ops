@@ -261,6 +261,15 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.deepEqual((typeof book === 'string' ? JSON.parse(book) : book).confirm.filter((c: any) => c.catalogId === 'V-SODA').map((c: any) => c.recipe), ['House Soda']);
   assert.equal((await call('POST', '/api/prep/stations', { body: { name: 'Bar' }, cookies: ownerSession })).status, 201);
 
+  // The recipe book: anyone can read it, by side and section; costs are for managers.
+  const bookForCook = (await call('GET', '/api/recipes', { cookies: marcoOnExpo })).json;
+  assert.deepEqual(bookForCook.bar.map((s: any) => [s.section, s.cards.map((c: any) => c.name)]), [['Drinks', ['House Soda']], ['Bar preps', ['Simple Syrup 1:1']]]);
+  const sodaForCook = (await call('GET', '/api/recipes/House%20Soda', { cookies: marcoOnExpo })).json;
+  assert.deepEqual([sodaForCook.ingredients[0].card, sodaForCook.cost, sodaForCook.canEdit], ['Simple Syrup 1:1', undefined, false]);
+  const syrupScaled = (await call('GET', '/api/recipes/Simple%20Syrup%201%3A1?amount=2&unit=qt', { cookies: marcoOnExpo })).json;
+  assert.deepEqual([syrupScaled.scale, syrupScaled.usedBy], [2, ['House Soda']]); // scaled to what the list says to make
+  assert.equal((await call('GET', '/api/recipes/House%20Soda', { cookies: ownerSession })).json.cost, 0);
+
   // Nothing secret is stored in the clear.
   const stored = await db!.query<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = $1', [cookId]);
   assert.match(stored.rows[0]!.pin_hash, /^scrypt\$/);

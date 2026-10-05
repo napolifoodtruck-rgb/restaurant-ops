@@ -32,6 +32,7 @@
  *   /api/plans/…                 dishes coming to the menu: see plans.ts
  *   GET  /api/today              what needs someone today: see today.ts
  *   /api/cards/…                 recipe cards, written in the app, and bar drafts: see cards.ts
+ *   GET  /api/recipes[/:name]    the recipe book, for anyone signed in: see recipes.ts
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -50,6 +51,7 @@ import { prepRoutes } from './prep.ts';
 import { planRoutes } from './plans.ts';
 import { todayView } from './today.ts';
 import { cardRoutes } from './cards.ts';
+import { recipeRoutes } from './recipes.ts';
 import { areaFor, areaRoutes, loadAreas } from './areas.ts';
 
 export interface AppConfig {
@@ -443,6 +445,12 @@ export function createApp(config: AppConfig) {
       const who = await signedIn(req);
       const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
       if (await planRoutes(db, req, res, path, method, who, localDateHour(tz).date)) return;
+    }
+
+    if (path.startsWith('/api/recipes') && method === 'GET') {
+      const who = await signedIn(req);
+      const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+      if (await recipeRoutes(db, res, url, who, localDateHour(tz).date)) return;
     }
 
     if (path.startsWith('/api/cards')) {
