@@ -100,6 +100,8 @@ export function menuMargins(book: RecipeBook, lookup: LinkLookup, sales: readonl
     recipeId: string;
     portion?: { amount: number; unit: string };
     names: Map<string, number>;
+    /** The buttons it sold under, with how many: price variations (half-price Wednesday) share a row. */
+    buttons: Map<string, number>;
     category: string;
     quantity: number;
     netSales: number;
@@ -126,7 +128,8 @@ export function menuMargins(book: RecipeBook, lookup: LinkLookup, sales: readonl
     linkedSales += line.netSales;
     // A renamed item that turned out to be a different dish keeps its own row.
     const key = `${line.catalogId}|${link.recipeId}`;
-    const g = groups.get(key) ?? { catalogId: line.catalogId, recipeId: link.recipeId, portion: link.portion, names: new Map(), category, quantity: 0, netSales: 0, listPrice: line.listPrice };
+    const g = groups.get(key) ?? { catalogId: line.catalogId, recipeId: link.recipeId, portion: link.portion, names: new Map(), buttons: new Map(), category, quantity: 0, netSales: 0, listPrice: line.listPrice };
+    g.buttons.set(line.catalogId, (g.buttons.get(line.catalogId) ?? 0) + line.quantity);
     g.quantity += line.quantity;
     g.netSales += line.netSales;
     g.names.set(line.name, (g.names.get(line.name) ?? 0) + line.quantity);
@@ -134,11 +137,32 @@ export function menuMargins(book: RecipeBook, lookup: LinkLookup, sales: readonl
     groups.set(key, g);
   }
 
+  // One row per recipe and portion in a category: a dish sold under several paid buttons (its
+  // price variations, like half-price Wednesday) is one dish. $0 buttons stay apart as staff meals.
+  const merged = new Map<string, Group>();
+  const parts = new Map<Group, Group[]>();
+  for (const g of groups.values()) {
+    const key = g.netSales > 0 ? `${g.category}|${g.recipeId}|${g.portion ? `${g.portion.amount} ${g.portion.unit}` : ''}` : `staff|${g.catalogId}|${g.recipeId}`;
+    const into = merged.get(key);
+    if (!into) { merged.set(key, { ...g, names: new Map(g.names), buttons: new Map(g.buttons) }); parts.set(merged.get(key)!, [g]); continue; }
+    parts.get(into)!.push(g);
+    into.quantity += g.quantity;
+    into.netSales += g.netSales;
+    for (const [n, q] of g.names) into.names.set(n, (into.names.get(n) ?? 0) + q);
+    for (const [b, q] of g.buttons) into.buttons.set(b, (into.buttons.get(b) ?? 0) + q);
+  }
+
   const dishes: DishMargin[] = [];
   const staffMeals: StaffMealCost[] = [];
-  for (const g of groups.values()) {
-    const soldAs = [...g.names].sort((a, b) => b[1] - a[1])[0]![0];
-    const shared = [...groups.values()].filter((other) => other.catalogId === g.catalogId).length > 1;
+  for (const g of merged.values()) {
+    // Named as it sells most, but by the plain button over a price variation of it ("X", not "X (Half off Wednesday)").
+    const top = [...g.names].sort((a, b) => b[1] - a[1])[0]![0];
+    const soldAs = [...g.names.keys()].find((n) => top.startsWith(`${n} (`)) ?? top;
+    // Its catalog id and list price are the plain button's: the one sold under that name, most.
+    const main = (parts.get(g) ?? [g]).filter((x) => x.names.has(soldAs)).sort((a, b) => b.quantity - a.quantity)[0] ?? g;
+    g.catalogId = main.catalogId;
+    g.listPrice = main.listPrice;
+    const shared = [...merged.values()].filter((other) => other !== g && [...other.buttons.keys()].some((id) => g.buttons.has(id))).length > 0;
     const recipe = book.recipes.get(g.recipeId);
     const name = shared && recipe ? `${soldAs} (${recipe.name})` : soldAs;
     const cost = g.portion ? book.costOf({ kind: 'recipe', id: g.recipeId }, g.portion) : book.portionCost(g.recipeId);
@@ -147,7 +171,7 @@ export function menuMargins(book: RecipeBook, lookup: LinkLookup, sales: readonl
       continue;
     }
     const averagePrice = g.netSales / g.quantity;
-    const modifierCost = (options.modifierCosts?.get(`${g.catalogId}|${g.recipeId}`) ?? 0) / g.quantity;
+    const modifierCost = [...g.buttons.keys()].reduce((sum, id) => sum + (options.modifierCosts?.get(`${id}|${g.recipeId}`) ?? 0), 0) / g.quantity;
     const plateCost = cost.total + modifierCost;
     const contribution = averagePrice - plateCost;
     dishes.push({

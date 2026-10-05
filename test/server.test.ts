@@ -241,6 +241,26 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.equal((await call('GET', '/api/me', { cookies: marcoOnExpo })).json.me.area, 'bar');
   assert.equal((await call('POST', `/api/staff/${ownerId}/area`, { body: { area: 'kitchen' }, cookies: marcoOnExpo })).status, 403);
 
+  // Recipe cards written in the app: a bar prep, a drink that uses it, linked to its button.
+  const syrup = { name: 'Simple Syrup', kind: 'barPrep', yields: [{ amount: 1, unit: 'qt' }], ingredients: [{ amount: 1, unit: 'qt', name: 'Water' }] };
+  assert.equal((await call('POST', '/api/cards', { body: { card: syrup }, cookies: marcoOnExpo })).status, 403); // managers write cards
+  assert.equal((await call('POST', '/api/cards', { body: { card: { ...syrup, ingredients: [{ amount: 1, unit: 'qt', name: 'Unicorn tears' }] } }, cookies: ownerSession })).status, 400);
+  assert.equal((await call('POST', '/api/cards', { body: { card: syrup }, cookies: ownerSession })).status, 200);
+  const soda = { name: 'House Soda', kind: 'drink', ingredients: [{ amount: 1, unit: 'floz', name: 'Simple Syrup' }, { amount: 8, unit: 'floz', name: 'Water' }] };
+  const button = { catalogId: 'V-SODA', itemName: 'House Soda' };
+  assert.equal((await call('POST', '/api/cards', { body: { card: soda, link: [button] }, cookies: ownerSession })).status, 200);
+  assert.equal((await call('POST', '/api/cards', { body: { card: { ...syrup, ingredients: [{ amount: 1, unit: 'floz', name: 'House Soda' }] }, previousName: 'Simple Syrup' }, cookies: ownerSession })).status, 400); // no loops
+  assert.deepEqual((await call('POST', '/api/cards/preview', { body: { card: soda }, cookies: ownerSession })).json, { lines: [{ cost: 0 }, { cost: 0 }], total: 0, complete: true });
+  // Renaming a prep follows it into the cards that use it; a card in use can't be deleted.
+  assert.equal((await call('POST', '/api/cards', { body: { card: { ...syrup, name: 'Simple Syrup 1:1' }, previousName: 'Simple Syrup' }, cookies: ownerSession })).status, 200);
+  const cards = (await call('GET', '/api/cards', { cookies: ownerSession })).json.cards;
+  assert.deepEqual(cards.find((c: any) => c.name === 'House Soda').ingredients.map((i: any) => i.name), ['Simple Syrup 1:1', 'Water']);
+  assert.equal(cards.find((c: any) => c.name === 'Simple Syrup 1:1').area, 'bar');
+  assert.equal((await call('POST', '/api/cards/delete', { body: { name: 'Simple Syrup 1:1' }, cookies: ownerSession })).status, 409);
+  const book = (await db!.query<{ value: any }>("SELECT value FROM kitchen_book WHERE key = 'linkAnswers'")).rows[0]!.value;
+  assert.deepEqual((typeof book === 'string' ? JSON.parse(book) : book).confirm.filter((c: any) => c.catalogId === 'V-SODA').map((c: any) => c.recipe), ['House Soda']);
+  assert.equal((await call('POST', '/api/prep/stations', { body: { name: 'Bar' }, cookies: ownerSession })).status, 201);
+
   // Nothing secret is stored in the clear.
   const stored = await db!.query<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = $1', [cookId]);
   assert.match(stored.rows[0]!.pin_hash, /^scrypt\$/);

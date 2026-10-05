@@ -15,7 +15,7 @@
 import type { Db } from './db.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, type Model } from './model.ts';
-import { gapsOf, inArea, menuView, type AreaView } from './views.ts';
+import { gapsOf, inArea, menuView, posItemOf, type AreaView } from './views.ts';
 import { guessArea, loadAreas } from './areas.ts';
 import { view as stationDay } from './prep.ts';
 import { blendedPrices } from '../connectors/marginedge.ts';
@@ -32,7 +32,7 @@ export interface TodayItem {
   due?: string;
   /** Money behind it, for ordering the rest. */
   dollars?: number;
-  go: { to: 'count' | 'review' | 'work' | 'menu' | 'performance' | 'settings'; stationId?: string; date?: string };
+  go: { to: 'count' | 'review' | 'work' | 'menu' | 'performance' | 'settings' | 'cards' | 'drafts'; stationId?: string; date?: string };
   button: string;
   /** The side it's about (a station's side comes from its name: "Bar" is the bar's); none for syncs, which everyone sees. */
   side?: 'kitchen' | 'bar';
@@ -209,6 +209,18 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string, 
       items.push({ key: `price:${m.productId}`, group: 'costs', label: up ? 'Price up' : 'Price down', tone: up ? 'alert' : 'info', dollars: Math.abs(m.perWeek) * 13,
         title: `${m.product} is ${up ? 'up' : 'down'} ${Math.round(Math.abs(m.change) * 100)}% in 3 months`,
         detail: `About ${dollars(Math.abs(m.perWeek))} a week ${up ? 'more' : 'less'} at your volume · ${m.dish} ${up ? '+' : '−'}${cents(Math.abs(m.plateChange))} a plate`, go: { to: 'performance' }, button: 'See dishes' });
+    }
+    // Drinks with no card: one item for the lot, since most are drafted in a few taps.
+    if (side === 'bar') {
+      const missing = model.margins.unlinked.filter((u) => u.catalogId && u.netSales > 0 && areaOf(u.category) === 'bar');
+      // Counted by drink, not by button: half-price Wednesday is the same glass.
+      const posItem = posItemOf(model);
+      const drinks = [...new Set(missing.map((u) => posItem(u.catalogId, u.name).itemName))];
+      if (drinks.length) {
+        const total = missing.reduce((s, u) => s + u.netSales, 0);
+        items.push({ key: 'bar:nocard', group: 'menu', label: 'Recipe cards', tone: 'ask', dollars: total, title: `${drinks.length} drink${drinks.length === 1 ? ' has' : 's have'} no recipe card`,
+          detail: `${dollars(total)} in sales over 90 days with no cost behind it: ${list(drinks, 3)}`, go: { to: 'drafts' }, button: 'Draft cards' });
+      }
     }
     for (const it of items.slice(before)) it.side = side;
   }

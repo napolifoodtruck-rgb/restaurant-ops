@@ -13,6 +13,7 @@
  *   POST /api/prep/:station/items | /checklist       add                               chef and up
  *   POST /api/prep/items/:id | /checklist/:id        change or { active: false }       chef and up
  *   POST /api/prep/:station/order                    { items: [ids], checklist: [ids] } chef and up
+ *   POST /api/prep/stations                          { name }: a new station               chef and up
  *   POST /api/prep/import                            { format: 'prep-lists', stations } manager and up
  */
 
@@ -314,6 +315,17 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
       today, tomorrow, canApprove: atLeast(who.roleLevel, 'chef'), canEdit: atLeast(who.roleLevel, 'chef'),
       stations: stations.map((s) => ({ id: s.id, name: s.name, toCount: itemCounts.get(s.id) ?? 0, today: at(s.id, today) ?? null, tomorrow: at(s.id, tomorrow) ?? null })),
     }), true;
+  }
+
+  if (method === 'POST' && path === '/api/prep/stations') {
+    chef();
+    const b = await body(req);
+    const name = typeof b.name === 'string' ? b.name.trim() : '';
+    if (!name) throw new HttpError(400, 'Name the station.');
+    const r = await db.query<{ id: string }>(
+      `INSERT INTO stations (restaurant_id, name, sort_order) VALUES ($1, $2, (SELECT coalesce(max(sort_order), 0) + 1 FROM stations WHERE restaurant_id = $1))
+       ON CONFLICT (restaurant_id, name) DO UPDATE SET active = true RETURNING id`, [who.restaurantId, name]);
+    return send(res, 201, { id: r.rows[0]!.id }), true;
   }
 
   if (method === 'POST' && path === '/api/prep/import') {

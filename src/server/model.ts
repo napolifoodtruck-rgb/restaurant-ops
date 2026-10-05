@@ -10,7 +10,7 @@ import type { Db } from './db.ts';
 import { blendedPrices, importMarginEdge, type ImportAnswers, type ImportedProduct, type ImportResult } from '../connectors/marginedge.ts';
 import { buildRecipes, FREE_PRODUCTS, type RecipeCard } from '../connectors/marginedgeRecipes.ts';
 import { squareItemSales, squareMenuItems, squareModifierSales, type SquareCatalogObject } from '../connectors/square.ts';
-import { applyLinks, confirmLink, emptyLinkState, linkLookup, markNewDish, matchMenu, type LinkQuestion, type PosMenuItem, type SoldItem } from '../core/menuLinks.ts';
+import { applyLinks, confirmLink, emptyLinkState, linkLookup, markNewDish, matchMenu, posName, type LinkQuestion, type PosMenuItem, type SoldItem } from '../core/menuLinks.ts';
 import { menuMargins, type MarginReport, type MarginSaleLine } from '../core/margins.ts';
 import { modifierCosts, emptyModifierAnswers, type ModifierAnswers, type ModifierCosts } from '../core/modifiers.ts';
 import { RecipeBook, type Product, type Recipe } from '../core/recipes.ts';
@@ -284,6 +284,9 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
   const modRows = await storedModifierSales(db, restaurantId, from, today);
   const modifiers = modifierCosts(book, squareModifierSales(modRows), (id, name, date) => lookup(id, name, date)?.recipeId, bookData.modifierAnswers ?? emptyModifierAnswers());
   const margins = menuMargins(book, lookup, sales, { modifierCosts: modifiers.byItem });
+  // Buttons answered "not food" (a fee, a gift card) aren't waiting on a card.
+  const notFoodNames = new Set((linkAnswers.notFood ?? []).map((x) => posName(x)));
+  margins.unlinked = margins.unlinked.filter((u) => !notFoodNames.has(u.name));
   const recipeName = (id: string) => book.recipes.get(id)?.name ?? id;
   const spans = sellingSpans(sales);
   const entries = entriesFromSales(spans, lookup, recipeName, 'dinner', today);

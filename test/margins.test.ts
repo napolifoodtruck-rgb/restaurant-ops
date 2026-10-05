@@ -162,3 +162,15 @@ test('reads the Square catalog per variation and spots staff meals', () => {
     { catalogId: '', name: 'Gift Card', quantity: 1, netSales: 50, category: 'Uncategorized' },
   ]);
 });
+
+test('price variations of one button are one dish; a $0 button stays a staff meal', () => {
+  const links = confirmLink(confirmLink(emptyLinkState(), { catalogId: 'V-GLS', itemName: 'House Red GLS' }, 'margherita'), { catalogId: 'V-GLS-WED', itemName: 'House Red GLS', variationName: 'Half off Wednesday' }, 'margherita');
+  const report = menuMargins(book, linkLookup(links), [
+    { catalogId: 'V-GLS', name: 'House Red GLS', quantity: 30, netSales: 360, category: 'Wine', listPrice: 12 },
+    { catalogId: 'V-GLS-WED', name: 'House Red GLS (Half off Wednesday)', quantity: 10, netSales: 60, category: 'Wine', listPrice: 6 },
+    { catalogId: 'V-GLS-WED', name: 'House Red GLS (Half off Wednesday)', quantity: 25, netSales: 150, category: 'Wine', listPrice: 6, date: '2026-09-02' },
+  ]);
+  // Named by the plain button even when Wednesday sold more.
+  assert.deepEqual(report.dishes.map((d) => [d.name, d.quantity, d.catalogId, d.listPrice]), [['House Red GLS', 65, 'V-GLS', 12]]);
+  close(report.dishes[0]!.averagePrice, 570 / 65);
+});

@@ -213,7 +213,7 @@ export function marginsView(model: Model, view: AreaView = ALL) {
 }
 
 /** The POS item behind a sales name ("Add A Side (Arugula)" → item and variation), for answers. */
-function posItemOf(model: Model) {
+export function posItemOf(model: Model) {
   return (catalogId: string, name: string) => {
     const m = name.match(/^(.*) \((.*)\)$/);
     const known = model.menuItems.find((x) => x.catalogId === catalogId);
