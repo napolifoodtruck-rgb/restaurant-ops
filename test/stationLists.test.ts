@@ -42,3 +42,17 @@ test('par scaled to the day, rounded up in halves or wholes; to make is par minu
   const friday = dayLines(items, '2026-10-09', dayShare(sales, 5), new Map([['togo', 0]]));
   assert.deepEqual(friday.map((l) => [l.item.id, l.dayPar, l.suggested]), [['dressing', 3, undefined], ['bresaola', 14, undefined], ['saba', 0.25, undefined], ['togo', 8, 8], ['ham', undefined, undefined]]);
 });
+
+test('bulk batches follow what the stations they fill will draw', async () => {
+  const { batchSuggestion } = await import('../src/core/stationLists.ts');
+  // One Spinach Panna batch fills 3 sixth pans. Pizza needs 2, expo none; a quarter batch in backup.
+  const s = batchSuggestion([{ station: 'Pizza', item: 'Spinach Panna', unit: '1/6 pan', toMake: 2, perBatch: 3 }], 0.25, 'Spinach Panna')!;
+  assert.equal(s.suggested, 1);
+  assert.equal(s.reason, 'Pizza needs 2 1/6 pan (0.67 batches); 0.25 in backup: make 1 batch of Spinach Panna.');
+  // Enough in backup: wait.
+  assert.equal(batchSuggestion([{ station: 'Pizza', item: 'Spinach Panna', toMake: 2, perBatch: 3 }], 0.75, 'Spinach Panna')!.suggested, 0);
+  // Not counted or no batch size: said so, not guessed.
+  const unknown = batchSuggestion([{ station: 'Expo', item: 'Ricotta (fill)', toMake: undefined, perBatch: 4 }, { station: 'Pizza', item: 'Ricotta', toMake: 1 }], undefined, 'Ricotta')!;
+  assert.deepEqual([unknown.suggested, unknown.missing], [0, ['Expo Ricotta (fill) (not counted)', 'Pizza Ricotta (batch size unknown)']]);
+  assert.equal(batchSuggestion([], 0, 'X'), undefined);
+});

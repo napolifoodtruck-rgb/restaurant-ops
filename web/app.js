@@ -673,14 +673,16 @@ async function prepCount(me, stationId, date) {
   const r = await api('GET', `/api/prep/${stationId}/${date}`);
   if (!r.ok) return show(shell(me, 'prep', [h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const v = r.data;
-  const counted = v.lines.filter((l) => l.kind === 'count' && l.counted !== undefined).length;
-  const toCount = v.lines.filter((l) => l.kind === 'count').length;
-  const rows = v.lines.filter((l) => l.kind === 'count').map((l) => {
+  const countable = v.lines.filter((l) => l.kind === 'count' || l.kind === 'batch');
+  const counted = countable.filter((l) => l.counted !== undefined).length;
+  const toCount = countable.length;
+  const rows = countable.map((l) => {
+    const isBatch = l.kind === 'batch';
     const need = h('span', { class: 'small muted nowrap', text: l.toMake !== undefined ? `make ${amountText(l.toMake, l.unit)}` : '' });
     return h('div', { class: 'countrow' },
-      h('div', { class: 'grow' }, h('div', { class: 'name', text: l.name }), h('div', { class: 'small muted', text: `${l.unit ?? ''}${l.dayPar !== undefined ? ` · par ${qty(l.dayPar)}` : ''}${l.note ? ` · ${l.note}` : ''}` })),
-      need,
-      stepper(l.counted, l.dayPar !== undefined && l.dayPar < 4 ? 0.5 : 1, async (val) => {
+      h('div', { class: 'grow' }, h('div', { class: 'name', text: l.name }), h('div', { class: 'small muted', text: isBatch ? 'Backup on hand, in batches (¼, ½, ¾…)' : `${l.unit ?? ''}${l.dayPar !== undefined ? ` · par ${qty(l.dayPar)}` : ''}${l.note ? ` · ${l.note}` : ''}` })),
+      isBatch ? h('span') : need,
+      stepper(l.counted, isBatch ? 0.25 : l.dayPar !== undefined && l.dayPar < 4 ? 0.5 : 1, async (val) => {
         const res = await api('POST', `/api/prep/${stationId}/${date}/count`, { itemId: l.id, counted: val });
         if (res.ok) { const nl = res.data.lines.find((x) => x.id === l.id); need.textContent = nl?.toMake !== undefined ? `make ${amountText(nl.toMake, nl.unit)}` : ''; }
         else need.textContent = res.data.error ?? 'Not saved';
@@ -704,7 +706,7 @@ async function prepReview(me, stationId, date) {
   const rows = v.lines.map((l) => {
     if (l.kind === 'task') return h('div', { class: 'reviewrow' }, h('div', { class: 'grow' }, h('div', { class: 'name', text: l.name }), h('div', { class: 'small muted', text: 'Daily task' })));
     const info = l.kind === 'batch'
-      ? 'Bulk: made as needed. Leave empty to skip tomorrow.'
+      ? l.reason ?? 'Bulk, made as needed: link it to the station items it fills (Edit list) for a suggestion. Leave empty to skip.'
       : l.counted === undefined ? `Par ${qty(l.dayPar)} · not counted` : l.reason ?? '';
     const changed = l.chosen !== undefined && l.suggested !== undefined && l.chosen !== l.suggested;
     return h('div', { class: 'reviewrow' },
@@ -787,10 +789,20 @@ async function prepEdit(me, stationId) {
       } })));
     const commit = () => save(`/api/prep/items/${it.id}`, { name: name.value, unit: unit.value, par: par.value.trim() === '' ? null : Number(par.value), kind: kind.value });
     for (const el of [name, unit, par, kind]) el.addEventListener('change', commit);
+    const others = (s.batchItems ?? []).filter((b) => b.id !== it.id);
+    const source = h('select', { 'aria-label': 'Filled from bulk' }, h('option', { value: '', text: 'Not from a bulk batch' }), others.map((b) => h('option', { value: b.id, text: `${b.name} (${b.station})`, selected: it.sourceItemId === b.id ? true : undefined })));
+    const perBatch = h('input', { inputmode: 'decimal', class: 'amount', value: it.perBatch ?? '', placeholder: '?', 'aria-label': 'Station units one batch fills' });
+    source.addEventListener('change', async () => { if (await save(`/api/prep/items/${it.id}`, { sourceItemId: source.value || null })) again(); });
+    perBatch.addEventListener('change', () => save(`/api/prep/items/${it.id}`, { perBatch: perBatch.value.trim() === '' ? null : Number(perBatch.value) }));
+    const base = (n) => n.replace(/\(.*?\)/g, '').trim().toLowerCase().replace(/s$/, '');
+    const likely = !it.sourceItemId && others.find((b) => base(b.name) === base(it.name));
+    const link = it.kind === 'count' && others.length ? h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: 'Filled from:' }), source,
+      likely ? h('button', { class: 'btn small-btn blue', text: `Link to ${likely.name}?`, onclick: async () => { if (await save(`/api/prep/items/${it.id}`, { sourceItemId: likely.id })) again(); } }) : null,
+      it.sourceItemId ? h('span', { class: 'row tight' }, h('span', { class: 'small muted', text: 'one batch fills' }), perBatch, h('span', { class: 'small muted', text: it.unit ?? 'units' })) : null) : null;
     return h('div', { class: 'editrow' },
       h('div', { class: 'row tight' }, h('button', { class: 'btn small-btn', 'aria-label': 'Move up', text: '↑', onclick: () => move(s.items, i, -1, 'items') }), h('button', { class: 'btn small-btn', 'aria-label': 'Move down', text: '↓', onclick: () => move(s.items, i, 1, 'items') })),
       h('div', { class: 'grow editfields' }, h('div', { class: 'row tight wrap' }, name, unit, par, kind),
-        h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: days.length ? 'Only on:' : 'Every day · or only on:' }), dayChips)),
+        h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: days.length ? 'Only on:' : 'Every day · or only on:' }), dayChips), link),
       h('button', { class: 'link', text: 'Remove', onclick: async () => { if (await save(`/api/prep/items/${it.id}`, { active: false })) again(); } }));
   };
   const checkRow = (c, i, list) => {

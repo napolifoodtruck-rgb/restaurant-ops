@@ -98,3 +98,44 @@ export function dayLines(items: readonly StationItem[], date: string, share: { s
 }
 
 const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0$/, ''));
+
+// ---------------------------------------------------------------- bulk batches
+
+export interface StationNeed {
+  station: string;
+  item: string;
+  unit?: string;
+  /** What that station will make tomorrow, in its own units; undefined when not counted yet. */
+  toMake?: number;
+  /** Station units one batch fills. */
+  perBatch?: number;
+}
+
+export interface BatchSuggestion {
+  suggested: number;
+  reason: string;
+  /** Linked station items that couldn't be counted in (no count yet, or batch size unknown). */
+  missing: string[];
+}
+
+/**
+ * Batches of a bulk item to make: what the stations it fills will draw tomorrow, less what's
+ * left in backup, in whole batches. A small shortfall (under a fifth of a batch) waits a day.
+ */
+export function batchSuggestion(needs: readonly StationNeed[], backup: number | undefined, name: string): BatchSuggestion | undefined {
+  if (!needs.length) return undefined;
+  const missing: string[] = [];
+  let batches = 0;
+  const parts: string[] = [];
+  for (const n of needs) {
+    if (n.toMake === undefined) { missing.push(`${n.station} ${n.item} (not counted)`); continue; }
+    if (!n.perBatch) { missing.push(`${n.station} ${n.item} (batch size unknown)`); continue; }
+    if (n.toMake > 0) parts.push(`${n.station} needs ${fmt(n.toMake)} ${n.unit ?? ''}`.trim());
+    batches += n.toMake / n.perBatch;
+  }
+  const short = batches - (backup ?? 0);
+  const suggested = short > 0.2 ? Math.ceil(short - 1e-9) : 0;
+  const drawn = parts.length ? `${parts.join(', ')} (${fmt(Math.round(batches * 100) / 100)} batch${batches === 1 ? '' : 'es'})` : 'No station needs any';
+  const reason = `${drawn}; ${backup === undefined ? 'backup not counted' : `${fmt(backup)} in backup`}: ${suggested ? `make ${suggested} batch${suggested === 1 ? '' : 'es'} of ${name}` : 'no batch needed'}.`;
+  return { suggested, reason, missing };
+}

@@ -20,7 +20,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
-import { dayLines, dayShare, weekdayOf, type StationItem } from '../core/stationLists.ts';
+import { batchSuggestion, dayLines, dayShare, weekdayOf, type StationItem, type StationNeed } from '../core/stationLists.ts';
 
 const UUID = '[0-9a-f-]{36}';
 const DATE = '\\d{4}-\\d{2}-\\d{2}';
@@ -31,15 +31,18 @@ function addDays(day: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-interface ItemRow { id: string; name: string; unit: string | null; kind: StationItem['kind']; par: string | null; weekdays: number[] | null; recipe_name: string | null; note: string | null; sort_order: number }
-const toItem = (r: ItemRow): StationItem & { note?: string; recipeName?: string } => ({
+interface ItemRow { id: string; name: string; unit: string | null; kind: StationItem['kind']; par: string | null; weekdays: number[] | null; recipe_name: string | null; note: string | null; sort_order: number; source_item_id: string | null; per_batch: string | null }
+const toItem = (r: ItemRow): StationItem & { note?: string; recipeName?: string; sourceItemId?: string; perBatch?: number } => ({
   id: r.id, name: r.name, kind: r.kind,
   ...(r.unit ? { unit: r.unit } : {}),
   ...(r.par !== null && r.par !== undefined ? { par: Number(r.par) } : {}),
   ...(r.weekdays?.length ? { weekdays: r.weekdays.map(Number) } : {}),
   ...(r.note ? { note: r.note } : {}),
   ...(r.recipe_name ? { recipeName: r.recipe_name } : {}),
+  ...(r.source_item_id ? { sourceItemId: r.source_item_id } : {}),
+  ...(r.per_batch !== null && r.per_batch !== undefined ? { perBatch: Number(r.per_batch) } : {}),
 });
+type Item = ReturnType<typeof toItem>;
 const arr = (v: unknown) => (typeof v === 'string' ? JSON.parse(v) : v);
 
 async function station(db: Db, restaurantId: string, id: string) {
@@ -49,7 +52,7 @@ async function station(db: Db, restaurantId: string, id: string) {
 }
 
 async function items(db: Db, restaurantId: string, stationId: string) {
-  return (await db.query<ItemRow>('SELECT id, name, unit, kind, par, weekdays, recipe_name, note, sort_order FROM station_items WHERE restaurant_id = $1 AND station_id = $2 AND active ORDER BY sort_order, name', [restaurantId, stationId])).rows.map((r) => toItem({ ...r, weekdays: arr(r.weekdays) }));
+  return (await db.query<ItemRow>('SELECT id, name, unit, kind, par, weekdays, recipe_name, note, sort_order, source_item_id, per_batch FROM station_items WHERE restaurant_id = $1 AND station_id = $2 AND active ORDER BY sort_order, name', [restaurantId, stationId])).rows.map((r) => toItem({ ...r, weekdays: arr(r.weekdays) }));
 }
 
 async function listFor(db: Db, restaurantId: string, stationId: string, date: string) {
@@ -68,6 +71,39 @@ async function recentSales(db: Db, restaurantId: string, before: string) {
     'SELECT day::text AS day, sum(net_sales) AS net FROM pos_item_sales_daily WHERE restaurant_id = $1 AND day < $2 AND day >= $3 GROUP BY day', [restaurantId, before, addDays(before, -56)])).rows.map((r) => ({ date: r.day, netSales: Number(r.net) }));
 }
 
+/** What each item on a station will be made for a date: the chef's number, else the suggestion. */
+async function stationToMake(db: Db, restaurantId: string, stationId: string, date: string, share: ReturnType<typeof dayShare>) {
+  const list = (await db.query<{ id: string }>('SELECT id FROM prep_lists WHERE restaurant_id = $1 AND station_id = $2 AND for_date = $3', [restaurantId, stationId, date])).rows[0];
+  const lines = list ? (await db.query<{ item_id: string; counted: string | null; to_make: string | null }>('SELECT item_id, counted, to_make FROM prep_list_lines WHERE list_id = $1', [list.id])).rows : [];
+  const counts = new Map(lines.filter((l) => l.counted !== null).map((l) => [l.item_id, Number(l.counted)]));
+  const chosen = new Map(lines.filter((l) => l.to_make !== null).map((l) => [l.item_id, Number(l.to_make)]));
+  const out = new Map<string, number | undefined>();
+  for (const d of dayLines(await items(db, restaurantId, stationId), date, share, counts)) out.set(d.item.id, chosen.get(d.item.id) ?? d.suggested);
+  return out;
+}
+
+/** For each bulk item on a station: what the stations it fills will draw, as a batch suggestion. */
+async function bulkSuggestions(db: Db, restaurantId: string, batchItems: Item[], date: string, share: ReturnType<typeof dayShare>, backups: Map<string, number>) {
+  const out = new Map<string, ReturnType<typeof batchSuggestion>>();
+  if (!batchItems.length) return out;
+  const linked = (await db.query<ItemRow & { station_id: string; station_name: string }>(
+    `SELECT i.id, i.name, i.unit, i.kind, i.par, i.weekdays, i.recipe_name, i.note, i.sort_order, i.source_item_id, i.per_batch, i.station_id, s.name AS station_name
+       FROM station_items i JOIN stations s ON s.id = i.station_id
+      WHERE i.restaurant_id = $1 AND i.active AND i.source_item_id = ANY(string_to_array($2, ',')::uuid[])`,
+    [restaurantId, batchItems.map((b) => b.id).join(',')])).rows;
+  const byStation = new Map<string, Map<string, number | undefined>>();
+  for (const sid of new Set(linked.map((l) => l.station_id))) byStation.set(sid, await stationToMake(db, restaurantId, sid, date, share));
+  for (const b of batchItems) {
+    const needs: StationNeed[] = linked.filter((l) => l.source_item_id === b.id).map((l) => {
+      const made = byStation.get(l.station_id)!;
+      return { station: l.station_name, item: l.name, ...(l.unit ? { unit: l.unit } : {}), ...(made.has(l.id) ? { toMake: made.get(l.id) } : { toMake: 0 }), ...(l.per_batch ? { perBatch: Number(l.per_batch) } : {}) };
+    });
+    const s = batchSuggestion(needs, backups.get(b.id), b.name);
+    if (s) out.set(b.id, s);
+  }
+  return out;
+}
+
 async function view(db: Db, who: SignedIn, stationId: string, date: string) {
   const st = await station(db, who.restaurantId, stationId);
   const list = await listFor(db, who.restaurantId, stationId, date);
@@ -79,6 +115,7 @@ async function view(db: Db, who: SignedIn, stationId: string, date: string) {
   const counts = new Map(lines.filter((l) => l.counted !== null).map((l) => [l.item_id, Number(l.counted)]));
   const share = dayShare(await recentSales(db, who.restaurantId, date), weekdayOf(date));
   const day = dayLines(all, date, share, counts);
+  const bulk = await bulkSuggestions(db, who.restaurantId, all.filter((i) => i.kind === 'batch'), date, share, counts);
 
   // Cleaning: daily tasks, weekly ones on their day, and weekly ones with no day until done that week.
   const weekStart = addDays(date, -((weekdayOf(date) + 6) % 7)); // Monday
@@ -111,6 +148,8 @@ async function view(db: Db, who: SignedIn, stationId: string, date: string) {
     lines: day.map((d) => {
       const l = byItem.get(d.item.id);
       const chosen = l?.to_make !== null && l?.to_make !== undefined ? Number(l.to_make) : undefined;
+      const b = bulk.get(d.item.id);
+      if (b) { d.suggested = b.suggested; d.reason = b.reason + (b.missing.length ? ` Not counted in: ${b.missing.join(', ')}.` : ''); }
       return {
         ...d.item,
         ...(d.dayPar !== undefined ? { dayPar: d.dayPar } : {}),
@@ -162,6 +201,15 @@ function itemFields(b: Record<string, unknown>, partial: boolean): Record<string
   }
   if (b.note !== undefined) out.note = typeof b.note === 'string' && b.note.trim() ? b.note.trim() : null;
   if (b.recipeName !== undefined) out.recipe_name = typeof b.recipeName === 'string' && b.recipeName.trim() ? b.recipeName.trim() : null;
+  if (b.sourceItemId !== undefined) {
+    if (b.sourceItemId !== null && !(typeof b.sourceItemId === 'string' && /^[0-9a-f-]{36}$/.test(b.sourceItemId))) throw new HttpError(400, 'Pick a bulk item.');
+    out.source_item_id = b.sourceItemId;
+  }
+  if (b.perBatch !== undefined) {
+    const n = num(b.perBatch, 'Batch size');
+    if (n === 0) throw new HttpError(400, 'A batch fills more than 0.');
+    out.per_batch = n;
+  }
   if (b.active === false) out.active = false;
   return out;
 }
@@ -259,7 +307,9 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     chef();
     const st = await station(db, who.restaurantId, m[1]!);
     const checklist = (await db.query('SELECT id, name, frequency, weekday FROM station_checklist WHERE restaurant_id = $1 AND station_id = $2 AND active ORDER BY frequency, sort_order, name', [who.restaurantId, st.id])).rows;
-    return send(res, 200, { station: st, items: await items(db, who.restaurantId, st.id), checklist }), true;
+    const batchItems = (await db.query<{ id: string; name: string; station: string }>(
+      "SELECT i.id, i.name, s.name AS station FROM station_items i JOIN stations s ON s.id = i.station_id WHERE i.restaurant_id = $1 AND i.active AND i.kind = 'batch' ORDER BY s.sort_order, i.sort_order", [who.restaurantId])).rows;
+    return send(res, 200, { station: st, items: await items(db, who.restaurantId, st.id), checklist, batchItems }), true;
   }
 
   if ((m = path.match(new RegExp(`^/api/prep/(${UUID})/(items|checklist)$`))) && method === 'POST') {
