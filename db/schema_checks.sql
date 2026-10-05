@@ -1,4 +1,4 @@
--- Sanity checks for schema.sql: loads sample rows and confirms the guard rails hold.
+-- Sanity checks for db/migrations: loads sample rows and confirms the guard rails hold.
 -- Run with scripts/check-schema.sh. Any failed check raises an error.
 
 \set ON_ERROR_STOP on

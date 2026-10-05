@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Loads db/schema.sql into a throwaway PostgreSQL instance and runs db/schema_checks.sql.
+# Applies db/migrations in order to a throwaway PostgreSQL instance and runs db/schema_checks.sql.
 # Needs PostgreSQL 16+ installed locally (initdb, pg_ctl, psql).
 set -euo pipefail
 
@@ -12,5 +12,5 @@ trap '"$pg_bin/pg_ctl" -D "$work/data" -m immediate stop >/dev/null 2>&1 || true
 "$pg_bin/pg_ctl" -D "$work/data" -o "-k $work -c listen_addresses=''" -l "$work/log" -w start >/dev/null
 
 run() { "$pg_bin/psql" -h "$work" -U postgres -d postgres -v ON_ERROR_STOP=1 -q "$@"; }
-run -f "$root/db/schema.sql"
+for f in "$root"/db/migrations/*.sql; do run -f "$f"; done
 run -f "$root/db/schema_checks.sql"

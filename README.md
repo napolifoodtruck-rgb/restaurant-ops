@@ -30,7 +30,12 @@ Back-of-house foundation:
 | `src/connectors/marginedgeRecipes.ts` | Reads MarginEdge recipe cards and recipe costing PDFs (text, or OCR when the PDF fonts are garbled) into nested recipes, with yield %, several yields and shelf life. |
 | `src/connectors/square.ts` | Square's catalog (one menu item per variation, staff-meal buttons spotted) and Reporting API item sales, in the neutral shapes above. |
 | `scripts/marginedge-export.mjs` | One-off export from MarginEdge's read-only API, run on the restaurant's own computer. The API key is typed at a hidden prompt and never saved. |
-| `db/schema.sql` | PostgreSQL schema for restaurants, staff, stations and roles, vendors, products, invoices, price history, recipes and breakdowns, menus, POS links with components, modifier effects, prep batches and timed prep tasks, counts, waste, to-do items and questions. Built for many restaurants: every reference includes the restaurant. |
+| `src/server/db.ts` | Database interface (driver kept at the edge: `pg` in production) and the migration runner over `db/migrations`. |
+| `src/server/auth.ts` | Sign-ins: PIN on an enrolled iPad for the kitchen, email and password for managers; scrypt hashes, hashed session and device tokens, 5-try lockout. |
+| `src/server/app.ts` | JSON API on node:http: health, first-owner setup, sign-in and out, iPad enrollment, PINs. |
+| `src/server/main.ts` | Starts the app: connect, migrate, listen. |
+| `render.yaml` | Render Blueprint: web service plus PostgreSQL. Secrets are entered in the Render dashboard. |
+| `db/migrations/` | PostgreSQL schema, applied in order at startup (`0001_schema.sql` is the base; later files add to it) for restaurants, staff, stations and roles, vendors, products, invoices, price history, recipes and breakdowns, menus, POS links with components, modifier effects, prep batches and timed prep tasks, counts, waste, to-do items and questions. Built for many restaurants: every reference includes the restaurant. |
 
 ## Running checks
 

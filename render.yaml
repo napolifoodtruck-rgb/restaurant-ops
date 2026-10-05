@@ -1,0 +1,29 @@
+# Render Blueprint: the web app and its database.
+# In Render: New → Blueprint → pick this repository. Secrets marked `sync: false` are typed
+# into the Render dashboard, never committed here.
+services:
+  - type: web
+    name: restaurant-ops
+    runtime: node
+    plan: 0.5c-512mb
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: restaurant-ops-db
+          property: connectionString
+      - key: SETUP_TOKEN
+        generateValue: true
+      - key: SQUARE_ACCESS_TOKEN
+        sync: false
+      - key: MARGINEDGE_API_KEY
+        sync: false
+
+databases:
+  - name: restaurant-ops-db
+    plan: 0.1c-256mb
+    databaseName: restaurant_ops
