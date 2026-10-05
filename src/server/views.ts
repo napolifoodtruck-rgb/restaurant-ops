@@ -261,7 +261,7 @@ export function menuView(model: Model, view: AreaView = ALL) {
     if (model.lookup(s.catalogId, s.name, s.last)) continue;
     const section = categoryOf.get(s.catalogId) ?? 'Other';
     if (!inArea(view, section) || s.quantity <= 0) continue;
-    const item = { name: s.name, section: sectionFor(s.name, section), hasCard: false };
+    const item = { name: s.name, section: sectionFor(s.name, section), hasCard: false, pos: posItem(s.catalogId, s.name) };
     if (s.last >= recent) current.push({ ...item, since: s.first });
     else cameOff.push({ ...item, from: s.first, to: s.last });
   }

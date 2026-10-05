@@ -1003,7 +1003,14 @@ async function menuScreen(me) {
   const m = r.data;
   const since = (d) => (d <= m.from ? `before ${shortDate(m.from)}` : `since ${shortDate(d)}`);
   const sections = [...new Set(m.current.map((x) => x.section))];
-  const dishRow = (x, right, flagCard = m.cards) => h('div', {}, h('span', { class: 'grow', text: x.name }), x.hasCard || !flagCard ? null : h('span', { class: 'tag warn', text: 'needs card' }), h('span', { class: 'small muted nowrap', text: right }));
+  // "Needs card" opens a new card already named and linked to the button that sells it.
+  const writeCard = async (x) => {
+    const d = (await api('GET', `/api/cards?area=${sideOf(me)}`)).data;
+    cardEditor(me, d, null, { name: x.pos?.itemName ?? x.name, kind: sideOf(me) === 'bar' ? 'drink' : 'dish', link: x.pos ? [{ ...x.pos, name: x.name }] : [] });
+  };
+  const dishRow = (x, right, flagCard = m.cards) => h('div', {}, h('span', { class: 'grow', text: x.name }),
+    x.hasCard || !flagCard ? null : h('button', { class: 'tag warn tag-button', text: 'needs card', title: `Write the card for ${x.name}`, onclick: () => writeCard(x) }),
+    h('span', { class: 'small muted nowrap', text: right }));
   const columns = sections.map((s) => h('section', { class: 'card' },
     h('div', { class: 'row' }, h('h2', { class: 'grow', text: s }), h('span', { class: 'small muted', text: String(m.current.filter((x) => x.section === s).length) })),
     h('div', { class: 'list' }, m.current.filter((x) => x.section === s).map((x) => dishRow(x, since(x.since))))));
