@@ -105,18 +105,20 @@ export function switchVersion(entries: readonly MenuEntry[], links: LinkState, s
  */
 export function entriesFromSales(spans: readonly SellingSpan[], lookup: LinkLookup, recipeName: (id: string) => string, menuId: string, today: string, options: { stillOnDays?: number } = {}): MenuEntry[] {
   const stillOn = addDays(today, -(options.stillOnDays ?? 7));
-  const byRecipe = new Map<string, { first: string; last: string }>();
+  const byRecipe = new Map<string, { first: string; last: string; name: string }>();
   for (const span of spans) {
-    const recipeId = lookup(span.catalogId, span.name, span.last)?.recipeId;
-    if (!recipeId) continue;
-    const r = byRecipe.get(recipeId);
-    byRecipe.set(recipeId, r ? { first: r.first < span.first ? r.first : span.first, last: r.last > span.last ? r.last : span.last } : { first: span.first, last: span.last });
+    const link = lookup(span.catalogId, span.name, span.last);
+    if (!link) continue;
+    // A portion of a prep sold on its own (a side of sauce) goes on the menu by its button's name.
+    const name = link.portion ? span.name : recipeName(link.recipeId);
+    const r = byRecipe.get(link.recipeId);
+    byRecipe.set(link.recipeId, r ? { name: r.name, first: r.first < span.first ? r.first : span.first, last: r.last > span.last ? r.last : span.last } : { name, first: span.first, last: span.last });
   }
-  return [...byRecipe].map(([recipeId, { first, last }]) => ({
+  return [...byRecipe].map(([recipeId, { first, last, name }]) => ({
     id: newId(),
     menuId,
     recipeId,
-    name: recipeName(recipeId),
+    name,
     startsOn: first,
     ...(last < stillOn ? { endsOn: last } : {}),
     datesFrom: 'sales' as const,
