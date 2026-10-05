@@ -347,7 +347,8 @@ CREATE TABLE menu_entries (
   id                  uuid NOT NULL DEFAULT gen_random_uuid(),
   restaurant_id       uuid NOT NULL,
   menu_id             uuid NOT NULL,
-  recipe_id           uuid NOT NULL,
+  recipe_id           uuid,                       -- NULL while the dish's card isn't in yet
+  name                text NOT NULL,
   section             text,                       -- 'Pizza', 'Apps', 'Specials'
   starts_on           date NOT NULL,
   ends_on             date,                       -- NULL: still on

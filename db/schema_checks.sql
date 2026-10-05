@@ -69,8 +69,10 @@ UPDATE recipes SET station_id = '60000000-0000-0000-0000-000000000002' WHERE id 
 
 INSERT INTO menus (id, restaurant_id, name) VALUES
   ('80000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000a', 'Dinner');
-INSERT INTO menu_entries (restaurant_id, menu_id, recipe_id, section, starts_on, ends_on, dates_from) VALUES
-  ('00000000-0000-0000-0000-00000000000a', '80000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-000000000003', 'Pasta', '2026-05-26', '2026-08-15', 'sales');
+INSERT INTO menu_entries (restaurant_id, menu_id, recipe_id, name, section, starts_on, ends_on, dates_from) VALUES
+  ('00000000-0000-0000-0000-00000000000a', '80000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-000000000003', 'Rigatoni alla vodka', 'Pasta', '2026-05-26', '2026-08-15', 'sales'),
+  -- The next version, its card not in yet.
+  ('00000000-0000-0000-0000-00000000000a', '80000000-0000-0000-0000-000000000001', NULL, 'Rigatoni, fall', 'Pasta', '2026-08-18', NULL, 'manager');
 
 -- A whole fish broken down into fillets, trim, bones and waste.
 INSERT INTO products (id, restaurant_id, name, base_unit) VALUES
@@ -179,8 +181,8 @@ SELECT pg_temp.must_fail('a finished prep task records who finished it',
     VALUES ('00000000-0000-0000-0000-00000000000a', current_date, '30000000-0000-0000-0000-000000000001', 1, 'cup', 3, 'done', now())$$);
 
 SELECT pg_temp.must_fail('a menu entry cannot end before it starts',
-  $$INSERT INTO menu_entries (restaurant_id, menu_id, recipe_id, starts_on, ends_on)
-    VALUES ('00000000-0000-0000-0000-00000000000a', '80000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-000000000003', '2026-08-18', '2026-08-15')$$);
+  $$INSERT INTO menu_entries (restaurant_id, menu_id, recipe_id, name, starts_on, ends_on)
+    VALUES ('00000000-0000-0000-0000-00000000000a', '80000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-000000000003', 'Rigatoni', '2026-08-18', '2026-08-15')$$);
 
 SELECT pg_temp.must_fail('a station belongs to its own restaurant''s job titles',
   $$INSERT INTO job_title_stations (restaurant_id, job_title, station_id)
