@@ -257,7 +257,7 @@ function rangePicker(me, category, range, m, by) {
 }
 
 async function marginsScreen(me, category, range, by = 'total') {
-  loadingScreen(me, 'margins', 'Where the money comes from');
+  loadingScreen(me, 'margins', 'Menu Performance');
   const r = await api('GET', range ? `/api/margins?from=${range.from}&to=${range.to}` : '/api/margins');
   if (!r.ok) return show(shell(me, 'margins', [h('h1', { text: 'Margins' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const m = r.data;
@@ -269,7 +269,7 @@ async function marginsScreen(me, category, range, by = 'total') {
   const header = h('header', { class: 'row' },
     h('div', { class: 'grow' },
       h('div', { class: 'kicker', text: `${cat ? cat.name + ' · ' : ''}${shortDate(m.from)} – ${shortDate(m.to)} · prices from Square, costs from MarginEdge` }),
-      h('h1', { text: 'Where the money comes from' }),
+      h('h1', { text: 'Menu Performance' }),
       h('div', { class: 'sub', text: `Food cost ${pct(m.totals.foodCostShare)} on dishes with recipe cards. ${dollars(m.totals.leftOver)} left after food in ${days} days. Costs are priced as of ${shortDate(m.to)}.` })),
     tabs);
   const picker = rangePicker(me, cat?.name, range, m, by);
