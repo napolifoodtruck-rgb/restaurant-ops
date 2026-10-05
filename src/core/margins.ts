@@ -37,10 +37,15 @@ export interface DishMargin {
    * plus any price raise during the period. Paid add-ons count in the average, so it can be 0.
    */
   discountShare?: number;
+  /** One plate as the recipe is written. */
   cost: CostResult;
-  /** Cost ÷ average price: what the period actually ran. */
+  /** Modifiers' food cost per plate on average: add-ons less what "no X" saves. */
+  modifierCost: number;
+  /** Recipe cost + modifier cost: what an average plate really cost. */
+  plateCost: number;
+  /** Plate cost ÷ average price: what the period actually ran. */
   foodCostShare: number;
-  /** Cost ÷ today's list price: what it runs from now on. */
+  /** Recipe cost ÷ today's list price: what the dish as written runs from now on. */
   listFoodCostShare?: number;
   /** Average price − cost: what each plate leaves to pay for everything else. */
   contribution: number;
@@ -74,6 +79,8 @@ export interface MarginOptions {
   popularityLine?: number;
   /** Lines with no catalog id (gift cards, custom amounts, fees) are left out of coverage. Default true. */
   skipNonMenu?: boolean;
+  /** `${POS catalog id}|${recipe id}` → modifiers' total food cost over the same period (modifiers.ts byItem). */
+  modifierCosts?: ReadonlyMap<string, number>;
 }
 
 export function menuMargins(book: RecipeBook, lookup: LinkLookup, sales: readonly MarginSaleLine[], options: MarginOptions = {}): MarginReport {
@@ -130,7 +137,9 @@ export function menuMargins(book: RecipeBook, lookup: LinkLookup, sales: readonl
       continue;
     }
     const averagePrice = g.netSales / g.quantity;
-    const contribution = averagePrice - cost.total;
+    const modifierCost = (options.modifierCosts?.get(`${g.catalogId}|${g.recipeId}`) ?? 0) / g.quantity;
+    const plateCost = cost.total + modifierCost;
+    const contribution = averagePrice - plateCost;
     dishes.push({
       catalogId: g.catalogId,
       recipeId: g.recipeId,
@@ -142,7 +151,9 @@ export function menuMargins(book: RecipeBook, lookup: LinkLookup, sales: readonl
       listPrice: g.listPrice,
       discountShare: g.listPrice ? Math.max(0, 1 - averagePrice / g.listPrice) : undefined,
       cost,
-      foodCostShare: cost.total / averagePrice,
+      modifierCost,
+      plateCost,
+      foodCostShare: plateCost / averagePrice,
       ...(g.listPrice ? { listFoodCostShare: cost.total / g.listPrice } : {}),
       contribution,
       totalContribution: contribution * g.quantity,
@@ -165,7 +176,7 @@ export function menuMargins(book: RecipeBook, lookup: LinkLookup, sales: readonl
 
   dishes.sort((a, b) => b.totalContribution - a.totalContribution);
   const netSales = dishes.reduce((s, d) => s + d.netSales, 0);
-  const foodCost = dishes.reduce((s, d) => s + d.cost.total * d.quantity, 0);
+  const foodCost = dishes.reduce((s, d) => s + d.plateCost * d.quantity, 0);
   return {
     dishes,
     staffMeals,

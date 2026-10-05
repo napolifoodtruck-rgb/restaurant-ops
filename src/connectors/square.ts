@@ -5,6 +5,7 @@
 
 import { nameKey, posName, type PosMenuItem } from '../core/menuLinks.ts';
 import type { MarginSaleLine } from '../core/margins.ts';
+import type { ModifierSaleLine } from '../core/modifiers.ts';
 
 // ---------------------------------------------------------------- catalog
 
@@ -95,6 +96,33 @@ export function squareItemSales(rows: readonly SquareItemSalesRow[], menu: reado
       netSales: num(field(row, 'item_net_sales')),
       ...(field(row, 'category_name') ? { category: String(field(row, 'category_name')) } : {}),
       ...(listPrice !== undefined ? { listPrice } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * Turns ItemSales rows grouped by item and modifier into modifier sale lines.
+ * Request: measures modifier_net_quantity and gross_sales (the modifiers' own sales);
+ * dimensions item_variation_id, item_name, item_variation_name, modifier_name, modifier_list_name.
+ */
+export function squareModifierSales(rows: readonly SquareItemSalesRow[]): ModifierSaleLine[] {
+  const out: ModifierSaleLine[] = [];
+  for (const row of rows) {
+    const modifierName = String(field(row, 'modifier_name') ?? '').trim();
+    const quantity = num(field(row, 'modifier_net_quantity'));
+    if (!modifierName || quantity <= 0) continue;
+    const listName = field(row, 'modifier_list_name');
+    const sales = num(field(row, 'gross_sales'));
+    const itemName = String(field(row, 'item_name') ?? '').trim();
+    const variationName = String(field(row, 'item_variation_name') ?? '').trim();
+    out.push({
+      catalogId: String(field(row, 'item_variation_id') ?? ''),
+      itemName: posName({ itemName, variationName }),
+      // Square's quantities come back as 7400.000000491738; uses are whole.
+      quantity: Math.round(quantity * 1000) / 1000,
+      sales,
+      modifier: { name: modifierName, ...(listName ? { listName: String(listName) } : {}), price: Math.round((sales / quantity) * 100) / 100 },
     });
   }
   return out;
