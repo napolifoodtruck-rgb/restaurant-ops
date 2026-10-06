@@ -786,3 +786,12 @@ button.donut-row { display: flex; min-width: 0; }
 .tile-big { font-size: 20px; }
 @media (max-width: 1240px) { .home-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .home-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* A tighter left bar: the logo up top, the tabs closer to it; only Logout has a box */
+.rail { padding-top: 8px; gap: 2px; }
+.rail > .logo { margin: 0 0 6px; }
+.rail .me-chip { border: 0; padding: 4px 0 6px; gap: 3px; }
+.rail .me-chip:hover, .rail .me-chip[aria-expanded="true"] { border: 0; }
+.me-out { border: 1px solid #777; border-top: 1px solid #777; padding: 4px 8px; width: auto; margin-top: 2px; }
+.rail .me-chip:hover .me-out { border-color: #fff; text-decoration: none; }
+@media (max-width: 700px) { .rail .me-chip { padding: 4px; border-radius: 999px; } .me-out { border: 0; padding: 0 8px 0 6px; margin: 0; } }
