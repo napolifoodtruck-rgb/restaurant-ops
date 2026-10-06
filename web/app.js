@@ -541,16 +541,19 @@ function drillDonut(root) {
   return box;
 }
 
-/** A dish or drink a layer down: full price against each discount day, or the dish itself against each paid add-on (free changes listed under). */
+/**
+ * A dish or drink a layer down: full price against each discount day, or the paid add-ons only, so the
+ * whole ring is what add-ons brought in (free changes like "no basil" have no money to show).
+ */
 async function breakdownLayer(m, query) {
   const r = await api('GET', `/api/costs/breakdown?${query}&from=${m.from}&to=${m.to}`);
   if (!r.ok) return null;
   const d = r.data;
-  const free = d.free?.length ? h('div', { class: 'small' }, h('div', { class: 'small muted strong', text: 'Free changes (no charge)' }),
-    h('div', { class: 'list compact' }, d.free.map((f) => h('div', {}, h('span', { class: 'grow', text: f.name }), h('span', { class: 'small muted', text: `${f.uses.toLocaleString()}×` }))))) : null;
-  if (d.versions?.length) return { title: 'sales', format: dollars, items: d.versions.map((v) => ({ name: `${v.name} (${v.quantity.toLocaleString()} sold)`, value: v.value })), note: free };
-  if (!d.addOns.length && !free) return null;
-  return { title: 'sales', format: dollars, items: [{ name: `${d.name} itself`, value: d.base }, ...d.addOns.map((a) => ({ name: `${a.name} (${a.uses.toLocaleString()}×)`, value: a.value }))], note: free };
+  if (d.versions?.length) return { title: 'sales', format: dollars, items: d.versions.map((v) => ({ name: `${v.name} (${v.quantity.toLocaleString()} sold)`, value: v.value })) };
+  if (!d.addOns.length) return null;
+  const extra = d.addOns.reduce((a, x) => a + x.value, 0);
+  return { title: 'from add-ons', format: dollars, items: d.addOns.map((a) => ({ name: `${a.name} (${a.uses.toLocaleString()}×)`, value: a.value })),
+    note: h('div', { class: 'small muted', text: `Add-ons brought in ${dollars(extra, { exact: true })} on top of ${d.plates.toLocaleString()} ${d.name} sold: ${d.sales ? Math.round((extra / d.sales) * 1000) / 10 : 0}% of its sales.` }) };
 }
 
 /** Which dishes are picking up or slowing down: plates a day, the latest weeks against the earlier ones. */
@@ -1461,7 +1464,7 @@ async function menuScreen(me) {
     busy(el, true);
     const res = await api('POST', path, body);
     if (!res.ok) { busy(el, false); return (row ?? el.parentNode).append(h('div', { class: 'error small', text: res.data.error ?? 'Not saved.' })); }
-    await foldAway(row === undefined ? el.closest('.ask, .list > div') : row);
+    await foldAway(row === undefined ? el.closest('.ask, .mline, .list > div') : row);
     refreshInPlace(() => menuScreen(me));
   });
   // Same drink, different price: discount buttons folded in show under the drink, each can be kept apart;
@@ -1486,21 +1489,50 @@ async function menuScreen(me) {
     fill(actions, h('span', { class: 'small muted', text: 'Off the menu:' }),
       h('button', { class: 'btn small-btn dark', text: 'From today', onclick: (e) => setStatus(e.currentTarget, x, 'off', x.lastSold && x.lastSold > yesterday ? x.lastSold : yesterday) }),
       offFrom ? h('button', { class: 'btn small-btn', text: `Since its last sale, ${shortDate(offFrom)}`, onclick: (e) => setStatus(e.currentTarget, x, 'off', offFrom) }) : null,
-      h('button', { class: 'link', text: 'Cancel', onclick: () => fill(actions, normalActions(x, row, actions)) }));
+      h('button', { class: 'link', text: 'Cancel', onclick: () => fill(actions, cells(x, row, actions)) }));
     actions.querySelector('.btn')?.focus();
   };
-  const normalActions = (x, row, actions) => [
-    x.hasCard || !flagCards ? null : h('button', { class: 'tag warn tag-button', text: 'needs recipe', title: `Write the recipe for ${x.name}`, onclick: () => writeCard(x) }),
-    h('span', { class: 'small muted nowrap', text: since(x.since) }),
-    manager && x.menuKey ? h('button', { class: 'link take-off', text: 'Take off', title: `Take ${x.name} off the menu`, onclick: () => takeOff(x, row, actions) }) : null];
   const flagCards = m.cards;
+  // A line: the dish (with its tags and when it came on), then plates a day, food cost, last sold, and Take off.
+  const pctText = (v) => `${Math.round(v * 100)}%`;
+  const cells = (x, row, right) => [
+    h('span', { class: 'mcell', text: x.perDay !== undefined ? `${x.perDay}/day` : '–' }),
+    (() => {
+      const high = x.foodCost !== undefined && x.sectionFoodCost !== undefined && x.foodCost > x.sectionFoodCost + 0.05;
+      return h('span', { class: `mcell${high ? ' warn-text strong' : ''}`, title: x.foodCost !== undefined ? `${pctText(x.foodCost)} of what it brought in${x.sectionFoodCost !== undefined ? `; ${x.section} runs ${pctText(x.sectionFoodCost)}` : ''}${x.costEstimated ? '. Some prices are estimates' : ''}` : 'No recipe cost yet', text: x.foodCost !== undefined ? `${pctText(x.foodCost)}${x.costEstimated ? '*' : ''}` : '–' });
+    })(),
+    h('span', { class: 'mcell c-last', text: x.lastSold ? shortDate(x.lastSold) : '–' }),
+    h('span', { class: 'mcell c-act' }, manager && x.menuKey ? h('button', { class: 'link take-off', text: 'Take off', title: `Take ${x.name} off the menu`, onclick: () => takeOff(x, row, right) }) : null)];
   const dishRow = (x) => {
-    const actions = h('div', { class: 'row-actions' });
-    const row = h('div', {}, photo(x.image, 'thumb small'), h('div', { class: 'grow' }, h('div', { text: x.name }), includesLine(x)), sameAs(x),
-      x.quiet ? h('button', { class: 'tag ask tag-button', text: 'quiet', title: `Hasn’t sold since ${shortDate(x.quiet.since)}: still on?`, onclick: () => pickChip('needs') }) : null,
-      actions);
-    fill(actions, normalActions(x, row, actions));
+    const right = h('div', { class: 'mright' });
+    const row = h('div', { class: 'mline' }, photo(x.image, 'thumb small'),
+      h('div', { class: 'mname' },
+        h('div', { class: 'row tight wrap' }, h('span', { text: x.name }),
+          x.quiet ? h('button', { class: 'tag ask tag-button', text: 'quiet', title: `Hasn’t sold since ${shortDate(x.quiet.since)}: still on?`, onclick: () => pickChip('needs') }) : null,
+          x.hasCard || !flagCards ? null : h('button', { class: 'tag warn tag-button', text: 'needs recipe', title: `Write the recipe for ${x.name}`, onclick: () => writeCard(x) }),
+          sameAs(x)),
+        includesLine(x),
+        h('div', { class: 'small muted', text: `On ${since(x.since)}` })),
+      right);
+    fill(right, cells(x, row, right));
     return row;
+  };
+  // Column titles sort every section the same way; the choice is remembered on this device.
+  let sortBy = (() => { try { return JSON.parse(recall('menuSort') ?? 'null') ?? { key: 'name', dir: 'asc' }; } catch { return { key: 'name', dir: 'asc' }; } })();
+  const SORTS = { name: (x) => x.name, perDay: (x) => x.perDay, foodCost: (x) => x.foodCost, lastSold: (x) => x.lastSold };
+  const sorted = (xs) => {
+    const f = SORTS[sortBy.key] ?? SORTS.name, dir = sortBy.dir === 'asc' ? 1 : -1;
+    return [...xs].sort((a, b) => { const p = f(a), q = f(b); if (p === undefined || q === undefined) return p === q ? 0 : p === undefined ? 1 : -1; return (typeof p === 'string' ? p.localeCompare(q) : p - q) * dir; });
+  };
+  const head = () => {
+    const col = (key, label, cls = '') => {
+      const on = sortBy.key === key;
+      return h('button', { class: `sort mcell ${cls}${on ? ' on' : ''}`, 'aria-sort': on ? (sortBy.dir === 'asc' ? 'ascending' : 'descending') : 'none',
+        onclick: () => { sortBy = { key, dir: on ? (sortBy.dir === 'asc' ? 'desc' : 'asc') : key === 'name' ? 'asc' : 'desc' }; remember('menuSort', JSON.stringify(sortBy)); draw(); } },
+        label, h('span', { class: 'arrow', text: on ? (sortBy.dir === 'asc' ? ' ▲' : ' ▼') : '' }));
+    };
+    return h('div', { class: 'mline mhead' }, h('span'), h('div', { class: 'mname' }, col('name', 'Dish', 'left')),
+      h('div', { class: 'mright' }, col('perDay', 'Per day'), col('foodCost', side === 'bar' ? 'Pour cost' : 'Food cost'), col('lastSold', 'Last sold', 'c-last'), h('span', { class: 'mcell c-act' })));
   };
 
   // Questions: about what's selling, and quiet dishes (still on, or came off?).
@@ -1618,7 +1650,7 @@ async function menuScreen(me) {
       const parts = [...new Set(m.current.filter((x) => baseOf(x.section) === chip).map((x) => x.section))];
       main = parts.map((sec) => h('section', { class: 'card' },
         h('div', { class: 'row' }, h('h2', { class: 'grow', text: sec }), h('span', { class: 'small muted', text: String(m.current.filter((x) => x.section === sec).length) })),
-        h('div', { class: 'list' }, m.current.filter((x) => x.section === sec).map((x) => dishRow(x)))));
+        h('div', { class: 'mlist' }, head(), sorted(m.current.filter((x) => x.section === sec)).map((x) => dishRow(x)))));
     }
     const onMenu = sideBox('On the menu now', h('div', { class: 'list compact' },
       sections.map((sec) => h('div', {}, h('button', { class: 'linkish grow', text: sec, onclick: () => pickChip(sec) }), h('b', { text: String(m.current.filter((x) => baseOf(x.section) === sec).length) })))),

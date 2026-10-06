@@ -427,6 +427,9 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   // A layer down in the clickable charts: a drink's discount days; what was spent by vendor.
   const sodaLayer = (await call('GET', '/api/costs/breakdown?name=House%20Soda', { cookies: ownerSession })).json;
   assert.deepEqual([sodaLayer.name, sodaLayer.plates, sodaLayer.versions.map((v: any) => v.name)], ['House Soda', 5, ['Full price', 'Tuesday Special']]);
+  await db!.query("INSERT INTO pos_modifier_sales_daily (restaurant_id, day, catalog_id, item_name, variation_name, modifier_list, modifier_name, quantity, gross_sales) VALUES ($1, current_date - 1, 'V-SODA', 'House Soda', '', 'Extras', '++ Extra Lime', 2, 2), ($1, current_date - 1, 'V-SODA', 'House Soda', '', 'Extras', '-- No Ice', 1, 0)", [restaurantId]);
+  const sodaAddOns = (await call('GET', '/api/costs/breakdown?name=House%20Soda', { cookies: ownerSession })).json;
+  assert.deepEqual([sodaAddOns.addOns, sodaAddOns.free], [[{ name: 'Extra Lime', value: 2, uses: 2 }], [{ name: 'No Ice', uses: 1 }]]);
   assert.equal((await call('GET', '/api/costs/breakdown', { cookies: ownerSession })).status, 400);
   assert.ok(Array.isArray((await call('GET', '/api/costs/spend?area=bar', { cookies: ownerSession })).json.vendors));
 

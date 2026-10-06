@@ -323,6 +323,30 @@ export function menuView(model: Model, view: AreaView = ALL) {
     .filter((x) => x.section === 'Not sold yet' || inArea(view, x.section))
     .sort((a, b) => a.name.localeCompare(b.name));
 
+  // For each line: plates a day while it's been on (open days since its first sale in the period),
+  // its food cost (the period's plates against what they brought in), and its section's, to compare.
+  const openDays = [...new Set(model.sales.filter((l) => l.date && l.quantity > 0).map((l) => l.date!))].sort();
+  const openSince = (day: string) => Math.max(1, openDays.filter((d) => d >= day).length);
+  const firstSoldOf = new Map<string, string>();
+  for (const sp of model.spans) { const id = model.lookup(sp.catalogId, sp.name, sp.last)?.recipeId; if (id && (!firstSoldOf.has(id) || sp.first < firstSoldOf.get(id)!)) firstSoldOf.set(id, sp.first); }
+  const dishOf = new Map(model.margins.dishes.map((d) => [d.recipeId, d]));
+  const posQty = new Map<string, number>();
+  for (const l of model.sales) if (l.quantity > 0) posQty.set(`${l.catalogId}|${l.name}`, (posQty.get(`${l.catalogId}|${l.name}`) ?? 0) + l.quantity);
+  const costBySection = new Map<string, { cost: number; sales: number }>();
+  for (const x of current) {
+    const d = typeof x.menuKey === 'string' ? dishOf.get(x.menuKey) : undefined;
+    if (d) {
+      const first = firstSoldOf.get(d.recipeId) ?? x.since;
+      Object.assign(x, { perDay: Math.round((d.quantity / openSince(first)) * 10) / 10, ...(d.cost.total > 0 && d.averagePrice > 0 ? { foodCost: d.foodCostShare, ...(d.cost.complete ? {} : { costEstimated: true }) } : {}) });
+      if (d.cost.total > 0) { const c = costBySection.get(x.section) ?? { cost: 0, sales: 0 }; c.cost += d.plateCost * d.quantity; c.sales += d.netSales; costBySection.set(x.section, c); }
+    } else if (x.pos) {
+      const pos = x.pos as { catalogId: string };
+      const q = [...posQty].filter(([k]) => k.startsWith(`${pos.catalogId}|`)).reduce((a, [, v]) => a + v, 0);
+      if (q > 0) Object.assign(x, { perDay: Math.round((q / openSince(x.since)) * 10) / 10 });
+    }
+  }
+  for (const x of current) { const c = costBySection.get(x.section); if (c && c.sales > 0) Object.assign(x, { sectionFoodCost: c.cost / c.sales }); }
+
   // Sections in order of the money they bring in, add-ons after their section.
   const sectionSales = new Map<string, number>();
   for (const l of model.sales) if (l.category) sectionSales.set(l.category, (sectionSales.get(l.category) ?? 0) + l.netSales);

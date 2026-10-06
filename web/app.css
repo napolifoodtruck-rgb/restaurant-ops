@@ -711,3 +711,28 @@ button.donut-row:hover .grow { text-decoration: underline; }
 button.donut-row { display: flex; min-width: 0; }
 .row-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
 .row-actions .take-off { font-size: 13px; }
+
+/* Menu lines: the dish, then plates a day, food cost, last sold, Take off */
+.mlist { display: grid; }
+.mline { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--soft); font-size: 15px; }
+.mline.mhead { border-top: 0; padding: 0 0 4px; font-size: 12px; }
+.mline .mname { min-width: 0; display: grid; gap: 2px; }
+.mright { display: flex; align-items: center; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.mcell { width: 70px; text-align: right; font-variant-numeric: tabular-nums; font-size: 14px; }
+.mcell.c-act { width: 64px; }
+.mhead .sort { background: none; border: 0; padding: 4px 0; font: inherit; font-size: 12px; font-weight: 600; color: var(--muted); cursor: pointer; }
+.mhead .sort.left { text-align: left; width: auto; }
+.mhead .sort.on, .mhead .sort:hover { color: var(--ink); }
+.mline .tag { font-size: 12px; }
+@container main (max-width: 640px) {
+  .mcell { width: 58px; font-size: 13px; }
+  .mcell.c-act { width: 56px; }
+  .mline { gap: 8px; }
+}
+@container main (max-width: 480px) {
+  .mline { grid-template-columns: 40px minmax(0, 1fr); }
+  .mright { grid-column: 2; justify-content: flex-start; }
+  .mcell { width: auto; text-align: left; }
+  .mhead .mright, .mcell.c-last { display: none; }
+}
+.mhead .sort { white-space: nowrap; }
