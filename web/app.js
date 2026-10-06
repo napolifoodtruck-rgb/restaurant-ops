@@ -1419,11 +1419,20 @@ async function prepEdit(me, stationId) {
       h('span', { class: 'tag blue', text: [it.activeFrom ? `on the list from ${shortDate(it.activeFrom)}` : '', it.activeUntil ? `last day ${shortDate(it.activeUntil)}` : ''].filter(Boolean).join(' · ') }),
       h('button', { class: 'link', text: 'Clear dates', onclick: async () => { if (await save(`/api/prep/items/${it.id}`, { activeFrom: null, activeUntil: null })) again(); } })) : null;
     const bulkFields = it.kind === 'batch' ? h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: 'Kept in' }), bulkUnit, h('span', { class: 'small muted', text: 'one batch makes' }), batchYield, h('span', { class: 'small muted', text: it.bulkUnit ?? '' })) : null;
+    // The bulk item's unit right after the amount, so it's clear what the number counts. If the bulk item
+    // has no unit yet, it can be set here (it's saved on the bulk item).
+    const sourceUnit = () => {
+      if (sourceItem?.bulk_unit) return h('b', { class: 'small', text: sourceItem.bulk_unit, title: `${sourceItem.name} is kept in ${sourceItem.bulk_unit}` });
+      if (!sourceItem) return null;
+      const u = h('input', { type: 'text', class: 'unit-in', placeholder: 'qt, lb…', 'aria-label': `${sourceItem.name} is kept in` });
+      u.addEventListener('change', async () => { if (u.value.trim() && await save(`/api/prep/items/${sourceItem.id}`, { bulkUnit: u.value })) again(); });
+      return h('span', { class: 'row tight' }, u, h('span', { class: 'small muted', text: `(${sourceItem.name}’s unit)` }));
+    };
     const base = (n) => n.replace(/\(.*?\)/g, '').trim().toLowerCase().replace(/s$/, '');
     const likely = !it.sourceItemId && others.find((b) => base(b.name) === base(it.name));
     const link = it.kind === 'count' && others.length ? h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: 'Filled from' }), source,
       likely ? h('button', { class: 'btn small-btn blue', text: `Link to ${likely.name}?`, onclick: async () => { if (await save(`/api/prep/items/${it.id}`, { sourceItemId: likely.id })) again(); } }) : null,
-      it.sourceItemId ? h('span', { class: 'row tight' }, h('span', { class: 'small muted', text: `one ${it.unit ?? 'container'} holds` }), holds, h('span', { class: 'small muted', text: sourceItem?.bulk_unit ?? '(set the bulk item’s unit)' })) : null) : null;
+      it.sourceItemId ? h('span', { class: 'row tight' }, h('span', { class: 'small muted', text: `one ${it.unit ?? 'container'} holds` }), holds, sourceUnit()) : null) : null;
     // One line for what it is (name, unit, par, kind, order), one small line for the rest.
     return h('div', { class: 'editrow compact' },
       h('div', { class: 'edit-main' }, name, unit, par, kind,
