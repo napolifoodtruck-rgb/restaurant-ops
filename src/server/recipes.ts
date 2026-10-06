@@ -21,7 +21,7 @@ import { cardView, kindOf, linkedItems, yieldConversions } from './cards.ts';
 import { tryConvert } from '../core/units.ts';
 import { normalizeName as cardKey } from '../connectors/marginedgeRecipes.ts';
 
-const PREP_SECTION = { kitchen: 'Preps', bar: 'Bar preps' };
+const PREP_SECTION = { kitchen: 'Prepared Items', bar: 'Prepared Items' };
 
 export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: SignedIn, today: string): Promise<boolean> {
   const path = url.pathname;

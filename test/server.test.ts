@@ -348,7 +348,7 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
 
   // The recipe book: anyone can read it, by side and section; costs are for managers.
   const bookForCook = (await call('GET', '/api/recipes', { cookies: marcoOnExpo })).json;
-  assert.deepEqual(bookForCook.bar.map((s: any) => [s.section, s.cards.map((c: any) => c.name)]), [['Non-Alcoholic Drinks', ['House Soda']], ['Drinks', ['Lemonade']], ['Bar preps', ['Lemon Juice', 'Simple Syrup 1:1']]]);
+  assert.deepEqual(bookForCook.bar.map((s: any) => [s.section, s.cards.map((c: any) => c.name)]), [['Non-Alcoholic Drinks', ['House Soda']], ['Drinks', ['Lemonade']], ['Prepared Items', ['Lemon Juice', 'Simple Syrup 1:1']]]);
   // How much of each side's sales has a full plate cost: for managers, beside the book and the menu.
   assert.equal(bookForCook.coverage, undefined);
   const ownerBook = (await call('GET', '/api/recipes', { cookies: ownerSession })).json;
