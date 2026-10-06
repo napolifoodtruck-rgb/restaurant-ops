@@ -2290,7 +2290,7 @@ async function todayScreen(me, filter = 'all') {
   const go = (g) => ({
     count: () => prepCount(me, g.stationId, g.date), review: () => prepReview(me, g.stationId, g.date), work: () => prepWork(me, g.stationId, g.date),
     menu: () => menuScreen(me), performance: () => marginsScreen(me), settings: () => home(me),
-    cards: () => cardsScreen(me), drafts: () => draftsScreen(me), order: () => orderScreen(me, g.vendorId), orders: () => { if (g.side) me.side = g.side; ordersScreen(me); },
+    cards: () => cardsScreen(me), drafts: () => draftsScreen(me), order: () => orderScreen(me, g.vendorId), orders: () => { if (g.side) { me.side = g.side; me.ordersSide = g.side; } ordersScreen(me); },
   })[g.to]?.();
   const targetOf = (b) => (b.type === 'dismiss' ? { dedupeKey: b.dedupeKey } : { catalogId: b.catalogId, itemName: b.itemName, ...(b.variationName ? { variationName: b.variationName } : {}), ...(b.from ? { from: b.from } : {}) });
   // A line folded up in place: what was done, and Undo. Saving happens behind it.
@@ -3257,7 +3257,8 @@ const STATUS_TAG = { draft: ['Draft', 'warn'], approved: ['Approved, not sent', 
 
 async function ordersScreen(me) {
   loadingScreen(me, 'orders', 'Orders');
-  const side = sideOf(me);
+  // Orders can show both sides together; that choice is the Orders page's own, so other pages keep theirs.
+  const side = me.ordersSide ?? sideOf(me);
   const r = await api('GET', `/api/orders?area=${side}`);
   if (!r.ok) return show(shell(me, 'orders', [h('h1', { text: 'Orders' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const { vendors, recent, today } = r.data;
@@ -3266,7 +3267,7 @@ async function ordersScreen(me) {
     const [tag, cls] = v.order ? STATUS_TAG[v.order.status] : ['Not started', ''];
     return h('section', { class: 'card' },
       h('div', { class: 'vendor-row' },
-        h('div', {}, h('div', { class: 'row tight wrap' }, h('h2', { text: v.name }), h('span', { class: `tag ${cls}`, text: tag })),
+        h('div', {}, h('div', { class: 'row tight wrap' }, h('h2', { text: v.name }), h('span', { class: `tag ${cls}`, text: tag }), side === 'both' && v.side ? h('span', { class: 'tag', text: AREA_NAMES[v.side] }) : null),
           h('div', { class: 'small muted', text: `Delivers ${v.weekdays.map((d) => WD[d]).join(', ')}${v.source === 'confirmed' ? '' : ' (from invoices)'} · about ${dollars(v.spendPerWeek)} a week` })),
         h('div', { class: 'row tight' },
           h('div', { class: 'when' }, h('div', { class: 'strong', text: v.next ? `${weekdayName(v.next)}, ${shortDate(v.next)}` : 'No delivery coming up' }),
@@ -3291,7 +3292,8 @@ async function ordersScreen(me) {
     h('header', { class: 'row wrap' },
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[side]} · ${dayName(today)}` }), h('h1', { text: 'Orders' }),
         h('div', { class: 'sub', text: 'Drafted from what you’ve been buying, weighted to your busy days, less what’s on hand. Next delivery first.' })),
-      sideSwitch(me, () => ordersScreen(me))),
+      h('div', { class: 'seg', role: 'group', 'aria-label': 'Kitchen, bar or both' },
+        ['kitchen', 'bar', 'both'].map((a) => h('button', { class: side === a ? 'on' : '', 'aria-pressed': String(side === a), text: a === 'both' ? 'Both' : AREA_NAMES[a], onclick: () => { me.ordersSide = a; if (a !== 'both') me.side = a; ordersScreen(me); } })))),
     page(active.length ? h('div', { class: 'stack' }, active.map(vendorCard)) : h('div', { class: 'card small muted', text: 'No vendors with regular deliveries yet. They appear after a few weeks of invoices.' }),
       [week, status, spendBox(me, side), cutoffs, recentBox, pausedBox]),
   ]));

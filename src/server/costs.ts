@@ -113,14 +113,15 @@ export async function costRoutes(db: Db, res: ServerResponse, url: URL, who: Sig
 
   // Where the money went: each vendor, and what was bought from them, over the last days asked for.
   if (path === '/api/costs/spend') {
-    const area = areaFor(who, url.searchParams.get('area'));
+    const both = url.searchParams.get('area') === 'both';
+    const area = both ? 'both' : areaFor(who, url.searchParams.get('area'));
     const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 7), 365);
     const since = new Date(Date.parse(`${today}T12:00:00Z`) - (days - 1) * 86_400_000).toISOString().slice(0, 10);
-    const want = area === 'bar' ? 'bar' : 'food';
+    const want = (k: string) => (both ? k === 'food' || k === 'bar' : k === (area === 'bar' ? 'bar' : 'food'));
     const names = new Map(model.imported.products.map((p) => [p.externalId, p.name]));
     const vendors = new Map<string, { vendor: string; spent: number; items: Map<string, { id?: string; name: string; spent: number }> }>();
     for (const p of purchasesOf(model, since, today)) {
-      if (p.kind !== want) continue;
+      if (!want(p.kind)) continue;
       const v = vendors.get(p.vendor ?? 'Unknown vendor') ?? { vendor: p.vendor ?? 'Unknown vendor', spent: 0, items: new Map() };
       v.spent += p.amount;
       const key = p.productId ?? 'other';

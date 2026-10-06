@@ -2,7 +2,7 @@
  * Orders over HTTP. Managers only. Nothing is ever sent from here: a manager approves an order,
  * then copies, emails or prints it and marks it sent.
  *
- *   GET  /api/orders?area=kitchen|bar         vendors: delivery days, next delivery, when the order's due, its status
+ *   GET  /api/orders?area=kitchen|bar|both        vendors: delivery days, next delivery, when the order's due, its status
  *   GET  /api/orders/vendor/:vendorId          the order for the next delivery (a fresh draft if there isn't one)
  *   POST /api/orders/vendor/:vendorId          { delivery, lines: [{ productId, packs, onHand? }], note? }  save the draft
  *   POST /api/orders/vendor/:vendorId/settings { weekdays?, cutoffDaysBefore?, cutoffTime?, method?, contact?, minimum?, active? }
@@ -159,7 +159,8 @@ export async function orderRoutes(db: Db, req: IncomingMessage, res: ServerRespo
   if (method === 'GET' && path === '/api/orders') {
     const data = await orderingData(db, who, today);
     const area = url.searchParams.get('area');
-    const vendors = vendorsView(data, today, nowParts).filter((v) => !area || v.side === area);
+    // Kitchen, bar, or both together for the whole picture.
+    const vendors = vendorsView(data, today, nowParts).filter((v) => !area || area === 'both' || v.side === area);
     const open = (await db.query<OrderRow & { delivery: string }>("SELECT id, vendor_id, delivery::text AS delivery, status, total, sent_at, approved_at FROM orders WHERE restaurant_id = $1 AND status <> 'cancelled' AND delivery >= $2", [who.restaurantId, addDays(today, -1)])).rows;
     const recent = (await db.query<OrderRow>(
       `SELECT o.*, o.delivery::text AS delivery, a.display_name AS approved_name, s.display_name AS sent_name, NULL AS created_name FROM orders o LEFT JOIN staff a ON a.id = o.approved_by LEFT JOIN staff s ON s.id = o.sent_by

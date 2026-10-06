@@ -325,6 +325,10 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.equal((await call('POST', '/api/orders/vendor/v1/settings', { body: { weekdays: [4], cutoffDaysBefore: 1, cutoffTime: '14:00', method: 'email', contact: 'orders@produce.example' }, cookies: ownerSession })).status, 200);
   const configured = (await call('GET', '/api/orders', { cookies: ownerSession })).json.vendors;
   assert.deepEqual(configured.map((v: any) => [v.vendorId, v.weekdays, v.cutoff, v.method]), [['v1', [4], { daysBefore: 1, time: '14:00' }, 'email']]);
+  // Kitchen or bar alone, or both together.
+  const sideOfV1 = configured[0].side;
+  assert.deepEqual((await call('GET', '/api/orders?area=both', { cookies: ownerSession })).json.vendors.map((v: any) => v.vendorId), ['v1']);
+  assert.deepEqual((await call('GET', `/api/orders?area=${sideOfV1 === 'bar' ? 'kitchen' : 'bar'}`, { cookies: ownerSession })).json.vendors, []);
 
   // The restaurant's logo: set by an admin, shown to anyone (the sign-in screens use it).
   assert.equal((await call('GET', '/api/brand')).json.logo, null);
