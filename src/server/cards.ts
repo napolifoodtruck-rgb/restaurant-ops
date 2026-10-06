@@ -374,6 +374,22 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     return send(res, 200, { renamed: renames.length, removed: removes.length }), true;
   }
 
+  // A button taken off a recipe by hand: it goes back to "selling without a recipe", recipe to come.
+  if (method === 'POST' && path === '/api/cards/unlink') {
+    const b = await body(req);
+    const items = posItemArg(b.items);
+    if (!items.length) throw new HttpError(400, 'Which button?');
+    const book = await loadBook(db, who.restaurantId);
+    let links: LinkAnswers = book.linkAnswers ?? { confirm: [], newDish: [] };
+    const at = new Date().toISOString();
+    for (const item of items) {
+      const same = (x: PosMenuItem) => x.catalogId === item.catalogId && x.itemName === item.itemName && (x.variationName ?? '') === (item.variationName ?? '');
+      links = { ...links, confirm: links.confirm.filter((x) => !same(x)), newDish: [...links.newDish.filter((x) => !same(x)), { ...item, note: 'unlinked in the app', at, by: who.staffId }] };
+    }
+    await saveBook(db, who.restaurantId, 'linkAnswers', links, who.staffId);
+    return send(res, 200, { ok: true }), true;
+  }
+
   if (method === 'POST' && path === '/api/cards/no-card') {
     const b = await body(req);
     const book = await loadBook(db, who.restaurantId);

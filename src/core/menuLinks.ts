@@ -279,7 +279,8 @@ export function matchMenu(items: readonly SoldItem[], recipes: readonly Recipe[]
       questions.push({ ...base, type: 'renamed', previous: status.previous });
     } else {
       const top = candidates[0];
-      const clear = top && top.score >= CONFIRM_AT && (candidates[1]?.score ?? 0) < top.score;
+      // A prep recipe is never a clear match for something sold: it's usually what goes on it (Corn Panna sauce, not the pizza).
+      const clear = top && top.kind !== 'prep' && top.score >= CONFIRM_AT && (candidates[1]?.score ?? 0) < top.score;
       questions.push({ ...base, type: clear ? 'confirm' : 'choose' });
     }
   }
@@ -332,6 +333,7 @@ export function describeQuestion(q: LinkQuestion): string {
       if (top!.kind === 'prep') return `"${q.posName}" only matches the ${top!.name} prep recipe. Is it sold as is, or does it need its own recipe?`;
       return `Is "${q.posName}" the ${top!.name} recipe?${others.length ? ` (or ${others.join(', ')})` : ''}`;
     case 'choose':
+      if (q.candidates.length && q.candidates.every((c) => c.kind === 'prep')) return `"${q.posName}" only matches the ${top!.name} prep recipe. Is it sold as is, or does it need its own recipe?`;
       return q.candidates.length
         ? `Which recipe is "${q.posName}"? Closest: ${q.candidates.map((c) => c.name + prepNote(c)).join(', ')}, or no recipe yet.`
         : `No recipe for "${q.posName}" yet.`;

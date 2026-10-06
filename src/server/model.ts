@@ -11,6 +11,7 @@ import { blendedPrices, importMarginEdge, type ImportAnswers, type ImportedProdu
 import { buildRecipes, FREE_PRODUCTS, type RecipeCard } from '../connectors/marginedgeRecipes.ts';
 import { squareItemSales, squareMenuItems, squareModifierSales, type SquareCatalogObject } from '../connectors/square.ts';
 import { applyLinks, confirmLink, emptyLinkState, linkLookup, markNewDish, matchMenu, posName, type LinkQuestion, type PosMenuItem, type SoldItem } from '../core/menuLinks.ts';
+import { foldedTotals, priceFolds, type FoldedVariation } from '../core/priceVariations.ts';
 import { menuMargins, type MarginReport, type MarginSaleLine } from '../core/margins.ts';
 import { modifierCosts, emptyModifierAnswers, type ModifierAnswers, type ModifierCosts } from '../core/modifiers.ts';
 import { RecipeBook, type Product, type Recipe } from '../core/recipes.ts';
@@ -36,13 +37,18 @@ export interface PilotImportAnswers extends ImportAnswers {
   partlyGrown?: { product: string; note?: string }[];
 }
 
+/** When an answer was given in the app, and by whom (answers loaded from a file have neither). */
+export interface Stamp { at?: string; by?: string }
 export interface LinkAnswers {
-  confirm: (PosMenuItem & { recipe: string; portion?: Quantity; from?: string; note?: string })[];
-  newDish: (PosMenuItem & { from?: string; note?: string })[];
+  confirm: (PosMenuItem & Stamp & { recipe: string; portion?: Quantity; from?: string; note?: string })[];
+  newDish: (PosMenuItem & Stamp & { from?: string; note?: string })[];
   /** POS items confirmed as having no food cost to track (gift cards, fees, merchandise). */
-  notFood?: (PosMenuItem & { note?: string })[];
+  notFood?: (PosMenuItem & Stamp & { note?: string })[];
   /** Menu to-dos a manager said were false alarms, by their dedupe key. */
-  dismissed?: { dedupeKey: string; note?: string }[];
+  dismissed?: (Stamp & { dedupeKey: string; note?: string })[];
+  /** Discount buttons kept as their own item (by catalog id), and ones folded by hand. */
+  priceSplit?: string[];
+  priceMerge?: { catalogId: string; into: string }[];
 }
 
 /** One answer from a screen, folded into the kitchen book. */
@@ -92,13 +98,14 @@ export function answerProblem(a: any): string | undefined {
 }
 
 /** The link answers with one more answer folded in. Later answers about the same item replace earlier ones. */
-export function withAnswer(current: LinkAnswers, a: Exclude<Answer, { type: 'conversion' | 'price' }>): LinkAnswers {
+export function withAnswer(current: LinkAnswers, a: Exclude<Answer, { type: 'conversion' | 'price' }>, stamp: Stamp = {}): LinkAnswers {
   const next: LinkAnswers = { confirm: [...current.confirm], newDish: [...current.newDish], notFood: [...(current.notFood ?? [])], dismissed: [...(current.dismissed ?? [])] };
+  const st = { ...(stamp.at ? { at: stamp.at } : {}), ...(stamp.by ? { by: stamp.by } : {}) };
   if (a.type === 'dismiss') {
-    if (!next.dismissed!.some((d) => d.dedupeKey === a.dedupeKey)) next.dismissed!.push({ dedupeKey: a.dedupeKey, ...(a.note ? { note: a.note } : {}) });
+    if (!next.dismissed!.some((d) => d.dedupeKey === a.dedupeKey)) next.dismissed!.push({ dedupeKey: a.dedupeKey, ...(a.note ? { note: a.note } : {}), ...st });
     return next;
   }
-  const item = { catalogId: a.catalogId, itemName: a.itemName, ...(a.variationName ? { variationName: a.variationName } : {}) };
+  const item = { catalogId: a.catalogId, itemName: a.itemName, ...(a.variationName ? { variationName: a.variationName } : {}), ...st };
   const same = (x: PosMenuItem & { from?: string }) => x.catalogId === a.catalogId && x.itemName === a.itemName && (x.variationName ?? '') === (a.variationName ?? '') && (x.from ?? '') === ((a as any).from ?? '');
   next.confirm = next.confirm.filter((x) => !same(x));
   next.newDish = next.newDish.filter((x) => !same(x));
@@ -107,6 +114,32 @@ export function withAnswer(current: LinkAnswers, a: Exclude<Answer, { type: 'con
   if (a.type === 'newDish') next.newDish.push({ ...item, ...(a.from ? { from: a.from } : {}), ...(a.note ? { note: a.note } : {}) });
   if (a.type === 'notFood') next.notFood!.push(item);
   return next;
+}
+
+/** Which answer to take back: a menu to-do by its key, or a POS item (and the date it changed, for a new version). */
+export type AnswerTarget = { dedupeKey: string } | (PosMenuItem & { from?: string });
+
+/** The answers with one taken back, so the question it settled asks again. */
+export function withoutAnswer(current: LinkAnswers, t: AnswerTarget): LinkAnswers {
+  if ('dedupeKey' in t) return { ...current, dismissed: (current.dismissed ?? []).filter((d) => d.dedupeKey !== t.dedupeKey) };
+  const same = (x: PosMenuItem & { from?: string }) => x.catalogId === t.catalogId && x.itemName === t.itemName && (x.variationName ?? '') === (t.variationName ?? '') && (x.from ?? '') === (t.from ?? '');
+  return { ...current, confirm: current.confirm.filter((x) => !same(x)), newDish: current.newDish.filter((x) => !same(x)), notFood: (current.notFood ?? []).filter((x) => !same(x)) };
+}
+
+export interface RecentAnswer { type: 'link' | 'newDish' | 'notFood' | 'dismiss'; target: AnswerTarget; name: string; recipe?: string; note?: string; at?: string; by?: string }
+
+/** Every answer, the newest first; those without a time (loaded from a file) last, latest added first. */
+export function recentAnswers(links: LinkAnswers): RecentAnswer[] {
+  const item = (x: PosMenuItem & { from?: string }) => ({ catalogId: x.catalogId, itemName: x.itemName, ...(x.variationName ? { variationName: x.variationName } : {}), ...(x.from ? { from: x.from } : {}) });
+  const nameOf = (x: PosMenuItem) => (x.variationName && !/^regular$/i.test(x.variationName) ? `${x.itemName} (${x.variationName})` : x.itemName);
+  const stamp = (x: Stamp) => ({ ...(x.at ? { at: x.at } : {}), ...(x.by ? { by: x.by } : {}) });
+  const all: (RecentAnswer & { n: number })[] = [
+    ...links.confirm.map((x, n) => ({ type: 'link' as const, target: item(x), name: nameOf(x), recipe: x.recipe, ...stamp(x), n })),
+    ...links.newDish.map((x, n) => ({ type: 'newDish' as const, target: item(x), name: nameOf(x), ...(x.note ? { note: x.note } : {}), ...stamp(x), n })),
+    ...(links.notFood ?? []).map((x, n) => ({ type: 'notFood' as const, target: item(x), name: nameOf(x), ...stamp(x), n })),
+    ...(links.dismissed ?? []).map((x, n) => ({ type: 'dismiss' as const, target: { dedupeKey: x.dedupeKey }, name: x.note ?? x.dedupeKey, ...stamp(x), n })),
+  ];
+  return all.sort((a, b) => (b.at ?? '').localeCompare(a.at ?? '') || b.n - a.n).map(({ n: _n, ...r }) => r);
 }
 
 export interface KitchenBook {
@@ -173,6 +206,8 @@ export interface Model {
   checks: MenuCheck[];
   /** Square's photo for a sold button (item variation id), from the item it belongs to. */
   imageOf: (catalogId: string) => string | undefined;
+  /** Discount buttons folded into a regular one, by the regular one's id, with what each sold in the period. */
+  folded: Map<string, FoldedVariation[]>;
 }
 
 const cache = new Map<string, { stamp: string; model: Promise<Model> }>();
@@ -264,7 +299,20 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     }
   }
   const imageOf = (catalogId: string) => images.get(catalogId);
-  const itemRows = await storedItemSales(db, restaurantId, from, today);
+  // Discount buttons (Tuesday $10, half-price Wednesday) fold into the drink they discount.
+  const rawRows = await storedItemSales(db, restaurantId, from, today);
+  const saleOf = (r: (typeof rawRows)[number]) => ({ catalogId: String(r['ItemSales.item_variation_id'] ?? ''), itemName: String(r['ItemSales.item_name'] ?? ''), ...(r['ItemSales.item_variation_name'] ? { variationName: String(r['ItemSales.item_variation_name']) } : {}) });
+  const fold = priceFolds(menuItems, bookData.linkAnswers ?? {}, rawRows.map(saleOf).filter((x) => x.catalogId));
+  const manualFolds = new Set((bookData.linkAnswers?.priceMerge ?? []).map((m) => m.catalogId));
+  const foldedSales: Parameters<typeof foldedTotals>[0] = [];
+  const itemRows = rawRows.map((r) => {
+    const sale = saleOf(r);
+    const into = sale.catalogId ? fold(sale) : undefined;
+    if (!into) return r;
+    foldedSales.push({ into: into.catalogId, ...sale, quantity: Number(r['ItemSales.items_sold_count'] ?? 0), netSales: Number(r['ItemSales.item_net_sales'] ?? 0), ...(manualFolds.has(sale.catalogId) ? { manual: true } : {}) });
+    return { ...r, 'ItemSales.item_variation_id': into.catalogId, 'ItemSales.item_name': into.itemName, 'ItemSales.item_variation_name': into.variationName ?? null };
+  });
+  const folded = foldedTotals(foldedSales);
   const dataFrom = (await db.query<{ day: string | null }>('SELECT min(day)::text AS day FROM pos_item_sales_daily WHERE restaurant_id = $1', [restaurantId])).rows[0]?.day ?? undefined;
   if (!itemRows.length) missing.push('square');
   const sales = squareItemSales(itemRows, menuItems);
@@ -324,5 +372,5 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     // A dish change already answered: a version on that button starts within a week of the suggested day.
     .filter((c) => !(c.kind === 'dishChanged' && c.catalogId && c.suggestedDate && [...linkAnswers.confirm, ...linkAnswers.newDish].some((v) => v.catalogId === c.catalogId && v.from && Math.abs(Date.parse(v.from) - Date.parse(c.suggestedDate!)) <= 7 * 86_400_000)));
 
-  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf };
+  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded };
 }

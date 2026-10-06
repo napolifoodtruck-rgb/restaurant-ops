@@ -75,7 +75,7 @@ test('exact names link on their own; the rest become questions, best sellers fir
     ['Calabria', 'choose', undefined],
     ['Bufala Margherita', 'confirm', 'buffalo'],
     ['Meatballs Pomodoro', 'confirm', 'meatball-app'],
-    ['Corn Panna', 'confirm', 'corn-panna'], // same name as a prep, so it asks
+    ['Corn Panna', 'choose', 'corn-panna'], // same name as a prep: it asks, and never as a yes/no
     ['Spinaci', 'confirm', 'spinachi'],
   ]);
   assert.equal(describeQuestion(questions[1]!), 'Is "Bufala Margherita" the Buffalo Margherita recipe? (or Margherita)');

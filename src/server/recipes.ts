@@ -103,6 +103,7 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
       sellsAs: [...new Set(c.view.linked.map((l) => l.itemName))],
       ...(c.view.linked.map((l) => model.imageOf(l.catalogId)).find(Boolean) ? { image: c.view.linked.map((l) => model.imageOf(l.catalogId)).find(Boolean) } : {}),
       ...(manager && c.view.cost !== undefined ? { cost: c.view.cost, complete: c.view.complete } : {}),
+      ...(manager ? { linked: c.view.linked.map((l) => ({ catalogId: l.catalogId, itemName: l.itemName, ...(l.variationName ? { variationName: l.variationName } : {}), name: l.name, sold: l.sold, netSales: l.netSales, ...(model.folded.get(l.catalogId)?.length ? { includes: model.folded.get(l.catalogId) } : {}) })) } : {}),
       canEdit: manager,
     }), true;
   }

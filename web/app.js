@@ -37,11 +37,39 @@ function icon(name) {
   return svg;
 }
 
+// What was just pressed: while the request it started is out, that button shows a spinner,
+// and a thin bar runs along the top. Requests nobody pressed for (refreshes) stay quiet.
+let pressed = null, pressedAt = 0, waiting = 0, barTimer;
+const notePress = (el) => { if (el) { pressed = el; pressedAt = Date.now(); } };
+document.addEventListener('click', (e) => notePress(e.target.closest?.('button, a, summary')), true);
+document.addEventListener('change', (e) => notePress(e.target.closest?.('select, input')), true);
+/** Marks a button as working: disabled, with a small spinner beside its label. */
+function busy(el, on) {
+  if (!el) return;
+  el.classList.toggle('busy', on);
+  if (on) { el.dataset.wasDisabled = el.disabled ? '1' : ''; el.disabled = true; el.setAttribute('aria-busy', 'true'); }
+  else { el.disabled = el.dataset.wasDisabled === '1'; el.removeAttribute('aria-busy'); }
+}
+function working(on) {
+  waiting = Math.max(0, waiting + (on ? 1 : -1));
+  clearTimeout(barTimer);
+  if (waiting) barTimer = setTimeout(() => document.body.classList.add('working'), 120);
+  else document.body.classList.remove('working');
+}
+
 async function api(method, path, body) {
-  const res = await fetch(path, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin' });
-  let data = {};
-  try { data = await res.json(); } catch {}
-  return { ok: res.ok, status: res.status, data };
+  const el = pressed && Date.now() - pressedAt < 500 && pressed.isConnected && !pressed.classList.contains('busy') ? pressed : null;
+  if (el) { pressed = null; busy(el, true); working(true); }
+  try {
+    const res = await fetch(path, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin' });
+    let data = {};
+    try { data = await res.json(); } catch {}
+    return { ok: res.ok, status: res.status, data };
+  } catch {
+    return { ok: false, status: 0, data: { error: 'No connection. Check the wifi and try again.' } };
+  } finally {
+    if (el) { working(false); if (el.isConnected) busy(el, false); }
+  }
 }
 
 /** Replace an element's children, skipping empty slots (null, false, nested arrays flattened). */
@@ -267,17 +295,31 @@ function shell(me, active, content) {
   const nav = [
     ['today', 'Today', todayScreen], ['prep', 'Prep', prepHome], ['recipes', 'Recipes', recipesScreen], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['reports', 'Reports', manager && reportsScreen], ['orders', 'Orders', manager && ordersScreen],
   ];
-  return h('div', { class: 'shell' },
+  return h('div', { class: 'shell', 'data-active': active },
     h('nav', { class: 'rail', 'aria-label': 'Main' },
       h('div', { class: 'logo' }, brandMark('rail')),
-      nav.map(([key, label, go]) => h('button', { class: active === key ? 'on' : '', disabled: !go, title: go ? label : 'Coming next', onclick: go ? () => go(me) : undefined }, icon(key), label)),
-      h('button', { class: active === 'settings' ? 'on' : '', onclick: () => home(me) }, icon('settings'), 'Settings'),
+      nav.map(([key, label, go]) => h('button', { class: active === key ? 'on' : '', 'data-key': key, disabled: !go, title: go ? label : 'Coming next', onclick: go ? () => go(me) : undefined }, icon(key), label)),
+      h('button', { class: active === 'settings' ? 'on' : '', 'data-key': 'settings', onclick: () => home(me) }, icon('settings'), 'Settings'),
     ),
     h('main', {}, content),
   );
 }
 
+/**
+ * While a screen loads: if a page is already up, it stays, faded, with the new tab marked and the bar running
+ * along the top, until the new one replaces it. Only the very first screen starts from a blank page.
+ */
 function loadingScreen(me, active, title) {
+  const current = app.querySelector('.shell');
+  if (current) {
+    current.querySelector('main')?.classList.add('stale');
+    current.querySelectorAll('.rail > button').forEach((b) => b.classList.toggle('on', b.dataset.key === active));
+    working(true);
+    // Whatever shows next ends the wait.
+    const stop = new MutationObserver(() => { if (!current.isConnected) { working(false); stop.disconnect(); } });
+    stop.observe(app, { childList: true });
+    return;
+  }
   show(shell(me, active, [h('header', {}, h('h1', { text: title })), h('p', { class: 'muted', text: 'Working it out…' })]));
 }
 
@@ -1118,9 +1160,20 @@ async function prepWork(me, stationId, date) {
   }
   const work = v.lines.filter((l) => l.kind === 'task' || (l.toMake ?? 0) > 0);
   const done = work.filter((l) => l.doneAt).length;
-  const act = async (l, state) => { const res = await api('POST', `/api/prep/${stationId}/${date}/done`, { itemId: l.id, state }); if (res.ok) again(); };
+  // A check-off shows at once; the save and the fresh list follow. If the save fails, it un-checks with the reason.
+  const act = async (l, state, btn) => {
+    const row = btn?.closest('.workrow');
+    if (btn && (state === 'done' || state === 'undo')) {
+      pressed = null;
+      btn.classList.toggle('on', state === 'done'); btn.textContent = state === 'done' ? '✓' : ''; row?.classList.toggle('done', state === 'done'); btn.disabled = true;
+    }
+    const res = await api('POST', `/api/prep/${stationId}/${date}/done`, { itemId: l.id, state });
+    if (res.ok) return again();
+    if (btn) { btn.classList.toggle('on', Boolean(l.doneAt)); btn.textContent = l.doneAt ? '✓' : ''; row?.classList.toggle('done', Boolean(l.doneAt)); btn.disabled = false; }
+    row?.append(h('div', { class: 'error small', text: res.data.error ?? 'That didn’t save.' }));
+  };
   const rows = work.map((l) => h('div', { class: `workrow${l.doneAt ? ' done' : ''}` },
-    h('button', { class: `check${l.doneAt ? ' on' : l.startedAt ? ' started' : ''}`, 'aria-label': l.doneAt ? `Undo ${l.name}` : `Mark ${l.name} done`, onclick: () => act(l, l.doneAt ? 'undo' : 'done') }, l.doneAt ? '✓' : ''),
+    h('button', { class: `check${l.doneAt ? ' on' : l.startedAt ? ' started' : ''}`, 'aria-label': l.doneAt ? `Undo ${l.name}` : `Mark ${l.name} done`, onclick: (e) => act(l, l.doneAt ? 'undo' : 'done', e.currentTarget) }, l.doneAt ? '✓' : ''),
     h('div', { class: 'grow' },
       h('div', { class: 'name', text: l.name }),
       h('div', { class: 'small', text: l.kind === 'task' ? 'Daily' : `Make ${amountText(l.toMake, l.unit)}${l.note ? ` · ${l.note}` : ''}` }),
@@ -1300,7 +1353,26 @@ async function menuScreen(me) {
     const d = (await api('GET', `/api/cards?area=${sideOf(me)}`)).data;
     cardEditor(me, d, null, { name: x.pos?.itemName ?? x.name, kind: sideOf(me) === 'bar' ? 'drink' : 'dish', link: x.pos ? [{ ...x.pos, name: x.name }] : [] });
   };
-  const dishRow = (x, right, flagCard = m.cards) => h('div', {}, photo(x.image, 'thumb small'), h('span', { class: 'grow', text: x.name }),
+  // Same drink, different price: discount buttons folded in show under the drink, each can be kept apart;
+  // a button the name doesn't give away can be folded into another variation of the same item by hand.
+  const priceVariation = async (el, body) => {
+    busy(el, true);
+    const res = await api('POST', '/api/menu/price-variation', body);
+    if (!res.ok) { busy(el, false); return el.after(h('span', { class: 'error small', text: ` ${res.data.error ?? 'Not saved.'}` })); }
+    menuScreen(me);
+  };
+  const siblings = (x) => (x.pos?.variationName ? m.current.filter((o) => o !== x && o.pos && o.pos.itemName === x.pos.itemName && o.pos.catalogId !== x.pos.catalogId) : []);
+  const includesLine = (x) => (x.includes?.length ? h('div', { class: 'small muted includes' }, 'Includes ', x.includes.map((v, n) => [n ? ', ' : '',
+    h('span', { text: `${v.variationName || v.name} (${Math.round(v.quantity)} sold)` }), ' ',
+    h('button', { class: 'link', text: 'Keep apart', title: `Show ${v.name} as its own item`, onclick: (e) => priceVariation(e.currentTarget, { catalogId: v.catalogId, action: 'split' }) })])) : null);
+  const sameAs = (x) => {
+    const sib = siblings(x);
+    if (!sib.length || !atLeast(me.roleLevel, 'manager')) return null;
+    const pick = h('select', { class: 'small-select', 'aria-label': `${x.name} is the same drink as` }, h('option', { value: '', text: 'Same drink as…' }), sib.map((o) => h('option', { value: o.pos.catalogId, text: o.name })));
+    pick.addEventListener('change', () => pick.value && priceVariation(pick, { catalogId: x.pos.catalogId, action: 'merge', into: pick.value }));
+    return pick;
+  };
+  const dishRow = (x, right, flagCard = m.cards) => h('div', {}, photo(x.image, 'thumb small'), h('div', { class: 'grow' }, h('div', { text: x.name }), includesLine(x)), sameAs(x),
     x.hasCard || !flagCard ? null : h('button', { class: 'tag warn tag-button', text: 'needs recipe', title: `Write the recipe for ${x.name}`, onclick: () => writeCard(x) }),
     h('span', { class: 'small muted nowrap', text: right }));
   const columns = sections.map((s) => h('section', { class: 'card' },
@@ -1321,13 +1393,14 @@ async function menuScreen(me) {
       h('option', { value: '', text: 'Another recipe…' }), (m.recipes ?? []).map((r) => h('option', { value: r, text: r })));
     return select;
   };
+  const onlyPrep = (q) => q.candidates.length > 0 && (q.candidateKinds ?? []).length > 0 && q.candidateKinds.every((k) => k === 'prep');
   const questionRows = [
     ...m.checks.map((c) => {
       const row = h('div', { class: 'ask' });
       const buttons = [];
-      if (c.kind === 'dishChanged' && c.item) buttons.push([`Yes, new version from ${shortDate(c.suggestedDate)}`, { type: 'newDish', ...c.item, from: c.suggestedDate, note: 'new version, recipe to come' }, 'dark'], ['No, same dish', { type: 'dismiss', dedupeKey: c.dedupeKey }]);
-      else if (c.kind === 'newButton' && c.item) buttons.push(['New dish, recipe to come', { type: 'newDish', ...c.item }, 'dark'], ['Not food', { type: 'notFood', ...c.item }], ['Ignore', { type: 'dismiss', dedupeKey: c.dedupeKey }]);
-      else buttons.push(['Ignore', { type: 'dismiss', dedupeKey: c.dedupeKey }]);
+      if (c.kind === 'dishChanged' && c.item) buttons.push([`Yes, new version from ${shortDate(c.suggestedDate)}`, { type: 'newDish', ...c.item, from: c.suggestedDate, note: 'new version, recipe to come' }, 'dark'], ['No, same dish', { type: 'dismiss', dedupeKey: c.dedupeKey, note: c.title }]);
+      else if (c.kind === 'newButton' && c.item) buttons.push(['New dish, recipe to come', { type: 'newDish', ...c.item }, 'dark'], ['Not food', { type: 'notFood', ...c.item }], ['Ignore', { type: 'dismiss', dedupeKey: c.dedupeKey, note: c.title }]);
+      else buttons.push(['Ignore', { type: 'dismiss', dedupeKey: c.dedupeKey, note: c.title }]);
       row.append(h('div', { text: c.title }), choices(row, buttons));
       return row;
     }),
@@ -1336,8 +1409,8 @@ async function menuScreen(me) {
       const sold = q.first ? ` · sold ${shortDate(q.first)} – ${shortDate(q.last)}` : '';
       row.append(
         h('div', {}, h('b', { text: q.name }), h('span', { class: 'small muted', text: ` ${dollars(q.netSales)}${sold}` })),
-        h('div', { class: 'small muted', text: q.candidates.length ? 'Which recipe is it?' : 'No recipe matches.' }),
-        choices(row, [...q.candidates.map((c, i) => [c, { type: 'link', ...q.item, recipe: c }, i === 0 ? 'dark' : '']), ['New dish, recipe to come', { type: 'newDish', ...q.item }], ['Not food', { type: 'notFood', ...q.item }]]),
+        h('div', { class: 'small muted', text: !q.candidates.length ? 'No recipe matches.' : onlyPrep(q) ? 'Only a prep recipe matches. A prep is a batch (a sauce, a dough), not what’s sold, so this usually needs its own recipe.' : 'Which recipe is it?' }),
+        choices(row, [...q.candidates.map((c, i) => [q.candidateKinds?.[i] === 'prep' ? `${c} (prep recipe)` : c, { type: 'link', ...q.item, recipe: c }, i === 0 && !onlyPrep(q) ? 'dark' : '']), [onlyPrep(q) ? 'Needs its own recipe' : 'New dish, recipe to come', { type: 'newDish', ...q.item }, onlyPrep(q) ? 'dark' : ''], ['Not food', { type: 'notFood', ...q.item }]]),
       );
       row.lastChild.append(otherCard(row, q.item));
       return row;
@@ -1363,8 +1436,49 @@ async function menuScreen(me) {
       [m.coverage ? coverageCard(me, m.coverage, sideOf(me)) : null, onMenu,
         questionRows.length ? sideBox('Needs you', h('div', { class: 'small', text: `${questionRows.length} question${questionRows.length === 1 ? '' : 's'} about what’s selling: new buttons, and which recipe a dish is.` }),
           sideActions(h('button', { class: 'btn small-btn dark', text: 'Answer them', onclick: () => document.getElementById('menu-questions')?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }))) : null,
-        off]),
+        off, m.priceKept?.length ? sideBox('Kept as their own item', h('div', { class: 'list compact' }, m.priceKept.map((k) => h('div', {},
+          h('span', { class: 'grow small', text: k.kind === 'merge' ? `${k.name} → same as ${k.into}` : k.name }),
+          h('button', { class: 'link', text: k.kind === 'merge' ? 'Undo' : 'Fold back', onclick: (e) => priceVariation(e.currentTarget, { catalogId: k.catalogId, action: 'reset' }) })))),
+          h('div', { class: 'small muted', text: 'Discount buttons (Tuesday $10, half-price Wednesday) count as the drink they discount, unless kept apart here.' })) : null,
+        atLeast(me.roleLevel, 'manager') ? answersBox(me, () => menuScreen(me)) : null]),
   ]));
+}
+
+/** What an answer said, in a line. */
+function answerText(a) {
+  if (a.type === 'link') return [h('b', { text: a.name }), ' is the ', h('b', { text: a.recipe }), ' recipe'];
+  if (a.type === 'newDish') return [h('b', { text: a.name }), a.note === 'unlinked in the app' ? ': taken off its recipe' : a.target.from ? `: new version from ${shortDate(a.target.from)}` : ': new dish, recipe to come'];
+  if (a.type === 'notFood') return [h('b', { text: a.name }), ': not food'];
+  return [h('b', { text: a.name.replace(/[.?]$/, '') }), ': ignored'];
+}
+
+/**
+ * Answers given to the menu questions, newest first, each with Undo: taking one back asks the question again.
+ * Fills in after the page is up, so it never holds the page back.
+ */
+function answersBox(me, redraw) {
+  const list = h('div', { class: 'list compact answers' }, h('div', { class: 'small muted', text: 'Loading…' }));
+  const more = h('div');
+  const load = async (limit) => {
+    const r = await api('GET', `/api/answers/recent?limit=${limit}`);
+    if (!r.ok) return fill(list, h('div', { class: 'small muted', text: 'Couldn’t load them.' }));
+    if (!r.data.answers.length) return fill(list, h('div', { class: 'small muted', text: 'None yet.' }));
+    fill(list, r.data.answers.map((a) => {
+      const undo = h('button', { class: 'link', text: 'Undo', 'aria-label': `Undo: ${a.name}` });
+      const row = h('div', {}, h('div', { class: 'grow' }, h('div', { class: 'small' }, answerText(a)),
+        a.at || a.by ? h('div', { class: 'small muted', text: [a.at ? shortDate(a.at.slice(0, 10)) : '', a.by ?? ''].filter(Boolean).join(' · ') }) : null), undo);
+      undo.addEventListener('click', async () => {
+        busy(undo, true);
+        const res = await api('POST', '/api/answers/undo', { target: a.target });
+        if (!res.ok) { busy(undo, false); return row.append(h('div', { class: 'error small', text: res.data.error ?? 'Not undone.' })); }
+        redraw();
+      });
+      return row;
+    }));
+    fill(more, r.data.total > r.data.answers.length ? h('button', { class: 'btn small-btn', text: `Show all ${r.data.total}`, onclick: (e) => { busy(e.currentTarget, true); load(500); } }) : null);
+  };
+  load(8);
+  return sideBox('Answers given', h('div', { class: 'small muted', text: 'Undo one and its question comes back, to answer again.' }), list, more);
 }
 
 // Dishes coming to the menu: plan ahead, see what prep it means, apply to the station lists.
@@ -1469,7 +1583,7 @@ async function recipesScreen(me, state = {}) {
 async function recipePage(me, name, opts = {}) {
   const r = await api('GET', `/api/recipes/${encodeURIComponent(name)}`);
   if (!r.ok) return show(shell(me, 'recipes', [h('h1', { text: name }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
-  const v = recipeView(me, r.data, { open: (n) => recipePage(me, n), back: h('button', { class: 'btn', text: '← Recipes', onclick: () => recipesScreen(me) }), page: true, ...opts });
+  const v = recipeView(me, r.data, { open: (n) => recipePage(me, n), back: h('button', { class: 'btn', text: '← Recipes', onclick: () => recipesScreen(me) }), page: true, reload: () => recipePage(me, name, opts), ...opts });
   show(shell(me, 'recipes', [v.head, page(v.body, v.side)]));
 }
 
@@ -1536,6 +1650,7 @@ function recipeView(me, r, opts) {
         r.image ? h('section', { class: 'card tight' }, photo(r.image, 'hero')) : null,
         prep ? sideBox('How much', h('div', { class: 'big', text: `${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}` }), scaler, h('div', { class: 'small muted', text: 'Batches: every amount scales with it.' })) : null,
         r.usedBy.length ? sideBox('Used in', h('div', { class: 'small' }, usedIn())) : null,
+        r.linked ? soldAsBox(r, opts.reload) : null,
         cost ? sideBox('Cost · managers only', h('div', { class: 'big', text: money2(r.cost * scale) }), h('div', { class: 'small muted', text: `${prep ? `for ${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}` : r.kind === 'drink' ? 'a drink' : 'a plate'}${r.complete ? '' : ' · some lines have no price yet'}` })) : null);
       return;
     }
@@ -1551,6 +1666,30 @@ function recipeView(me, r, opts) {
   };
   draw();
   return page ? { head, body, side: [...side.children].length ? side : null } : body;
+}
+
+/** The Square buttons that sell this recipe (managers): each can be taken off, back to "selling without a recipe". */
+function soldAsBox(r, reload) {
+  const prep = r.kind === 'prep' || r.kind === 'barPrep';
+  if (!r.linked.length) return prep ? null : sideBox('Sold as', h('div', { class: 'small muted', text: 'No Square button is linked to it yet.' }));
+  return sideBox('Sold as', prep ? h('div', { class: 'note small', text: `This is a prep recipe (a batch), but a Square button is linked to it as if it were sold as is. If that's a mistake, unlink it: the button goes back to needing its own recipe.` }) : null,
+    h('div', { class: 'list compact' }, r.linked.map((l) => {
+      const btn = h('button', { class: 'link', text: 'Unlink', 'aria-label': `Unlink ${l.name}` });
+      // Discount days folded in: what they sold, at what price, and the cost as a share of it.
+      const regular = l.includes?.length ? { quantity: l.sold - l.includes.reduce((a, v) => a + v.quantity, 0), netSales: l.netSales - l.includes.reduce((a, v) => a + v.netSales, 0) } : null;
+      const line = (label, q, sales) => h('div', { class: 'small muted', text: `${label}: ${Math.round(q).toLocaleString()} sold${q > 0 ? ` at ${money2(sales / q)}` : ''}${q > 0 && r.cost ? ` · cost ${Math.round((r.cost / (sales / q)) * 100)}%` : ''}` });
+      const row = h('div', {}, h('span', { class: 'grow' }, h('div', { text: l.name }),
+        regular ? [line('Regular price', regular.quantity, regular.netSales), l.includes.map((v) => line(v.variationName || v.name, v.quantity, v.netSales))]
+          : h('div', { class: 'small muted', text: `${Math.round(l.sold).toLocaleString()} sold lately` })), btn);
+      btn.addEventListener('click', async () => {
+        if (!confirmText(`Unlink ${l.name} from ${r.name}? It goes back to “selling without a recipe” until it has one.`)) return;
+        busy(btn, true);
+        const res = await api('POST', '/api/cards/unlink', { items: [{ catalogId: l.catalogId, itemName: l.itemName, ...(l.variationName ? { variationName: l.variationName } : {}) }] });
+        if (!res.ok) { busy(btn, false); return row.append(h('div', { class: 'error small', text: res.data.error ?? 'Not unlinked.' })); }
+        reload?.();
+      });
+      return row;
+    })));
 }
 
 // ------------------------------------------------------------------ recipe cards
@@ -1873,24 +2012,54 @@ const TONE_CLASS = { due: 'due', ask: 'ask', alert: 'alert', info: 'info' };
 const longDay = (d) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 const weekdayName = (d) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long' });
 
+let todaySeq = 0;
 async function todayScreen(me, filter = 'all') {
+  const seq = ++todaySeq;
   loadingScreen(me, 'today', 'Today');
   const r = await api('GET', '/api/today');
   if (!r.ok) return show(shell(me, 'today', [h('h1', { text: 'Today' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
-  const t = r.data;
+  let t = r.data;
+  // Lines just answered or snoozed stay where they were, folded up with an Undo, until you leave Today.
+  const done = new Map();
+  const here = () => seq === todaySeq && app.querySelector('.shell[data-active="today"]');
+  // Fetches again quietly and redraws: the page never goes blank for it.
+  const refresh = async () => {
+    const again = await api('GET', '/api/today');
+    if (again.ok && here()) { t = again.data; draw(); }
+  };
   const go = (g) => ({
     count: () => prepCount(me, g.stationId, g.date), review: () => prepReview(me, g.stationId, g.date), work: () => prepWork(me, g.stationId, g.date),
     menu: () => menuScreen(me), performance: () => marginsScreen(me), settings: () => home(me),
     cards: () => cardsScreen(me), drafts: () => draftsScreen(me), order: () => orderScreen(me, g.vendorId), orders: () => { if (g.side) me.side = g.side; ordersScreen(me); },
   })[g.to]?.();
-  const answer = async (row, body) => {
-    row.querySelectorAll('button').forEach((b) => (b.disabled = true));
-    const res = await api('POST', '/api/answers', body);
-    if (!res.ok) {
-      row.querySelectorAll('button').forEach((b) => (b.disabled = false));
-      return row.append(h('div', { class: 'error', text: res.data.error ?? 'That didn’t save.' }));
-    }
-    todayScreen(me, filter);
+  const targetOf = (b) => (b.type === 'dismiss' ? { dedupeKey: b.dedupeKey } : { catalogId: b.catalogId, itemName: b.itemName, ...(b.variationName ? { variationName: b.variationName } : {}), ...(b.from ? { from: b.from } : {}) });
+  // A line folded up in place: what was done, and Undo. Saving happens behind it.
+  const foldUp = (row, i, said, undo) => {
+    const index = [...row.parentNode.children].indexOf(row);
+    done.set(i.key, { item: i, said, undo, index });
+    row.replaceWith(doneRow(i.key));
+  };
+  const doneRow = (key) => {
+    const d = done.get(key);
+    const undoBtn = h('button', { class: 'link', text: 'Undo' });
+    const row = h('article', { class: 'todo done-row', role: 'status' },
+      h('div', { class: 'todo-label', text: 'Done' }),
+      h('div', { class: 'todo-body' }, h('div', { class: 'todo-title', text: d.item.title }), h('div', { class: 'small muted', text: d.said })),
+      h('div', { class: 'todo-actions' }, d.failed ? h('span', { class: 'error small', text: d.failed }) : undoBtn));
+    undoBtn.addEventListener('click', async () => {
+      busy(undoBtn, true);
+      const res = await d.undo();
+      if (!res.ok) { busy(undoBtn, false); return row.append(h('div', { class: 'error small', text: res.data.error ?? 'Couldn’t undo it.' })); }
+      done.delete(key);
+      refresh();
+    });
+    return row;
+  };
+  const answer = async (row, i, a) => {
+    foldUp(row, i, `Answered: ${a.label}`, () => api('POST', '/api/answers/undo', { target: targetOf(a.body) }));
+    const res = await api('POST', '/api/answers', a.body);
+    if (!res.ok) { done.delete(i.key); if (here()) draw(); return showError(res.data.error ?? 'That didn’t save.', i.key); }
+    refresh();
   };
   // Snoozing: set a line aside for a while (just for you), or bring it back.
   const snooze = async (keys, choice, row) => {
@@ -1900,14 +2069,22 @@ async function todayScreen(me, filter = 'all') {
       row?.querySelectorAll('button').forEach((b) => (b.disabled = false));
       return row?.append(h('div', { class: 'error', text: res.data.error ?? 'That didn’t save.' }));
     }
-    todayScreen(me, filter);
+    refresh();
   };
+  const snoozeOne = async (row, i, c) => {
+    foldUp(row, i, `Snoozed ${c.label.toLowerCase()}`, () => api('POST', '/api/today/snooze', { keys: [i.key], wake: true }));
+    const res = await api('POST', '/api/today/snooze', { keys: [i.key], ...(c.hours ? { hours: c.hours } : { day: c.day }) });
+    if (!res.ok) { done.delete(i.key); if (here()) draw(); return showError(res.data.error ?? 'That didn’t save.', i.key); }
+    refresh();
+  };
+  let errorFor = null;
+  const showError = (text, key) => { errorFor = { text, key }; if (here()) draw(); };
   const itemRow = (i) => {
     const row = h('article', { class: `todo ${TONE_CLASS[i.tone] ?? ''}${i.answers?.length ? ' has-answers' : ''}` });
     const actions = h('div', { class: 'todo-actions' });
     const normal = () => { row.classList.remove('choosing'); fillNormal(); };
     const fillNormal = () => fill(actions,
-      (i.answers ?? []).map((a, n) => h('button', { class: `btn small-btn${n === 0 ? ' blue' : ''}`, text: a.label, onclick: () => answer(row, a.body) })),
+      (i.answers ?? []).map((a, n) => h('button', { class: `btn small-btn${n === 0 ? ' blue' : ''}`, text: a.label, onclick: () => answer(row, i, a) })),
       i.answers?.length ? h('button', { class: 'link', text: `More on ${i.go.to === 'menu' ? 'Menu' : 'its screen'}`, onclick: () => go(i.go) })
         : h('button', { class: 'btn small-btn dark', text: i.button, onclick: () => go(i.go) }),
       i.snooze?.length ? h('button', { class: 'link snooze-link', text: 'Snooze', title: 'Set it aside for a while, just for you', onclick: choose }) : null);
@@ -1915,58 +2092,71 @@ async function todayScreen(me, filter = 'all') {
     function choose() {
       row.classList.add('choosing');
       fill(actions, h('span', { class: 'small muted', text: 'Snooze:' }),
-        i.snooze.map((c) => h('button', { class: 'btn small-btn', text: c.label, onclick: () => snooze([i.key], c, row) })),
+        i.snooze.map((c) => h('button', { class: 'btn small-btn', text: c.label, onclick: () => snoozeOne(row, i, c) })),
         h('button', { class: 'link', text: 'Cancel', onclick: normal }));
       actions.querySelector('.btn')?.focus();
     }
     normal();
     fill(row,
       h('div', { class: 'todo-label', text: i.label }),
-      h('div', { class: 'todo-body' }, h('div', { class: 'todo-title', text: i.title }), i.detail ? h('div', { class: 'small muted', text: i.detail }) : null),
+      h('div', { class: 'todo-body' }, h('div', { class: 'todo-title', text: i.title }), i.detail ? h('div', { class: 'small muted', text: i.detail }) : null,
+        errorFor?.key === i.key ? h('div', { class: 'error small', text: errorFor.text }) : null),
       actions);
     return row;
   };
   const snoozedRow = (i) => h('div', { class: 'snoozed-row' },
     h('div', { class: 'grow' }, h('div', { class: 'strong', text: i.title }), h('div', { class: 'small muted', text: `${i.label} · back ${when(i.snoozedUntil)}` })),
     h('button', { class: 'btn small-btn', text: 'Bring back', onclick: (e) => snooze([i.key], {}, e.target.closest('.snoozed-row')) }));
-  // Kitchen, bar or both: where this person works, until they switch.
-  // (On a station's iPad, that station is the side.)
-  const side = me.device?.stationId && !t.glance ? 'all' : me.todaySide ?? t.side ?? 'all';
-  const sideItems = t.items.filter((i) => side === 'all' || !i.side || i.side === side);
-  const onSide = sideItems.filter((i) => !i.snoozedUntil);
-  const asleep = sideItems.filter((i) => i.snoozedUntil).sort((a, b) => a.snoozedUntil.localeCompare(b.snoozedUntil));
-  const shown = onSide.filter((i) => filter === 'all' || i.group === filter || (filter === 'costs' && i.group === 'setup'));
-  // Everything showing that has no deadline can be set aside until tomorrow in one go.
-  const canWait = shown.filter((i) => !i.due && i.snooze?.some((c) => c.day));
-  const tomorrow = canWait[0]?.snooze.find((c) => c.day && c.label === 'Until tomorrow');
-  const quiet = canWait.length >= 3 && tomorrow ? sideBox('Too much at once?',
-    h('div', { class: 'small', text: `${canWait.length} of these have no deadline. Snooze them until tomorrow morning; deadlines stay.` }),
-    sideActions(h('button', { class: 'btn small-btn dark', text: `Snooze ${canWait.length} until tomorrow`, onclick: (e) => snooze(canWait.map((i) => i.key), tomorrow, e.target.closest('section')) })),
-    h('div', { class: 'small muted', text: 'Just for you: the rest of the team still sees them.' })) : null;
-  const asleepBox = asleep.length ? h('details', { class: 'card snoozed' },
-    h('summary', {}, h('span', { class: 'strong', text: `${asleep.length} snoozed` }), h('span', { class: 'small muted', text: ` · first back ${when(asleep[0].snoozedUntil)}` })),
-    h('div', { class: 'list' }, asleep.map(snoozedRow)),
-    asleep.length > 1 ? h('div', {}, h('button', { class: 'link', text: 'Bring them all back', onclick: (e) => snooze(asleep.map((i) => i.key), {}, e.target.closest('details')) })) : null) : null;
-  const groups = new Set(onSide.map((i) => (i.group === 'setup' ? 'costs' : i.group)));
-  const sides = t.glance ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Kitchen or bar' },
-    [['all', 'Both'], ['kitchen', 'Kitchen'], ['bar', 'Bar']].map(([k, label]) => h('button', { class: side === k ? 'on' : '', 'aria-pressed': String(side === k), text: label, onclick: () => { me.todaySide = k; todayScreen(me, filter); } }))) : null;
-  const chips = onSide.length > 4 && groups.size > 1 ? h('div', { class: 'row wrap', role: 'group', 'aria-label': 'Show' },
-    TODAY_FILTERS.filter(([k]) => k === 'all' || groups.has(k)).map(([k, label]) => h('button', { class: `chip${filter === k ? ' on' : ''}`, 'aria-pressed': String(filter === k), text: label, onclick: () => todayScreen(me, k) }))) : null;
 
-  const need = onSide.filter((i) => i.tone !== 'info').length;
-  const sub = [
-    t.openToday ? null : `Closed today. Next service ${weekdayName(t.nextOpen)}.`,
-    need ? `${need} thing${need === 1 ? '' : 's'} need${need === 1 ? 's' : ''} someone: deadlines first, then by dollars.` : 'Nothing needs anyone right now.',
-    asleep.length ? `${asleep.length} snoozed.` : null,
-  ].filter(Boolean).join(' ');
+  function draw() {
+    // Kitchen, bar or both: where this person works, until they switch.
+    // (On a station's iPad, that station is the side.)
+    const side = me.device?.stationId && !t.glance ? 'all' : me.todaySide ?? t.side ?? 'all';
+    const sideItems = t.items.filter((i) => !done.has(i.key) && (side === 'all' || !i.side || i.side === side));
+    const onSide = sideItems.filter((i) => !i.snoozedUntil);
+    const asleep = sideItems.filter((i) => i.snoozedUntil).sort((a, b) => a.snoozedUntil.localeCompare(b.snoozedUntil));
+    const shown = onSide.filter((i) => filter === 'all' || i.group === filter || (filter === 'costs' && i.group === 'setup'));
+    // Everything showing that has no deadline can be set aside until tomorrow in one go.
+    const canWait = shown.filter((i) => !i.due && i.snooze?.some((c) => c.day));
+    const tomorrow = canWait[0]?.snooze.find((c) => c.day && c.label === 'Until tomorrow');
+    const quiet = canWait.length >= 3 && tomorrow ? sideBox('Too much at once?',
+      h('div', { class: 'small', text: `${canWait.length} of these have no deadline. Snooze them until tomorrow morning; deadlines stay.` }),
+      sideActions(h('button', { class: 'btn small-btn dark', text: `Snooze ${canWait.length} until tomorrow`, onclick: (e) => snooze(canWait.map((i) => i.key), tomorrow, e.target.closest('section')) })),
+      h('div', { class: 'small muted', text: 'Just for you: the rest of the team still sees them.' })) : null;
+    const asleepBox = asleep.length ? h('details', { class: 'card snoozed' },
+      h('summary', {}, h('span', { class: 'strong', text: `${asleep.length} snoozed` }), h('span', { class: 'small muted', text: ` · first back ${when(asleep[0].snoozedUntil)}` })),
+      h('div', { class: 'list' }, asleep.map(snoozedRow)),
+      asleep.length > 1 ? h('div', {}, h('button', { class: 'link', text: 'Bring them all back', onclick: (e) => snooze(asleep.map((i) => i.key), {}, e.target.closest('details')) })) : null) : null;
+    const groups = new Set(onSide.map((i) => (i.group === 'setup' ? 'costs' : i.group)));
+    // Switching side or filter only redraws what's already here: no trip to the server.
+    const sides = t.glance ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Kitchen or bar' },
+      [['all', 'Both'], ['kitchen', 'Kitchen'], ['bar', 'Bar']].map(([k, label]) => h('button', { class: side === k ? 'on' : '', 'aria-pressed': String(side === k), text: label, onclick: () => { me.todaySide = k; draw(); } }))) : null;
+    const chips = onSide.length > 4 && groups.size > 1 ? h('div', { class: 'row wrap', role: 'group', 'aria-label': 'Show' },
+      TODAY_FILTERS.filter(([k]) => k === 'all' || groups.has(k)).map(([k, label]) => h('button', { class: `chip${filter === k ? ' on' : ''}`, 'aria-pressed': String(filter === k), text: label, onclick: () => { filter = k; draw(); } }))) : null;
 
-  show(shell(me, 'today', [
-    h('header', { class: 'row wrap' },
-      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${longDay(t.today)} · ${me.restaurantName}` }), h('h1', { text: 'Today' }), h('div', { class: 'sub', text: sub })),
-      h('div', { class: 'row wrap' }, sides, chips)),
-    page(h('section', { class: 'todos', 'aria-label': 'To do' }, shown.length ? shown.map(itemRow) : h('div', { class: 'card small muted', text: asleep.length ? 'All clear, apart from what’s snoozed.' : 'All clear.' }), asleepBox),
-      [quiet, glanceCards(me, t, side)]),
-  ]));
+    const need = onSide.filter((i) => i.tone !== 'info').length;
+    const sub = [
+      t.openToday ? null : `Closed today. Next service ${weekdayName(t.nextOpen)}.`,
+      need ? `${need} thing${need === 1 ? '' : 's'} need${need === 1 ? 's' : ''} someone: deadlines first, then by dollars.` : 'Nothing needs anyone right now.',
+      asleep.length ? `${asleep.length} snoozed.` : null,
+    ].filter(Boolean).join(' ');
+    // Folded-up lines go back where they were.
+    const rows = shown.map(itemRow);
+    for (const [key, d] of [...done].sort((a, b) => a[1].index - b[1].index)) {
+      if (side !== 'all' && d.item.side && d.item.side !== side) continue;
+      rows.splice(Math.min(d.index, rows.length), 0, doneRow(key));
+    }
+
+    show(shell(me, 'today', [
+      h('header', { class: 'row wrap' },
+        h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${longDay(t.today)} · ${me.restaurantName}` }), h('h1', { text: 'Today' }), h('div', { class: 'sub', text: sub })),
+        h('div', { class: 'row wrap' }, sides, chips)),
+      page(h('section', { class: 'todos', 'aria-label': 'To do' }, rows.length ? rows : h('div', { class: 'card small muted', text: asleep.length ? 'All clear, apart from what’s snoozed.' : 'All clear.' }), asleepBox),
+        [quiet, glanceCards(me, t, side)]),
+    ]));
+    errorFor = null;
+  }
+  draw();
 }
 
 function glanceCards(me, t, side) {

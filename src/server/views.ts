@@ -265,8 +265,11 @@ export function menuView(model: Model, view: AreaView = ALL) {
 
   // Square's photo of the dish, when it has one.
   const imageFor = (e: { recipeId?: string }) => { const c = e.recipeId ? posNameOf.get(e.recipeId)?.catalogId : undefined; const url = c ? model.imageOf(c) : undefined; return url ? { image: url } : {}; };
+  // Discount buttons folded into this one: shown on its line, each able to be kept apart.
+  const includesFor = (catalogId?: string) => { const f = catalogId ? model.folded.get(catalogId) : undefined; return f?.length ? { includes: f, catalogId } : {}; };
   const currentAll = onMenu(model.entries, today).map((e) => ({
     ...imageFor(e),
+    ...includesFor(e.recipeId ? posNameOf.get(e.recipeId)?.catalogId : undefined),
     name: shownName(e),
     section: sectionFor(shownName(e), (e.recipeId && recipeCategory.get(e.recipeId)) || 'Other'),
     since: e.startsOn,
@@ -284,7 +287,7 @@ export function menuView(model: Model, view: AreaView = ALL) {
     if (model.lookup(s.catalogId, s.name, s.last)) continue;
     const section = categoryOf.get(s.catalogId) ?? 'Other';
     if (!inArea(view, section) || s.quantity <= 0) continue;
-    const item = { name: s.name, section: sectionFor(s.name, section), hasCard: false, pos: posItem(s.catalogId, s.name), ...(model.imageOf(s.catalogId) ? { image: model.imageOf(s.catalogId)! } : {}) };
+    const item = { name: s.name, section: sectionFor(s.name, section), hasCard: false, pos: posItem(s.catalogId, s.name), ...includesFor(s.catalogId), ...(model.imageOf(s.catalogId) ? { image: model.imageOf(s.catalogId)! } : {}) };
     if (s.last >= recent) current.push({ ...item, since: s.first });
     else cameOff.push({ ...item, from: s.first, to: s.last });
   }
@@ -320,6 +323,7 @@ export function menuView(model: Model, view: AreaView = ALL) {
           name: q.posName,
           netSales: money(q.netSales),
           candidates: q.candidates.slice(0, 3).map((c) => c.name),
+          candidateKinds: q.candidates.slice(0, 3).map((c) => c.kind),
           item: { catalogId: q.item.catalogId, itemName: q.item.itemName, ...(q.item.variationName ? { variationName: q.item.variationName } : {}) },
           ...(span ? { first: span.first, last: span.last } : {}),
         };

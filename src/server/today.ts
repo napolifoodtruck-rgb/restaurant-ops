@@ -197,18 +197,26 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string, 
     const before = items.length;
     const questions: (Omit<TodayItem, 'group' | 'label' | 'tone' | 'go' | 'button'> & { name: string })[] = [
       ...menu.checks.map((c) => {
-        const answers = c.kind === 'dishChanged' && c.item && c.suggestedDate ? [{ label: `New version from ${shortDate(c.suggestedDate)}`, body: { type: 'newDish', ...c.item, from: c.suggestedDate, note: 'new version, recipe to come' } }, { label: 'Same dish', body: { type: 'dismiss', dedupeKey: c.dedupeKey } }]
-          : c.kind === 'newButton' && side === 'bar' ? [{ label: 'Got it', body: { type: 'dismiss', dedupeKey: c.dedupeKey } }]
+        const answers = c.kind === 'dishChanged' && c.item && c.suggestedDate ? [{ label: `New version from ${shortDate(c.suggestedDate)}`, body: { type: 'newDish', ...c.item, from: c.suggestedDate, note: 'new version, recipe to come' } }, { label: 'Same dish', body: { type: 'dismiss', dedupeKey: c.dedupeKey, note: c.title } }]
+          : c.kind === 'newButton' && side === 'bar' ? [{ label: 'Got it', body: { type: 'dismiss', dedupeKey: c.dedupeKey, note: c.title } }]
           : c.kind === 'newButton' && c.item ? [{ label: 'New dish, recipe to come', body: { type: 'newDish', ...c.item } }, { label: 'Not food', body: { type: 'notFood', ...c.item } }]
-          : [{ label: 'Ignore', body: { type: 'dismiss', dedupeKey: c.dedupeKey } }];
+          : [{ label: 'Ignore', body: { type: 'dismiss', dedupeKey: c.dedupeKey, note: c.title } }];
         return { key: `q:${c.dedupeKey}`, name: c.title, title: c.title, dollars: c.netSales, detail: `${dollars(c.netSales)} in sales over 90 days`, answers };
       }),
       ...menu.linkQuestions.map((q) => {
         const sold = q.first ? ` · sold ${shortDate(q.first)} – ${shortDate(q.last!)}` : '';
-        return q.candidates.length
-          ? { key: `q:link:${q.item.catalogId}:${q.name}`, name: q.name, title: q.candidates.length === 1 || q.type === 'confirm' ? `${q.name}: is it the ${q.candidates[0]} recipe?` : `${q.name}: which recipe is it?`, dollars: q.netSales,
+        // Only prep recipes match: say so, and put "its own recipe" first, since a prep is rarely sold as is.
+        // Best matched by a prep recipe (Corn Panna the pizza, Corn Panna the sauce): say so, and put "its own recipe" first.
+        const dishes = q.candidates.filter((_c, i) => q.candidateKinds[i] !== 'prep');
+        if (q.candidates.length > 0 && q.candidateKinds[0] === 'prep') {
+          return { key: `q:link:${q.item.catalogId}:${q.name}`, name: q.name, title: `${q.name} best matches the ${q.candidates[0]} prep recipe`, dollars: q.netSales,
+            detail: `${dollars(q.netSales)} in sales over 90 days${sold}. A prep recipe is a batch (a sauce, a dough), not what's sold, so this usually needs its own recipe.`,
+            answers: [{ label: 'Needs its own recipe', body: { type: 'newDish', ...q.item } }, ...dishes.slice(0, 1).map((c) => ({ label: `It's ${c}`, body: { type: 'link', ...q.item, recipe: c } })), { label: `Sold as is: ${q.candidates[0]}`, body: { type: 'link', ...q.item, recipe: q.candidates[0] } }] };
+        }
+        return dishes.length
+          ? { key: `q:link:${q.item.catalogId}:${q.name}`, name: q.name, title: dishes.length === 1 || q.type === 'confirm' ? `${q.name}: is it the ${dishes[0]} recipe?` : `${q.name}: which recipe is it?`, dollars: q.netSales,
               detail: `${dollars(q.netSales)} in sales over 90 days${sold}`,
-              answers: [...q.candidates.slice(0, 2).map((c, i) => ({ label: i === 0 && (q.candidates.length === 1 || q.type === 'confirm') ? `Yes, ${c}` : i === 0 ? c : `No, ${c}`, body: { type: 'link', ...q.item, recipe: c } })), { label: 'New dish, recipe to come', body: { type: 'newDish', ...q.item } }] }
+              answers: [...dishes.slice(0, 2).map((c, i) => ({ label: i === 0 && (dishes.length === 1 || q.type === 'confirm') ? `Yes, ${c}` : i === 0 ? c : `No, ${c}`, body: { type: 'link', ...q.item, recipe: c } })), { label: 'New dish, recipe to come', body: { type: 'newDish', ...q.item } }] }
           : { key: `q:link:${q.item.catalogId}:${q.name}`, name: q.name, title: `${q.name} sells but has no recipe`, dollars: q.netSales,
               detail: `${dollars(q.netSales)} in sales over 90 days${sold}. Mark it and it stops asking; its plate cost comes with the recipe.`,
               answers: [{ label: 'New dish, recipe to come', body: { type: 'newDish', ...q.item } }, { label: 'Not food', body: { type: 'notFood', ...q.item } }] };

@@ -388,6 +388,32 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   const usage = (await call('GET', '/api/reports/usage?from=2026-09-28&to=2026-10-04&area=kitchen', { cookies: ownerSession })).json;
   assert.deepEqual([usage.days, Array.isArray(usage.rows), typeof usage.totals.gap], [7, true, 'number']);
 
+  // Answers can be taken back: the newest is first, with who gave it; undoing it asks the question again.
+  assert.equal((await call('POST', '/api/answers', { body: { type: 'notFood', catalogId: 'X-GIFT', itemName: 'Gift Card' }, cookies: ownerSession })).status, 200);
+  const recent = (await call('GET', '/api/answers/recent?limit=5', { cookies: ownerSession })).json;
+  assert.deepEqual([recent.answers[0].type, recent.answers[0].name, typeof recent.answers[0].by, typeof recent.answers[0].at], ['notFood', 'Gift Card', 'string', 'string']);
+  assert.equal((await call('POST', '/api/answers/undo', { body: { target: recent.answers[0].target }, cookies: ownerSession })).status, 200);
+  assert.notEqual((await call('GET', '/api/answers/recent?limit=5', { cookies: ownerSession })).json.answers[0]?.name, 'Gift Card');
+  assert.equal((await call('POST', '/api/answers/undo', { body: { target: recent.answers[0].target }, cookies: ownerSession })).status, 404);
+
+  // A discount button (Tuesday's price) counts as the drink it discounts, unless kept apart.
+  await db!.query("INSERT INTO pos_item_sales_daily (restaurant_id, day, catalog_id, item_name, variation_name, category, quantity, net_sales) VALUES ($1, current_date - 1, 'V-SODA-T', 'House Soda', 'Tuesday Special', 'Non-Alcoholic Drinks', 2, 6)", [restaurantId]);
+  const sodaSold = async () => (await call('GET', '/api/recipes/House%20Soda', { cookies: ownerSession })).json.linked.find((l: any) => l.catalogId === 'V-SODA');
+  const folded = await sodaSold();
+  assert.deepEqual([folded.sold, folded.includes.map((v: any) => [v.variationName, v.quantity])], [5, [['Tuesday Special', 2]]]);
+  assert.equal((await call('POST', '/api/menu/price-variation', { body: { catalogId: 'V-SODA-T', action: 'split' }, cookies: ownerSession })).status, 200);
+  assert.deepEqual([(await sodaSold()).sold, (await sodaSold()).includes], [3, undefined]);
+  assert.equal((await call('POST', '/api/menu/price-variation', { body: { catalogId: 'V-SODA-T', action: 'reset' }, cookies: ownerSession })).status, 200);
+  assert.equal((await sodaSold()).sold, 5);
+  assert.equal((await call('POST', '/api/menu/price-variation', { body: { catalogId: 'V-SODA-T', action: 'merge' }, cookies: ownerSession })).status, 400);
+
+  // A button linked to the wrong recipe comes off it from the recipe page, back to needing its own.
+  assert.equal((await call('POST', '/api/cards/unlink', { body: { items: [{ catalogId: 'V-SODA', itemName: 'House Soda' }] }, cookies: marcoOnExpo })).status, 403);
+  assert.equal((await call('POST', '/api/cards/unlink', { body: { items: [{ catalogId: 'V-SODA', itemName: 'House Soda' }] }, cookies: ownerSession })).status, 200);
+  assert.deepEqual((await call('GET', '/api/recipes/House%20Soda', { cookies: ownerSession })).json.linked, []);
+  const unlinkedAnswer = (await call('GET', '/api/answers/recent?limit=1', { cookies: ownerSession })).json.answers[0];
+  assert.deepEqual([unlinkedAnswer.type, unlinkedAnswer.note], ['newDish', 'unlinked in the app']);
+
   // Nothing secret is stored in the clear.
   const stored = await db!.query<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = $1', [cookId]);
   assert.match(stored.rows[0]!.pin_hash, /^scrypt\$/);

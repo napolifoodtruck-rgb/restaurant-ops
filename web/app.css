@@ -642,3 +642,19 @@ button.rrow.clickable:hover, button.rrow.clickable:focus-visible { background: #
   .rrow.dishcost > .chev, .rrow.costline > .chev, .rrow.proddish > .chev { display: none; }
   .rrow.proddish { grid-template-columns: repeat(4, 1fr); }
 }
+
+/* Working: a spinner on what was pressed, a thin bar along the top, the old page faded until the new one is ready */
+.busy { cursor: progress; }
+.busy::after { content: ''; display: inline-block; width: .8em; height: .8em; margin-left: .5em; vertical-align: -.1em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
+select.busy, input.busy { opacity: .6; }
+.rail button.busy::after { display: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+body::before { content: ''; position: fixed; top: 0; left: 0; height: 3px; width: 0; background: #000; z-index: 1000; opacity: 0; pointer-events: none; }
+body.working::before { opacity: 1; animation: workbar 1.6s ease-out infinite; }
+@keyframes workbar { 0% { width: 0; margin-left: 0; } 60% { width: 70%; margin-left: 15%; } 100% { width: 0; margin-left: 100%; } }
+main.stale { opacity: .55; pointer-events: none; transition: opacity .15s .1s; }
+.todo.done-row { opacity: .85; border-left: 3px solid var(--green); }
+.todo.done-row .todo-label { color: var(--green); }
+@media (prefers-reduced-motion: reduce) { .busy::after, body.working::before { animation-duration: 3s; } }
+.includes .link { font-size: 12px; }
+select.small-select { height: 32px; font-size: 12px; max-width: 160px; }

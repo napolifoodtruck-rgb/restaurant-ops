@@ -46,7 +46,8 @@ import {
   type SignedIn, type SignInResult,
 } from './auth.ts';
 import { localDateHour, marginEdgeApiFrom, runSync, squareApiFrom, type SyncSettings } from './scheduler.ts';
-import { BOOK_KEYS, PRODUCT_ANSWERS, answerProblem, bookProblem, getModel, loadBook, saveBook, withAnswer, withProductAnswer, type Answer } from './model.ts';
+import { posName } from '../core/menuLinks.ts';
+import { BOOK_KEYS, PRODUCT_ANSWERS, answerProblem, bookProblem, getModel, loadBook, saveBook, withAnswer, withoutAnswer, recentAnswers, withProductAnswer, type Answer } from './model.ts';
 import { marginsView, menuView } from './views.ts';
 import { prepRoutes } from './prep.ts';
 import { planRoutes } from './plans.ts';
@@ -389,7 +390,7 @@ export function createApp(config: AppConfig) {
       return send(res, 201, { path: `/#invite=${token}`, expiresAt, email });
     }
 
-    if (path.startsWith('/api/') && ['/api/sync', '/api/book', '/api/book/import', '/api/margins', '/api/menu', '/api/answers'].includes(path) || path.startsWith('/api/sync/')) {
+    if (path.startsWith('/api/') && ['/api/sync', '/api/book', '/api/book/import', '/api/margins', '/api/menu', '/api/menu/price-variation', '/api/answers', '/api/answers/recent', '/api/answers/undo'].includes(path) || path.startsWith('/api/sync/')) {
       const who = await signedIn(req);
       if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
       const today = async () => localDateHour((await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York').date;
@@ -462,13 +463,67 @@ export function createApp(config: AppConfig) {
         }
         const current = (await loadBook(db, who.restaurantId)).linkAnswers ?? { confirm: [], newDish: [] };
         if (b.type === 'link' && !(await getModel(db, who.restaurantId, await today())).recipes.some((r) => r.name === b.recipe)) throw new HttpError(400, 'No recipe by that name.');
-        await saveBook(db, who.restaurantId, 'linkAnswers', withAnswer(current, b as unknown as Exclude<Answer, { type: 'conversion' | 'price' }>), who.staffId);
+        await saveBook(db, who.restaurantId, 'linkAnswers', withAnswer(current, b as unknown as Exclude<Answer, { type: 'conversion' | 'price' }>, { at: new Date().toISOString(), by: who.staffId }), who.staffId);
+        return send(res, 200, { ok: true });
+      }
+
+      // Answers given, newest first, each one able to be taken back (the question then asks again).
+      if (method === 'GET' && path === '/api/answers/recent') {
+        const links = (await loadBook(db, who.restaurantId)).linkAnswers ?? { confirm: [], newDish: [] };
+        const { rows } = await db.query<{ id: string; display_name: string }>('SELECT id, display_name FROM staff WHERE restaurant_id = $1', [who.restaurantId]);
+        const names = new Map(rows.map((r) => [r.id, r.display_name]));
+        const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 30, 1), 500);
+        const all = recentAnswers(links);
+        return send(res, 200, { total: all.length, answers: all.slice(0, limit).map((a) => ({ ...a, ...(a.by ? { by: names.get(a.by) ?? 'someone' } : {}) })) });
+      }
+
+      if (method === 'POST' && path === '/api/answers/undo') {
+        const b = await body(req);
+        const t = b.target as Record<string, unknown> | undefined;
+        const target = typeof t?.dedupeKey === 'string' ? { dedupeKey: t.dedupeKey }
+          : typeof t?.catalogId === 'string' && typeof t?.itemName === 'string' ? { catalogId: t.catalogId, itemName: t.itemName, ...(typeof t.variationName === 'string' ? { variationName: t.variationName } : {}), ...(typeof t.from === 'string' ? { from: t.from } : {}) }
+          : undefined;
+        if (!target) throw new HttpError(400, 'Which answer?');
+        const current = (await loadBook(db, who.restaurantId)).linkAnswers ?? { confirm: [], newDish: [] };
+        const next = withoutAnswer(current, target);
+        const count = (l: typeof current) => l.confirm.length + l.newDish.length + (l.notFood?.length ?? 0) + (l.dismissed?.length ?? 0);
+        if (count(next) === count(current)) throw new HttpError(404, 'That answer isn’t there any more.');
+        await saveBook(db, who.restaurantId, 'linkAnswers', next, who.staffId);
         return send(res, 200, { ok: true });
       }
 
       if (method === 'GET' && path === '/api/menu') {
         const area = areaFor(who, url.searchParams.get('area'));
-        return send(res, 200, menuView(await getModel(db, who.restaurantId, await today()), { area, areaOf: await loadAreas(db, who.restaurantId) }));
+        const model = await getModel(db, who.restaurantId, await today());
+        const areaOf = await loadAreas(db, who.restaurantId);
+        // Discount-looking buttons kept as their own item, and buttons folded by hand: each can be put back.
+        const links = (await loadBook(db, who.restaurantId)).linkAnswers ?? { confirm: [], newDish: [] };
+        const byId = new Map(model.menuItems.map((m) => [m.catalogId, m]));
+        const named = (id: string) => { const m = byId.get(id); return m ? posName(m) : undefined; };
+        const inSide = (id: string) => { const c = byId.get(id)?.category; return !c || areaOf(c) === area; };
+        const priceKept = [
+          ...(links.priceSplit ?? []).filter(inSide).flatMap((id) => (named(id) ? [{ catalogId: id, name: named(id)!, kind: 'split' }] : [])),
+          ...(links.priceMerge ?? []).filter((x) => inSide(x.catalogId)).flatMap((x) => (named(x.catalogId) && named(x.into) ? [{ catalogId: x.catalogId, name: named(x.catalogId)!, into: named(x.into)!, kind: 'merge' }] : [])),
+        ];
+        return send(res, 200, { ...menuView(model, { area, areaOf }), priceKept });
+      }
+
+      // Same drink, different price: keep a discount button apart, fold one in by hand, or put either back.
+      if (method === 'POST' && path === '/api/menu/price-variation') {
+        const b = await body(req);
+        const id = typeof b.catalogId === 'string' ? b.catalogId : '';
+        if (!id) throw new HttpError(400, 'Which button?');
+        const book = await loadBook(db, who.restaurantId);
+        const links = book.linkAnswers ?? { confirm: [], newDish: [] };
+        const split = (links.priceSplit ?? []).filter((x) => x !== id);
+        const merge = (links.priceMerge ?? []).filter((x) => x.catalogId !== id);
+        if (b.action === 'split') split.push(id);
+        else if (b.action === 'merge') {
+          if (typeof b.into !== 'string' || !b.into || b.into === id) throw new HttpError(400, 'Same drink as which?');
+          merge.push({ catalogId: id, into: b.into });
+        } else if (b.action !== 'reset') throw new HttpError(400, 'Split, merge or reset.');
+        await saveBook(db, who.restaurantId, 'linkAnswers', { ...links, priceSplit: split, priceMerge: merge }, who.staffId);
+        return send(res, 200, { ok: true });
       }
     }
 
