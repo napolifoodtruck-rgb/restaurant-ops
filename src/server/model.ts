@@ -15,7 +15,7 @@ import { foldedTotals, priceFolds, type FoldedVariation } from '../core/priceVar
 import { menuMargins, type MarginReport, type MarginSaleLine } from '../core/margins.ts';
 import { modifierCosts, emptyModifierAnswers, type ModifierAnswers, type ModifierCosts } from '../core/modifiers.ts';
 import { RecipeBook, type Product, type Recipe } from '../core/recipes.ts';
-import { entriesFromSales, menuChecks, type MenuCheck, type MenuEntry } from '../core/menu.ts';
+import { entriesFromSales, menuChecks, type MenuCheck, type MenuEntry, type MenuStatusAnswer } from '../core/menu.ts';
 import { sellingSpans, type LinkLookup, type SellingSpan } from '../core/sales.ts';
 import { withIngredientAmount } from '../core/portionCheck.ts';
 import { convert, type Quantity } from '../core/units.ts';
@@ -49,6 +49,8 @@ export interface LinkAnswers {
   /** Discount buttons kept as their own item (by catalog id), and ones folded by hand. */
   priceSplit?: string[];
   priceMerge?: { catalogId: string; into: string }[];
+  /** Managers' word on dishes: came off (on a day), still on, put back on. One per dish. */
+  menuStatus?: (Stamp & MenuStatusAnswer & { name?: string })[];
 }
 
 /** One answer from a screen, folded into the kitchen book. */
@@ -117,16 +119,17 @@ export function withAnswer(current: LinkAnswers, a: Exclude<Answer, { type: 'con
 }
 
 /** Which answer to take back: a menu to-do by its key, or a POS item (and the date it changed, for a new version). */
-export type AnswerTarget = { dedupeKey: string } | (PosMenuItem & { from?: string });
+export type AnswerTarget = { dedupeKey: string } | { menuRecipe: string } | (PosMenuItem & { from?: string });
 
 /** The answers with one taken back, so the question it settled asks again. */
 export function withoutAnswer(current: LinkAnswers, t: AnswerTarget): LinkAnswers {
   if ('dedupeKey' in t) return { ...current, dismissed: (current.dismissed ?? []).filter((d) => d.dedupeKey !== t.dedupeKey) };
+  if ('menuRecipe' in t) return { ...current, menuStatus: (current.menuStatus ?? []).filter((m) => m.recipeId !== t.menuRecipe) };
   const same = (x: PosMenuItem & { from?: string }) => x.catalogId === t.catalogId && x.itemName === t.itemName && (x.variationName ?? '') === (t.variationName ?? '') && (x.from ?? '') === (t.from ?? '');
   return { ...current, confirm: current.confirm.filter((x) => !same(x)), newDish: current.newDish.filter((x) => !same(x)), notFood: (current.notFood ?? []).filter((x) => !same(x)) };
 }
 
-export interface RecentAnswer { type: 'link' | 'newDish' | 'notFood' | 'dismiss'; target: AnswerTarget; name: string; recipe?: string; note?: string; at?: string; by?: string }
+export interface RecentAnswer { type: 'link' | 'newDish' | 'notFood' | 'dismiss' | 'menuOff' | 'menuOn' | 'stillOn'; target: AnswerTarget; name: string; recipe?: string; note?: string; date?: string; at?: string; by?: string }
 
 /** Every answer, the newest first; those without a time (loaded from a file) last, latest added first. */
 export function recentAnswers(links: LinkAnswers): RecentAnswer[] {
@@ -138,6 +141,7 @@ export function recentAnswers(links: LinkAnswers): RecentAnswer[] {
     ...links.newDish.map((x, n) => ({ type: 'newDish' as const, target: item(x), name: nameOf(x), ...(x.note ? { note: x.note } : {}), ...stamp(x), n })),
     ...(links.notFood ?? []).map((x, n) => ({ type: 'notFood' as const, target: item(x), name: nameOf(x), ...stamp(x), n })),
     ...(links.dismissed ?? []).map((x, n) => ({ type: 'dismiss' as const, target: { dedupeKey: x.dedupeKey }, name: x.note ?? x.dedupeKey, ...stamp(x), n })),
+    ...(links.menuStatus ?? []).map((x, n) => ({ type: (x.status === 'off' ? 'menuOff' : x.status === 'on' ? 'menuOn' : 'stillOn') as RecentAnswer['type'], target: { menuRecipe: x.recipeId }, name: x.name ?? x.recipeId, date: x.date, ...stamp(x), n })),
   ];
   return all.sort((a, b) => (b.at ?? '').localeCompare(a.at ?? '') || b.n - a.n).map(({ n: _n, ...r }) => r);
 }
@@ -208,6 +212,8 @@ export interface Model {
   imageOf: (catalogId: string) => string | undefined;
   /** Discount buttons folded into a regular one, by the regular one's id, with what each sold in the period. */
   folded: Map<string, FoldedVariation[]>;
+  /** Managers' word on what's on the menu, by recipe id (or pos:<catalog id> for buttons with no recipe). */
+  menuStatus: MenuStatusAnswer[];
 }
 
 const cache = new Map<string, { stamp: string; model: Promise<Model> }>();
@@ -352,7 +358,22 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
   margins.unlinked = margins.unlinked.filter((u) => !notFoodNames.has(u.name));
   const recipeName = (id: string) => book.recipes.get(id)?.name ?? id;
   const spans = sellingSpans(sales);
-  const entries = entriesFromSales(spans, lookup, recipeName, 'dinner', today);
+  // What's on the menu: from what sold, but a dish only comes off when a manager says so, or
+  // when a planned dish replaces it; a quiet one stays on and is asked about.
+  const sellingDays = new Map<string, string[]>();
+  for (const l of sales) {
+    if (!l.date || l.quantity <= 0) continue;
+    const id = lookup(l.catalogId, l.name, l.date)?.recipeId;
+    if (id) sellingDays.set(id, [...(sellingDays.get(id) ?? []), l.date]);
+  }
+  const replacedFrom = new Map<string, string>();
+  const plans = (await db.query<{ replaces: string; starts_on: string }>("SELECT replaces, starts_on::text AS starts_on FROM menu_plans WHERE restaurant_id = $1 AND status <> 'cancelled' AND replaces IS NOT NULL AND starts_on <= $2", [restaurantId, today])).rows;
+  for (const p of plans) {
+    const key = p.replaces.trim().toLowerCase();
+    const id = margins.dishes.find((d) => d.name.toLowerCase() === key)?.recipeId ?? recipes.find((r) => r.name.toLowerCase() === key)?.id;
+    if (id && (!replacedFrom.has(id) || p.starts_on < replacedFrom.get(id)!)) replacedFrom.set(id, p.starts_on);
+  }
+  const entries = entriesFromSales(spans, lookup, recipeName, 'dinner', today, { sellingDays, answers: linkAnswers.menuStatus ?? [], replacedFrom });
   const modifierLines = modRows.map((r) => ({
     catalogId: String(r['ItemSales.item_variation_id'] ?? ''),
     modifierName: String(r['ItemSales.modifier_name'] ?? ''),
@@ -364,13 +385,13 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
   // buttons already marked as new dishes awaiting a card.
   const dismissed = (linkAnswers.dismissed ?? []).map((d) => d.dedupeKey);
   const awaiting = new Set(linkAnswers.newDish.map((d) => d.catalogId));
-  const checks = menuChecks({ entries, sales, modifiers: modifierLines, lookup, recipeName, today })
+  const checks = menuChecks({ entries, sales, modifiers: modifierLines, lookup, recipeName, today, statusAware: true })
     // Entries are rebuilt from sales each time, so a quiet dish is keyed by its recipe.
     .map((c) => (c.kind === 'notSelling' && c.recipeId ? { ...c, dedupeKey: `menu:quiet:${c.recipeId}` } : c))
-    .filter((c) => !dismissed.some((d) => c.dedupeKey === d || c.dedupeKey.startsWith(`${d}:`)))
+    .filter((c) => c.kind === 'notSelling' || !dismissed.some((d) => c.dedupeKey === d || c.dedupeKey.startsWith(`${d}:`)))
     .filter((c) => !(c.kind === 'newButton' && c.catalogId && awaiting.has(c.catalogId)))
     // A dish change already answered: a version on that button starts within a week of the suggested day.
     .filter((c) => !(c.kind === 'dishChanged' && c.catalogId && c.suggestedDate && [...linkAnswers.confirm, ...linkAnswers.newDish].some((v) => v.catalogId === c.catalogId && v.from && Math.abs(Date.parse(v.from) - Date.parse(c.suggestedDate!)) <= 7 * 86_400_000)));
 
-  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded };
+  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded, menuStatus: linkAnswers.menuStatus ?? [] };
 }

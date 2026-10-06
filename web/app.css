@@ -658,3 +658,14 @@ main.stale { opacity: .55; pointer-events: none; transition: opacity .15s .1s; }
 @media (prefers-reduced-motion: reduce) { .busy::after, body.working::before { animation-duration: 3s; } }
 .includes .link { font-size: 12px; }
 select.small-select { height: 32px; font-size: 12px; max-width: 160px; }
+
+/* Menu: one chip per category, then Needs you */
+.chips-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.chips-row .chip { display: inline-flex; align-items: center; gap: 8px; }
+.chip-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.chip.on .chip-count { color: inherit; }
+.chip.needs { border-color: var(--blue); color: var(--blue); }
+.chip.needs.on { background: var(--blue); color: #fff; border-color: var(--blue); }
+.tag.ask { background: #E6EEF8; color: var(--blue); }
+.page-side select { width: 100%; }
+[hidden] { display: none !important; }

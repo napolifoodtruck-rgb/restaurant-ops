@@ -196,7 +196,8 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string, 
     const menu = menuView(model, view);
     const before = items.length;
     const questions: (Omit<TodayItem, 'group' | 'label' | 'tone' | 'go' | 'button'> & { name: string })[] = [
-      ...menu.checks.map((c) => {
+      // Quiet dishes are asked about on the Menu page, where the menu is kept.
+      ...menu.checks.filter((c) => c.kind !== 'notSelling').map((c) => {
         const answers = c.kind === 'dishChanged' && c.item && c.suggestedDate ? [{ label: `New version from ${shortDate(c.suggestedDate)}`, body: { type: 'newDish', ...c.item, from: c.suggestedDate, note: 'new version, recipe to come' } }, { label: 'Same dish', body: { type: 'dismiss', dedupeKey: c.dedupeKey, note: c.title } }]
           : c.kind === 'newButton' && side === 'bar' ? [{ label: 'Got it', body: { type: 'dismiss', dedupeKey: c.dedupeKey, note: c.title } }]
           : c.kind === 'newButton' && c.item ? [{ label: 'New dish, recipe to come', body: { type: 'newDish', ...c.item } }, { label: 'Not food', body: { type: 'notFood', ...c.item } }]

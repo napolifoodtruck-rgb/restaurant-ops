@@ -1343,41 +1343,47 @@ async function prepImportCard() {
 
 async function menuScreen(me) {
   loadingScreen(me, 'menu', 'Menu');
-  const r = await api('GET', `/api/menu?area=${sideOf(me)}`);
+  const side = sideOf(me);
+  const r = await api('GET', `/api/menu?area=${side}`);
   if (!r.ok) return show(shell(me, 'menu', [h('h1', { text: 'Menu' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const m = r.data;
+  const manager = atLeast(me.roleLevel, 'manager');
   const since = (d) => (d <= m.from ? `before ${shortDate(m.from)}` : `since ${shortDate(d)}`);
-  const sections = [...new Set(m.current.map((x) => x.section))];
+  const baseOf = (section) => section.replace(/ add-ons$/, '');
+  const sections = [...new Set(m.current.map((x) => baseOf(x.section)))];
   // "Needs card" opens a new card already named and linked to the button that sells it.
   const writeCard = async (x) => {
-    const d = (await api('GET', `/api/cards?area=${sideOf(me)}`)).data;
-    cardEditor(me, d, null, { name: x.pos?.itemName ?? x.name, kind: sideOf(me) === 'bar' ? 'drink' : 'dish', link: x.pos ? [{ ...x.pos, name: x.name }] : [] });
+    const d = (await api('GET', `/api/cards?area=${side}`)).data;
+    cardEditor(me, d, null, { name: x.pos?.itemName ?? x.name, kind: side === 'bar' ? 'drink' : 'dish', link: x.pos ? [{ ...x.pos, name: x.name }] : [] });
+  };
+  // Any change saves, then the page comes back with fresh numbers (staying on the same chip).
+  const save = async (el, path, body, row) => {
+    busy(el, true);
+    const res = await api('POST', path, body);
+    if (!res.ok) { busy(el, false); return (row ?? el.parentNode).append(h('div', { class: 'error small', text: res.data.error ?? 'Not saved.' })); }
+    menuScreen(me);
   };
   // Same drink, different price: discount buttons folded in show under the drink, each can be kept apart;
   // a button the name doesn't give away can be folded into another variation of the same item by hand.
-  const priceVariation = async (el, body) => {
-    busy(el, true);
-    const res = await api('POST', '/api/menu/price-variation', body);
-    if (!res.ok) { busy(el, false); return el.after(h('span', { class: 'error small', text: ` ${res.data.error ?? 'Not saved.'}` })); }
-    menuScreen(me);
-  };
+  const priceVariation = (el, body) => save(el, '/api/menu/price-variation', body);
   const siblings = (x) => (x.pos?.variationName ? m.current.filter((o) => o !== x && o.pos && o.pos.itemName === x.pos.itemName && o.pos.catalogId !== x.pos.catalogId) : []);
   const includesLine = (x) => (x.includes?.length ? h('div', { class: 'small muted includes' }, 'Includes ', x.includes.map((v, n) => [n ? ', ' : '',
     h('span', { text: `${v.variationName || v.name} (${Math.round(v.quantity)} sold)` }), ' ',
     h('button', { class: 'link', text: 'Keep apart', title: `Show ${v.name} as its own item`, onclick: (e) => priceVariation(e.currentTarget, { catalogId: v.catalogId, action: 'split' }) })])) : null);
   const sameAs = (x) => {
     const sib = siblings(x);
-    if (!sib.length || !atLeast(me.roleLevel, 'manager')) return null;
+    if (!sib.length || !manager) return null;
     const pick = h('select', { class: 'small-select', 'aria-label': `${x.name} is the same drink as` }, h('option', { value: '', text: 'Same drink as…' }), sib.map((o) => h('option', { value: o.pos.catalogId, text: o.name })));
     pick.addEventListener('change', () => pick.value && priceVariation(pick, { catalogId: x.pos.catalogId, action: 'merge', into: pick.value }));
     return pick;
   };
+  const setStatus = (el, x, status, date) => save(el, '/api/menu/status', { menuKey: x.menuKey, status, name: x.name, ...(date ? { date } : {}) });
   const dishRow = (x, right, flagCard = m.cards) => h('div', {}, photo(x.image, 'thumb small'), h('div', { class: 'grow' }, h('div', { text: x.name }), includesLine(x)), sameAs(x),
+    x.quiet ? h('button', { class: 'tag ask tag-button', text: 'quiet', title: `Hasn’t sold since ${shortDate(x.quiet.since)}: still on?`, onclick: () => pickChip('needs') }) : null,
     x.hasCard || !flagCard ? null : h('button', { class: 'tag warn tag-button', text: 'needs recipe', title: `Write the recipe for ${x.name}`, onclick: () => writeCard(x) }),
     h('span', { class: 'small muted nowrap', text: right }));
-  const columns = sections.map((s) => h('section', { class: 'card' },
-    h('div', { class: 'row' }, h('h2', { class: 'grow', text: s }), h('span', { class: 'small muted', text: String(m.current.filter((x) => x.section === s).length) })),
-    h('div', { class: 'list' }, m.current.filter((x) => x.section === s).map((x) => dishRow(x, since(x.since))))));
+
+  // Questions: about what's selling, and quiet dishes (still on, or came off?).
   const answer = async (body, row) => {
     row.querySelectorAll('button, select').forEach((b) => (b.disabled = true));
     const res = await api('POST', '/api/answers', body);
@@ -1395,7 +1401,7 @@ async function menuScreen(me) {
   };
   const onlyPrep = (q) => q.candidates.length > 0 && (q.candidateKinds ?? []).length > 0 && q.candidateKinds.every((k) => k === 'prep');
   const questionRows = [
-    ...m.checks.map((c) => {
+    ...m.checks.filter((c) => c.kind !== 'notSelling').map((c) => {
       const row = h('div', { class: 'ask' });
       const buttons = [];
       if (c.kind === 'dishChanged' && c.item) buttons.push([`Yes, new version from ${shortDate(c.suggestedDate)}`, { type: 'newDish', ...c.item, from: c.suggestedDate, note: 'new version, recipe to come' }, 'dark'], ['No, same dish', { type: 'dismiss', dedupeKey: c.dedupeKey, note: c.title }]);
@@ -1416,32 +1422,95 @@ async function menuScreen(me) {
       return row;
     }),
   ];
-  const todo = questionRows.length ? h('section', { class: 'card', id: 'menu-questions' },
-    h('div', { class: 'row' }, h('h2', { class: 'grow', text: `Needs you (${questionRows.length})` }), h('span', { class: 'small muted', text: 'Answers update margins straight away.' })),
-    h('div', { class: 'asks' }, questionRows)) : null;
-  const off = m.cameOff.length ? sideBox('Came off', h('div', { class: 'list compact' }, m.cameOff.slice(0, 12).map((x) => h('div', {},
-    h('span', { class: 'grow', text: x.name }), h('span', { class: 'small muted nowrap', text: `${shortDate(x.from)} – ${shortDate(x.to)}` }))))) : null;
-  const coming = atLeast(me.roleLevel, 'chef') && sideOf(me) === 'kitchen' ? await comingUpCard(me) : null;
+  // Quiet: still on the menu but not selling for longer than usual for it. Nothing comes off without a yes.
+  const quiet = m.current.filter((x) => x.quiet).sort((a, b) => a.quiet.since.localeCompare(b.quiet.since));
+  const longQuiet = quiet.filter((x) => (Date.now() - Date.parse(`${x.quiet.since}T12:00:00`)) / 86_400_000 > 28);
+  const quietRow = (x) => {
+    const row = h('div', { class: 'ask' });
+    const other = h('input', { type: 'date', max: iso(new Date()), min: x.since, value: x.quiet.since, 'aria-label': `Day ${x.name} came off` });
+    const otherBox = h('div', { class: 'row tight' }, other, h('button', { class: 'btn small-btn', text: 'Save', onclick: (e) => other.value && setStatus(e.currentTarget, x, 'off', other.value) }));
+    otherBox.hidden = true;
+    row.append(
+      h('div', {}, h('b', { text: x.name }), h('span', { class: 'small muted', text: ` · ${x.section} · last sold ${shortDate(x.quiet.since)}${x.quiet.after ? `; it’s asked about after ${x.quiet.after} quiet days` : ''}` })),
+      h('div', { class: 'row wrap' },
+        h('button', { class: 'btn small-btn dark', text: 'Still on', onclick: (e) => setStatus(e.currentTarget, x, 'stillOn') }),
+        h('button', { class: 'btn small-btn', text: `Came off ${shortDate(x.quiet.since)}`, onclick: (e) => setStatus(e.currentTarget, x, 'off', x.quiet.since) }),
+        h('button', { class: 'link', text: 'Another day…', onclick: () => { otherBox.hidden = false; other.focus(); } })),
+      otherBox);
+    return row;
+  };
+  const quietCard = quiet.length ? h('section', { class: 'card' },
+    h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: `Still on the menu? (${quiet.length})` }),
+      longQuiet.length > 1 ? h('button', { class: 'btn small-btn', text: `${longQuiet.length} quiet 4+ weeks: came off`, title: 'Each on the last day it sold', onclick: (e) => {
+        if (!confirmText(`Mark these ${longQuiet.length} as off the menu, each from the last day it sold?\n\n${longQuiet.map((x) => x.name).join(', ')}`)) return;
+        save(e.currentTarget, '/api/menu/status', { items: longQuiet.map((x) => ({ menuKey: x.menuKey, status: 'off', date: x.quiet.since, name: x.name })) });
+      } }) : null),
+    h('div', { class: 'small muted', text: 'These haven’t sold for longer than usual for them. They stay on the menu until you say otherwise.' }),
+    h('div', { class: 'asks' }, quiet.map(quietRow))) : null;
+  const needCount = questionRows.length + quiet.length;
+
+  // Chips: one per category, then Needs you and Coming up. The choice is remembered on this device.
+  const chipKey = `menuChip:${side}`;
+  const canPlan = atLeast(me.roleLevel, 'chef') && side === 'kitchen';
+  const valid = (k) => k === 'needs' ? needCount > 0 : k === 'coming' ? canPlan : sections.includes(k);
+  let chip = recall(chipKey);
+  if (!valid(chip)) chip = needCount ? 'needs' : sections[0] ?? (canPlan ? 'coming' : 'needs');
+  let coming = null;
+  const pickChip = (k) => { chip = k; remember(chipKey, k); draw(); };
+
+  // The side: what's on, what came off (each can be put back), adding a dish back, buttons kept apart, answers.
+  const offBox = m.cameOff.length ? sideBox('Came off', h('div', { class: 'list compact' }, m.cameOff.slice(0, 15).map((x) => h('div', {},
+    h('span', { class: 'grow', text: x.name }), h('span', { class: 'small muted nowrap', text: `${shortDate(x.from)} – ${shortDate(x.to)}` }),
+    manager && x.menuKey ? h('button', { class: 'link', text: 'Put back', title: `${x.name} is still on the menu`, onclick: (e) => setStatus(e.currentTarget, x, 'on') }) : null)))) : null;
+  const addBack = manager && m.addable?.length ? (() => {
+    const pick = h('select', { 'aria-label': 'A dish to put back on the menu' }, h('option', { value: '', text: 'Pick a recipe…' }),
+      m.addable.map((x, i) => h('option', { value: String(i), text: `${x.name}${x.section === 'Not sold yet' ? ' (not sold yet)' : ` · ${x.section}`}` })));
+    const btn = h('button', { class: 'btn small-btn dark', text: 'Put on the menu', onclick: () => pick.value && setStatus(btn, m.addable[Number(pick.value)], 'on') });
+    return sideBox('Missing a dish?', h('div', { class: 'small muted', text: 'Put a recipe back on the menu, from today. It stays on until you take it off.' }), pick, sideActions(btn));
+  })() : null;
+  const keptBox = m.priceKept?.length ? sideBox('Kept as their own item', h('div', { class: 'list compact' }, m.priceKept.map((k) => h('div', {},
+    h('span', { class: 'grow small', text: k.kind === 'merge' ? `${k.name} → same as ${k.into}` : k.name }),
+    h('button', { class: 'link', text: k.kind === 'merge' ? 'Undo' : 'Fold back', onclick: (e) => priceVariation(e.currentTarget, { catalogId: k.catalogId, action: 'reset' }) })))),
+    h('div', { class: 'small muted', text: 'Discount buttons (Tuesday $10, half-price Wednesday) count as the drink they discount, unless kept apart here.' })) : null;
   const needCard = m.cards ? m.current.filter((x) => !x.hasCard).length : 0;
-  const onMenu = sideBox('On the menu now', h('div', { class: 'list compact' },
-    sections.map((sec) => h('div', {}, h('span', { class: 'grow', text: sec }), h('b', { text: String(m.current.filter((x) => x.section === sec).length) })))),
-    needCard ? h('div', { class: 'small muted', text: `${needCard} without a recipe.` }) : null,
-    sideActions(h('button', { class: 'btn small-btn', text: 'Recipe costs', onclick: () => cardsScreen(me) })));
-  show(shell(me, 'menu', [
-    h('header', { class: 'row wrap' },
-      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[sideOf(me)]} · from Square sales since ${shortDate(m.from)}` }), h('h1', { text: sideOf(me) === 'bar' ? 'Bar menu' : 'Menu' }),
-        h('div', { class: 'sub', text: 'What’s selling. Dates come from the first and last day each item sold; seasonal versions on one button are kept apart.' })),
-      sideSwitch(me, () => menuScreen(me))),
-    page([missingNote(m.missing), columns, todo, coming],
-      [m.coverage ? coverageCard(me, m.coverage, sideOf(me)) : null, onMenu,
-        questionRows.length ? sideBox('Needs you', h('div', { class: 'small', text: `${questionRows.length} question${questionRows.length === 1 ? '' : 's'} about what’s selling: new buttons, and which recipe a dish is.` }),
-          sideActions(h('button', { class: 'btn small-btn dark', text: 'Answer them', onclick: () => document.getElementById('menu-questions')?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }))) : null,
-        off, m.priceKept?.length ? sideBox('Kept as their own item', h('div', { class: 'list compact' }, m.priceKept.map((k) => h('div', {},
-          h('span', { class: 'grow small', text: k.kind === 'merge' ? `${k.name} → same as ${k.into}` : k.name }),
-          h('button', { class: 'link', text: k.kind === 'merge' ? 'Undo' : 'Fold back', onclick: (e) => priceVariation(e.currentTarget, { catalogId: k.catalogId, action: 'reset' }) })))),
-          h('div', { class: 'small muted', text: 'Discount buttons (Tuesday $10, half-price Wednesday) count as the drink they discount, unless kept apart here.' })) : null,
-        atLeast(me.roleLevel, 'manager') ? answersBox(me, () => menuScreen(me)) : null]),
-  ]));
+  const answers = manager ? answersBox(me, () => menuScreen(me)) : null;
+
+  async function draw() {
+    const chips = h('div', { class: 'chips-row', role: 'tablist', 'aria-label': 'Show' },
+      sections.map((sec) => h('button', { class: `chip${chip === sec ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === sec), onclick: () => pickChip(sec) },
+        sec, h('span', { class: 'chip-count', text: String(m.current.filter((x) => baseOf(x.section) === sec).length) }))),
+      needCount ? h('button', { class: `chip needs${chip === 'needs' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'needs'), onclick: () => pickChip('needs') }, 'Needs you', h('span', { class: 'chip-count', text: String(needCount) })) : null,
+      canPlan ? h('button', { class: `chip${chip === 'coming' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'coming'), onclick: () => pickChip('coming') }, 'Coming up') : null);
+    let main;
+    if (chip === 'needs') {
+      main = [quietCard, questionRows.length ? h('section', { class: 'card', id: 'menu-questions' },
+        h('div', { class: 'row' }, h('h2', { class: 'grow', text: `About what’s selling (${questionRows.length})` }), h('span', { class: 'small muted', text: 'Answers update margins straight away.' })),
+        h('div', { class: 'asks' }, questionRows)) : null];
+      if (!quietCard && !questionRows.length) main = [h('section', { class: 'card small muted', text: 'Nothing needs you.' })];
+    } else if (chip === 'coming') {
+      coming ??= await comingUpCard(me);
+      main = [coming ?? h('section', { class: 'card small muted', text: 'Couldn’t load what’s coming up.' })];
+    } else {
+      const parts = [...new Set(m.current.filter((x) => baseOf(x.section) === chip).map((x) => x.section))];
+      main = parts.map((sec) => h('section', { class: 'card' },
+        h('div', { class: 'row' }, h('h2', { class: 'grow', text: sec }), h('span', { class: 'small muted', text: String(m.current.filter((x) => x.section === sec).length) })),
+        h('div', { class: 'list' }, m.current.filter((x) => x.section === sec).map((x) => dishRow(x, since(x.since))))));
+    }
+    const onMenu = sideBox('On the menu now', h('div', { class: 'list compact' },
+      sections.map((sec) => h('div', {}, h('button', { class: 'linkish grow', text: sec, onclick: () => pickChip(sec) }), h('b', { text: String(m.current.filter((x) => baseOf(x.section) === sec).length) })))),
+      needCard ? h('div', { class: 'small muted', text: `${needCard} without a recipe.` }) : null,
+      sideActions(h('button', { class: 'btn small-btn', text: 'Recipe costs', onclick: () => cardsScreen(me) })));
+    show(shell(me, 'menu', [
+      h('header', { class: 'row wrap' },
+        h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[side]} · from Square sales since ${shortDate(m.from)}` }), h('h1', { text: side === 'bar' ? 'Bar menu' : 'Menu' }),
+          h('div', { class: 'sub', text: 'What’s selling. A dish only comes off when you say so; quiet ones are asked about under Needs you.' })),
+        sideSwitch(me, () => menuScreen(me))),
+      chips,
+      page([missingNote(m.missing), main],
+        [m.coverage ? coverageCard(me, m.coverage, side) : null, onMenu, addBack, offBox, keptBox, answers]),
+    ]));
+  }
+  draw();
 }
 
 /** What an answer said, in a line. */
@@ -1449,6 +1518,9 @@ function answerText(a) {
   if (a.type === 'link') return [h('b', { text: a.name }), ' is the ', h('b', { text: a.recipe }), ' recipe'];
   if (a.type === 'newDish') return [h('b', { text: a.name }), a.note === 'unlinked in the app' ? ': taken off its recipe' : a.target.from ? `: new version from ${shortDate(a.target.from)}` : ': new dish, recipe to come'];
   if (a.type === 'notFood') return [h('b', { text: a.name }), ': not food'];
+  if (a.type === 'menuOff') return [h('b', { text: a.name }), `: came off the menu ${a.date ? shortDate(a.date) : ''}`];
+  if (a.type === 'menuOn') return [h('b', { text: a.name }), ': put back on the menu'];
+  if (a.type === 'stillOn') return [h('b', { text: a.name }), ': still on the menu'];
   return [h('b', { text: a.name.replace(/[.?]$/, '') }), ': ignored'];
 }
 

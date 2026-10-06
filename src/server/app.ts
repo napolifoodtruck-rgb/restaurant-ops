@@ -390,7 +390,7 @@ export function createApp(config: AppConfig) {
       return send(res, 201, { path: `/#invite=${token}`, expiresAt, email });
     }
 
-    if (path.startsWith('/api/') && ['/api/sync', '/api/book', '/api/book/import', '/api/margins', '/api/menu', '/api/menu/price-variation', '/api/answers', '/api/answers/recent', '/api/answers/undo'].includes(path) || path.startsWith('/api/sync/')) {
+    if (path.startsWith('/api/') && ['/api/sync', '/api/book', '/api/book/import', '/api/margins', '/api/menu', '/api/menu/price-variation', '/api/menu/status', '/api/answers', '/api/answers/recent', '/api/answers/undo'].includes(path) || path.startsWith('/api/sync/')) {
       const who = await signedIn(req);
       if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
       const today = async () => localDateHour((await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York').date;
@@ -481,12 +481,13 @@ export function createApp(config: AppConfig) {
         const b = await body(req);
         const t = b.target as Record<string, unknown> | undefined;
         const target = typeof t?.dedupeKey === 'string' ? { dedupeKey: t.dedupeKey }
+          : typeof t?.menuRecipe === 'string' ? { menuRecipe: t.menuRecipe }
           : typeof t?.catalogId === 'string' && typeof t?.itemName === 'string' ? { catalogId: t.catalogId, itemName: t.itemName, ...(typeof t.variationName === 'string' ? { variationName: t.variationName } : {}), ...(typeof t.from === 'string' ? { from: t.from } : {}) }
           : undefined;
         if (!target) throw new HttpError(400, 'Which answer?');
         const current = (await loadBook(db, who.restaurantId)).linkAnswers ?? { confirm: [], newDish: [] };
         const next = withoutAnswer(current, target);
-        const count = (l: typeof current) => l.confirm.length + l.newDish.length + (l.notFood?.length ?? 0) + (l.dismissed?.length ?? 0);
+        const count = (l: typeof current) => l.confirm.length + l.newDish.length + (l.notFood?.length ?? 0) + (l.dismissed?.length ?? 0) + (l.menuStatus?.length ?? 0);
         if (count(next) === count(current)) throw new HttpError(404, 'That answer isn’t there any more.');
         await saveBook(db, who.restaurantId, 'linkAnswers', next, who.staffId);
         return send(res, 200, { ok: true });
@@ -506,6 +507,22 @@ export function createApp(config: AppConfig) {
           ...(links.priceMerge ?? []).filter((x) => inSide(x.catalogId)).flatMap((x) => (named(x.catalogId) && named(x.into) ? [{ catalogId: x.catalogId, name: named(x.catalogId)!, into: named(x.into)!, kind: 'merge' }] : [])),
         ];
         return send(res, 200, { ...menuView(model, { area, areaOf }), priceKept });
+      }
+
+      // What's on the menu, in a manager's words: came off (on a day), still on, or put back on. One answer per dish.
+      if (method === 'POST' && path === '/api/menu/status') {
+        const b = await body(req);
+        const list = (Array.isArray(b.items) ? b.items : [b]) as Record<string, unknown>[];
+        const day = /^\d{4}-\d{2}-\d{2}$/;
+        const now = await today();
+        const items = list.map((x) => ({ recipeId: String(x.menuKey ?? ''), status: x.status as 'off' | 'on' | 'stillOn', date: typeof x.date === 'string' && day.test(x.date) ? x.date : now, ...(typeof x.name === 'string' ? { name: x.name.slice(0, 200) } : {}) }));
+        if (!items.length || items.some((x) => !x.recipeId || !['off', 'on', 'stillOn'].includes(x.status))) throw new HttpError(400, 'Which dish, and off, on or still on?');
+        if (items.some((x) => x.date > now)) throw new HttpError(400, 'That day hasn’t come yet.');
+        const links = (await loadBook(db, who.restaurantId)).linkAnswers ?? { confirm: [], newDish: [] };
+        const at = new Date().toISOString();
+        const keys = new Set(items.map((x) => x.recipeId));
+        await saveBook(db, who.restaurantId, 'linkAnswers', { ...links, menuStatus: [...(links.menuStatus ?? []).filter((m) => !keys.has(m.recipeId)), ...items.map((x) => ({ ...x, at, by: who.staffId }))] }, who.staffId);
+        return send(res, 200, { ok: true, saved: items.length });
       }
 
       // Same drink, different price: keep a discount button apart, fold one in by hand, or put either back.

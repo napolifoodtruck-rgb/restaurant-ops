@@ -414,6 +414,16 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   const unlinkedAnswer = (await call('GET', '/api/answers/recent?limit=1', { cookies: ownerSession })).json.answers[0];
   assert.deepEqual([unlinkedAnswer.type, unlinkedAnswer.note], ['newDish', 'unlinked in the app']);
 
+  // The menu, in a manager's words: off on a day (undoable like any answer), never a day still to come.
+  assert.equal((await call('POST', '/api/menu/status', { body: { menuKey: 'x', status: 'gone' }, cookies: ownerSession })).status, 400);
+  assert.equal((await call('POST', '/api/menu/status', { body: { menuKey: 'x', status: 'off', date: '2999-01-01' }, cookies: ownerSession })).status, 400);
+  assert.equal((await call('POST', '/api/menu/status', { body: { menuKey: 'x', status: 'on' }, cookies: marcoOnExpo })).status, 403);
+  assert.equal((await call('POST', '/api/menu/status', { body: { items: [{ menuKey: 'house-soda', status: 'off', date: '2026-09-01', name: 'House Soda' }] }, cookies: ownerSession })).status, 200);
+  const offAnswer = (await call('GET', '/api/answers/recent?limit=1', { cookies: ownerSession })).json.answers[0];
+  assert.deepEqual([offAnswer.type, offAnswer.name, offAnswer.date, offAnswer.target], ['menuOff', 'House Soda', '2026-09-01', { menuRecipe: 'house-soda' }]);
+  assert.equal((await call('POST', '/api/answers/undo', { body: { target: offAnswer.target }, cookies: ownerSession })).status, 200);
+  assert.ok(Array.isArray((await call('GET', '/api/menu?area=kitchen', { cookies: ownerSession })).json.addable));
+
   // Nothing secret is stored in the clear.
   const stored = await db!.query<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = $1', [cookId]);
   assert.match(stored.rows[0]!.pin_hash, /^scrypt\$/);

@@ -12,12 +12,13 @@ export const inArea = (v: AreaView, category: string | undefined) => {
   const a = category ? v.areaOf(category) : 'kitchen';
   return v.area === 'all' ? a !== 'none' : a === v.area;
 };
-import { onMenu } from '../core/menu.ts';
+import { onMenu, quietThreshold } from '../core/menu.ts';
 import { posName } from '../core/menuLinks.ts';
 
 const money = (v: number) => Math.round(v * 100) / 100;
 const share = (v: number | undefined) => (v === undefined ? undefined : Math.round(v * 1000) / 1000);
 
+const daysFrom = (from: string, to: string) => Math.round((Date.parse(`${to}T12:00:00Z`) - Date.parse(`${from}T12:00:00Z`)) / 86_400_000);
 function addDays(day: string, n: number): string {
   const d = new Date(`${day}T12:00:00Z`);
   d.setUTCDate(d.getUTCDate() + n);
@@ -129,6 +130,7 @@ export function marginsView(model: Model, view: AreaView = ALL) {
     return { series, ...(change !== undefined ? { change } : {}), partial: series.some((v) => v === null) };
   };
   const lastSold = new Map([...sold].map(([id, s]) => [id, s.last]));
+  const onNowIds = new Set(onMenu(model.entries, model.today).map((e) => e.recipeId));
   /** Open days a dish was on the menu: first sale to last, or to the period's end if it's still on. */
   const daysOn = (recipeId: string): number | undefined => {
     const s = sold.get(recipeId);
@@ -172,7 +174,8 @@ export function marginsView(model: Model, view: AreaView = ALL) {
           .map((l) => ({ productId: l.productId, name: l.productName, amount: Math.round(l.amount * 1000) / 1000, unit: model.book.products.get(l.productId)?.baseUnit ?? '', ...(l.cost !== undefined ? { cost: Math.round(l.cost * 1000) / 1000 } : {}) }))
           .sort((a, b) => (b.cost ?? -1) - (a.cost ?? -1)),
         // Came off the menu during the period: its money is real, but it's not a dish to work on.
-        ...((lastSold.get(d.recipeId) ?? model.today) < stillOn ? { offSince: lastSold.get(d.recipeId) } : {}),
+        // Off only when the menu says so (a manager confirmed it, or a planned dish replaced it).
+        ...(!onNowIds.has(d.recipeId) && lastSold.get(d.recipeId) ? { offSince: lastSold.get(d.recipeId) } : {}),
       })),
       // Food cost share week by week, over the dishes with cards.
       weeklyFoodCost: weeks.map((_, i) => {
@@ -274,23 +277,47 @@ export function menuView(model: Model, view: AreaView = ALL) {
     section: sectionFor(shownName(e), (e.recipeId && recipeCategory.get(e.recipeId)) || 'Other'),
     since: e.startsOn,
     hasCard: true,
+    ...(e.recipeId ? { menuKey: e.recipeId } : {}),
+    ...(e.quietSince ? { quiet: { since: e.quietSince, after: e.quietAfter } } : {}),
   }));
   const baseOf = (section: string) => section.replace(/ add-ons$/, '');
-  const current = currentAll.filter((x) => inArea(view, baseOf(x.section)));
-  const cameOff = model.entries.filter((e) => e.endsOn).map((e) => ({ ...imageFor(e), name: shownName(e), section: sectionFor(shownName(e), (e.recipeId && recipeCategory.get(e.recipeId)) || 'Other'), from: e.startsOn, to: e.endsOn!, hasCard: true }))
+  const current: ({ name: string; section: string; since: string; hasCard: boolean } & Record<string, unknown>)[] = currentAll.filter((x) => inArea(view, baseOf(x.section)));
+  const cameOff: ({ name: string; section: string; from: string; to: string; hasCard: boolean } & Record<string, unknown>)[] = model.entries.filter((e) => e.endsOn && !onMenu(model.entries, today).some((o) => o.recipeId === e.recipeId))
+    .map((e) => ({ ...imageFor(e), name: shownName(e), section: sectionFor(shownName(e), (e.recipeId && recipeCategory.get(e.recipeId)) || 'Other'), from: e.startsOn, to: e.endsOn!, hasCard: true, ...(e.recipeId ? { menuKey: e.recipeId } : {}) }))
     .filter((x) => inArea(view, baseOf(x.section)));
 
   // Selling with no card: on the menu by name until a card is linked. Recipe-card questions are
   // for kitchen categories that already have cards (drinks get costed another way).
   const foodSections = new Set([...recipeCategory.values()].filter((c) => view.areaOf(c) === 'kitchen'));
+  // These come off the same way as dishes: only when a manager says so; quiet ones are asked about.
+  const posDays = new Map<string, string[]>();
+  for (const l of model.sales) if (l.date && l.quantity > 0) posDays.set(`${l.catalogId}|${l.name}`, [...(posDays.get(`${l.catalogId}|${l.name}`) ?? []), l.date]);
+  const statusOf = new Map(model.menuStatus.map((a) => [a.recipeId, a]));
   for (const s of model.spans) {
     if (model.lookup(s.catalogId, s.name, s.last)) continue;
     const section = categoryOf.get(s.catalogId) ?? 'Other';
     if (!inArea(view, section) || s.quantity <= 0) continue;
-    const item = { name: s.name, section: sectionFor(s.name, section), hasCard: false, pos: posItem(s.catalogId, s.name), ...includesFor(s.catalogId), ...(model.imageOf(s.catalogId) ? { image: model.imageOf(s.catalogId)! } : {}) };
-    if (s.last >= recent) current.push({ ...item, since: s.first });
-    else cameOff.push({ ...item, from: s.first, to: s.last });
+    const menuKey = `pos:${s.catalogId}`;
+    const item = { name: s.name, section: sectionFor(s.name, section), hasCard: false, pos: posItem(s.catalogId, s.name), menuKey, ...includesFor(s.catalogId), ...(model.imageOf(s.catalogId) ? { image: model.imageOf(s.catalogId)! } : {}) };
+    const a = statusOf.get(menuKey);
+    if (a?.status === 'off' && s.last <= a.date) { cameOff.push({ ...item, from: s.first, to: a.date >= s.first ? a.date : s.last }); continue; }
+    const after = quietThreshold(posDays.get(`${s.catalogId}|${s.name}`) ?? []);
+    const from = (a?.status === 'stillOn' || a?.status === 'on') && a.date > s.last ? a.date : s.last;
+    const quiet = daysFrom(from, today) > after;
+    current.push({ ...item, since: s.first, ...(quiet ? { quiet: { since: s.last, after } } : {}) });
   }
+
+  // Dishes and drinks with a recipe that aren't on now: to put back on the menu if one came off by mistake.
+  const onNow = new Set(onMenu(model.entries, today).map((e) => e.recipeId));
+  const categoryOfRecipe = new Map<string, string>();
+  for (const m of model.menuItems) {
+    const id = model.lookup(m.catalogId, posName(m), today)?.recipeId;
+    if (id && m.category && !categoryOfRecipe.has(id)) categoryOfRecipe.set(id, m.category);
+  }
+  const addable = model.recipes.filter((r) => r.kind === 'dish' && !onNow.has(r.id))
+    .map((r) => ({ menuKey: r.id, name: r.name, section: recipeCategory.get(r.id) ?? categoryOfRecipe.get(r.id) ?? 'Not sold yet' }))
+    .filter((x) => x.section === 'Not sold yet' || inArea(view, x.section))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   // Sections in order of the money they bring in, add-ons after their section.
   const sectionSales = new Map<string, number>();
@@ -307,6 +334,8 @@ export function menuView(model: Model, view: AreaView = ALL) {
     current: current.sort(order),
     cameOff: cameOff.sort((a, b) => b.to.localeCompare(a.to)),
     cards: view.area !== 'bar',
+    addable,
+    quietCount: current.filter((x) => x.quiet).length,
     coverage: coverageOf(model, view),
     checks: model.checks.filter((c) => inArea(view, (c.catalogId && categoryOf.get(c.catalogId)) || (c.recipeId && recipeCategory.get(c.recipeId)) || undefined)).map((c) => {
       const span = c.catalogId ? model.spans.filter((sp) => sp.catalogId === c.catalogId).sort((a, b) => b.last.localeCompare(a.last))[0] : undefined;

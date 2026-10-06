@@ -31,6 +31,28 @@ export interface MenuEntry {
   endsOn?: string;
   /** Set by a manager, or taken from the first and last day it sold. */
   datesFrom: 'manager' | 'sales';
+  /** Still on, but quiet for longer than usual for this dish: the day it last sold (or was put back on), to ask about. */
+  quietSince?: string;
+  /** How many days without a sale it takes to ask, for this dish. */
+  quietAfter?: number;
+}
+
+/** A manager's word on a dish: came off (on a day), still on, or put back on the menu. */
+export interface MenuStatusAnswer { recipeId: string; status: 'off' | 'on' | 'stillOn'; date: string }
+
+const dayDiff = (from: string, to: string) => Math.round((Date.parse(`${to}T12:00:00Z`) - Date.parse(`${from}T12:00:00Z`)) / 86_400_000);
+
+/**
+ * How many days a dish can go without selling before it's worth asking whether it's still on:
+ * about twice its usual longest gap between sales, a week at least, six weeks at most. A pizza
+ * sold every night is asked about after a week; a special sold once a week, after two or three.
+ */
+export function quietThreshold(sellingDays: readonly string[]): number {
+  const days = [...new Set(sellingDays)].sort();
+  if (days.length < 3) return 21;
+  const gaps = days.slice(1).map((d, i) => dayDiff(days[i]!, d)).sort((a, b) => a - b);
+  const p90 = gaps[Math.floor(0.9 * (gaps.length - 1))]!;
+  return Math.min(42, Math.max(7, Math.ceil(p90 * 2)));
 }
 
 export class MenuError extends Error {}
@@ -103,7 +125,10 @@ export function switchVersion(entries: readonly MenuEntry[], links: LinkState, s
  * Proposes menu entries from what sold: each linked dish from its first to its last day
  * sold. A dish still selling within `stillOnDays` of today has no end date.
  */
-export function entriesFromSales(spans: readonly SellingSpan[], lookup: LinkLookup, recipeName: (id: string) => string, menuId: string, today: string, options: { stillOnDays?: number } = {}): MenuEntry[] {
+export function entriesFromSales(spans: readonly SellingSpan[], lookup: LinkLookup, recipeName: (id: string) => string, menuId: string, today: string, options: MenuStatusOptions = {}): MenuEntry[] {
+  // With the days each dish sold, a dish only comes off when a manager says so (or a planned dish
+  // replaces it); until then a quiet one stays on and is asked about. Without them: off after a week.
+  if (options.sellingDays) return entriesWithStatus(spans, lookup, recipeName, menuId, today, options);
   const stillOn = addDays(today, -(options.stillOnDays ?? 7));
   const byRecipe = new Map<string, { first: string; last: string; name: string }>();
   for (const span of spans) {
@@ -123,6 +148,49 @@ export function entriesFromSales(spans: readonly SellingSpan[], lookup: LinkLook
     ...(last < stillOn ? { endsOn: last } : {}),
     datesFrom: 'sales' as const,
   }));
+}
+
+export interface MenuStatusOptions {
+  stillOnDays?: number;
+  /** The days each dish sold, by recipe id. */
+  sellingDays?: ReadonlyMap<string, readonly string[]>;
+  /** Managers' answers, one per dish. */
+  answers?: readonly MenuStatusAnswer[];
+  /** Dishes a planned dish replaces, by recipe id: the day the new one starts. */
+  replacedFrom?: ReadonlyMap<string, string>;
+}
+
+function entriesWithStatus(spans: readonly SellingSpan[], lookup: LinkLookup, recipeName: (id: string) => string, menuId: string, today: string, options: MenuStatusOptions): MenuEntry[] {
+  const byRecipe = new Map<string, { first: string; last: string; name: string }>();
+  for (const span of spans) {
+    const link = lookup(span.catalogId, span.name, span.last);
+    if (!link) continue;
+    const name = link.portion ? span.name : recipeName(link.recipeId);
+    const r = byRecipe.get(link.recipeId);
+    byRecipe.set(link.recipeId, r ? { name: r.name, first: r.first < span.first ? r.first : span.first, last: r.last > span.last ? r.last : span.last } : { name, first: span.first, last: span.last });
+  }
+  const answers = new Map((options.answers ?? []).map((a) => [a.recipeId, a]));
+  const out: MenuEntry[] = [];
+  const entry = (recipeId: string, name: string, startsOn: string, end: { endsOn?: string; quietSince?: string; quietAfter?: number }): MenuEntry => ({ id: newId(), menuId, recipeId, name, startsOn, ...end, datesFrom: 'sales' });
+  for (const [recipeId, { first, last, name }] of byRecipe) {
+    const a = answers.get(recipeId);
+    const replaced = options.replacedFrom?.get(recipeId);
+    const after = quietThreshold(options.sellingDays?.get(recipeId) ?? []);
+    // Replaced by a planned dish, and not sold since it started: off, no question.
+    if (replaced && replaced <= today && last < replaced) { out.push(entry(recipeId, name, first, { endsOn: last })); continue; }
+    // Said to have come off, and not sold since.
+    if (a?.status === 'off' && last <= a.date) { out.push(entry(recipeId, name, first, { endsOn: a.date >= first ? a.date : last })); continue; }
+    // On: quiet counts from its last sale, or from when someone said it's still on, whichever is later.
+    const from = (a?.status === 'stillOn' || a?.status === 'on') && a.date > last ? a.date : last;
+    out.push(entry(recipeId, name, first, dayDiff(from, today) > after ? { quietSince: last, quietAfter: after } : {}));
+  }
+  // Put back on by a manager, with no sales in the period yet.
+  for (const a of answers.values()) {
+    if (a.status !== 'on' || byRecipe.has(a.recipeId) || a.date > today) continue;
+    const after = 21;
+    out.push(entry(a.recipeId, recipeName(a.recipeId), a.date, dayDiff(a.date, today) > after ? { quietSince: a.date, quietAfter: after } : {}));
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- mismatch checks
@@ -161,6 +229,8 @@ export interface MenuCheckInput {
   quietDays?: number;
   /** A button first sold this recently is new. Default 14. */
   newDays?: number;
+  /** Entries carry their own quiet flags (entriesFromSales with selling days): ask about those, not by a flat number of days. */
+  statusAware?: boolean;
 }
 
 export function menuChecks(input: MenuCheckInput): MenuCheck[] {
@@ -204,26 +274,32 @@ export function menuChecks(input: MenuCheckInput): MenuCheck[] {
     checks.push({ ...check, title: `${input.recipeName(c.recipeId!)} sold ${quantity} times since ${since} but isn't on the menu. Put it on, or was it a special?` });
   }
 
-  // On the menu, not selling.
-  const openDays = new Set(dated.filter((l) => l.date! >= quietFrom).map((l) => l.date!));
-  if (openDays.size > 0) {
-    const lastSold = new Map<string, string>();
-    for (const l of dated) {
-      const recipeId = input.lookup(l.catalogId, l.name, l.date)?.recipeId;
-      if (recipeId && (!lastSold.has(recipeId) || l.date! > lastSold.get(recipeId)!)) lastSold.set(recipeId, l.date!);
+  // On the menu, not selling: quieter than usual for that dish, so ask whether it's still on.
+  if (input.statusAware) {
+    for (const e of onMenu(input.entries, input.today).filter((x) => x.recipeId && x.quietSince)) {
+      checks.push({ kind: 'notSelling', title: `${e.name} hasn't sold since ${e.quietSince}. Still on the menu?`, dedupeKey: `menu:quiet:${e.recipeId}`, recipeId: e.recipeId, entryId: e.id, netSales: 0, suggestedDate: e.quietSince });
     }
-    for (const e of onMenu(input.entries, input.today)) {
-      if (!e.recipeId || e.startsOn > quietFrom) continue;
-      const last = lastSold.get(e.recipeId);
-      if (last && last >= quietFrom) continue;
-      checks.push({
-        kind: 'notSelling',
-        title: `${e.name} is on the menu but ${last ? `hasn't sold since ${last}` : `hasn't sold in ${quietDays} days`}. Still on?`,
-        dedupeKey: `menu:quiet:${e.id}`,
-        recipeId: e.recipeId,
-        entryId: e.id,
-        netSales: 0,
-      });
+  } else {
+    const openDays = new Set(dated.filter((l) => l.date! >= quietFrom).map((l) => l.date!));
+    if (openDays.size > 0) {
+      const lastSold = new Map<string, string>();
+      for (const l of dated) {
+        const recipeId = input.lookup(l.catalogId, l.name, l.date)?.recipeId;
+        if (recipeId && (!lastSold.has(recipeId) || l.date! > lastSold.get(recipeId)!)) lastSold.set(recipeId, l.date!);
+      }
+      for (const e of onMenu(input.entries, input.today)) {
+        if (!e.recipeId || e.startsOn > quietFrom) continue;
+        const last = lastSold.get(e.recipeId);
+        if (last && last >= quietFrom) continue;
+        checks.push({
+          kind: 'notSelling',
+          title: `${e.name} is on the menu but ${last ? `hasn't sold since ${last}` : `hasn't sold in ${quietDays} days`}. Still on?`,
+          dedupeKey: `menu:quiet:${e.id}`,
+          recipeId: e.recipeId,
+          entryId: e.id,
+          netSales: 0,
+        });
+      }
     }
   }
 
