@@ -15,7 +15,7 @@
 import type { Db } from './db.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, type Model } from './model.ts';
-import { gapsOf, inArea, menuView, posItemOf, type AreaView } from './views.ts';
+import { coverageOf, inArea, menuView, posItemOf, type AreaView } from './views.ts';
 import { guessArea, loadAreas } from './areas.ts';
 import { ordersDue } from './orders.ts';
 import { view as stationDay } from './prep.ts';
@@ -197,14 +197,6 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string, 
       items.push({ key: `q:more:${side}`, group: 'menu', label: 'Questions', tone: 'ask', dollars: rest[0]!.dollars, title: `${rest.length} more ${side} question${rest.length === 1 ? '' : 's'}`, detail: list(rest.map((q) => q.name.replace(/[.?]$/, '')), 4), go: { to: 'menu' }, button: 'Menu' });
     }
 
-    // What keeps plate costs incomplete, most plates first.
-    const gaps = gapsOf(model, model.margins.dishes.filter((d) => inArea(view, d.category)));
-    for (const g of gaps.slice(0, 2)) {
-      items.push({ key: `gap:${g.key}`, group: 'costs', label: 'Plate cost', tone: 'ask',
-        title: g.kind === 'price' ? `${g.product}: no price yet` : `${g.product}: how much is one ${g.needed === 'unknownUnit' ? g.to : g.from ?? 'unit'}?`,
-        detail: `Leaves ${list(g.dishes, 2)} without a full plate cost (${g.plates.toLocaleString('en-US')} plates)`, go: { to: 'performance' }, button: 'Fill in' });
-    }
-
     // Prices that moved enough to matter.
     for (const m of priceMoves(model, today, (c) => inArea(view, c)).slice(0, 3)) {
       const up = m.change > 0;
@@ -262,6 +254,7 @@ function glance(days: { day: string; category: string; net: number }[], today: s
     selling.set(l.name, it);
   }
   return {
+    coverage: coverageOf(model, view),
     ...(lastDay ? { lastDay } : {}),
     ...(weekToDate ? { weekToDate } : {}),
     lastWeek,

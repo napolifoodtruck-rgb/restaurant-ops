@@ -368,3 +368,16 @@ img.thumb { width: 56px; height: 56px; object-fit: cover; flex: none; background
 img.thumb.small { width: 40px; height: 40px; }
 .book-item.with-photo { flex-direction: row; align-items: center; gap: 14px; }
 img.hero { width: 100%; max-height: 300px; object-fit: cover; display: block; background: var(--soft); }
+
+/* Recipe coverage */
+button.cov-card { text-align: left; font: inherit; color: inherit; cursor: pointer; width: 100%; }
+button.cov-card:hover { border-color: #000; }
+.cov-bar { display: flex; height: 14px; background: var(--soft); overflow: hidden; }
+.cov-bar.big { height: 28px; }
+.cov-complete { background: #000; }
+.cov-gaps { background: var(--orange); }
+.cov-nocard { background: repeating-linear-gradient(135deg, #CFCFCA 0 4px, #E9E9E5 4px 8px); }
+.cov-legend { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.cov-legend > div { display: flex; align-items: center; gap: 8px; }
+.cov-key { width: 12px; height: 12px; flex: none; }
+.cov-legend .grow { flex: 1; }

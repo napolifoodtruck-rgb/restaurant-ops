@@ -45,6 +45,23 @@ export function gapsOf(model: Model, dishes: Model['margins']['dishes']) {
   return [...gaps.values()].sort((a, b) => b.plates - a.plates).map((g) => ({ ...g, plates: Math.round(g.plates) }));
 }
 
+/**
+ * How much of a side's sales has a full plate cost behind it: dishes whose card prices out
+ * completely, dishes whose card is missing a price or conversion, and items with no card.
+ */
+export function coverageOf(model: Model, view: AreaView) {
+  let complete = 0, gaps = 0, noCard = 0;
+  const dishes = model.margins.dishes.filter((d) => inArea(view, d.category));
+  for (const d of dishes) if (d.cost.complete) complete += d.netSales; else gaps += d.netSales;
+  const missing = model.margins.unlinked.filter((u) => u.catalogId && u.netSales > 0 && inArea(view, u.category));
+  for (const u of missing) noCard += u.netSales;
+  return {
+    complete: money(complete), gaps: money(gaps), noCard: money(noCard),
+    gapCount: gapsOf(model, dishes).length,
+    noCardCount: new Set(missing.map((u) => posItemOf(model)(u.catalogId, u.name).itemName)).size,
+  };
+}
+
 /** Margins by category, biggest money first. Only categories with at least one dish that has a recipe. */
 export function marginsView(model: Model, view: AreaView = ALL) {
   const stillOn = addDays(model.today, -7);
@@ -200,6 +217,9 @@ export function marginsView(model: Model, view: AreaView = ALL) {
 
   return {
     area: view.area,
+    coverage: coverageOf(model, view),
+    // Every plate-cost gap on this side, one question per product.
+    gaps: gapsOf(model, model.margins.dishes.filter((d) => inArea(view, d.category))),
     from: model.from,
     to: model.today,
     dataFrom: model.dataFrom,

@@ -427,7 +427,7 @@ function renderMargins(me, state, m) {
   const noCard = cat.noCard.length ? h('section', { class: 'card' },
     h('h2', { text: `Selling with no recipe card: ${dollars(cat.noCardSales)} in sales not counted above` }),
     h('div', { class: 'small', text: cat.noCard.map((x) => `${x.name} ${dollars(x.netSales)}`).join(' · ') })) : null;
-  show(shell(me, 'margins', [header, h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, picker), modeSwitch), early, missingNote(m.missing), gapsCard(me, state, cat), table, noCard]));
+  show(shell(me, 'margins', [header, h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, picker), modeSwitch), early, missingNote(m.missing), table, noCard]));
 }
 
 function categoryTabs(me, state, m, current, again) {
@@ -478,9 +478,9 @@ function plateDetail(d) {
 }
 
 /** The questions that would complete plate costs, one per product. */
-function gapsCard(me, state, cat) {
-  if (!cat.gaps?.length) return null;
-  const rows = cat.gaps.map((g) => {
+function gapsCard(me, gaps, onSaved) {
+  if (!gaps?.length) return null;
+  const rows = gaps.map((g) => {
     const row = h('div', { class: 'ask' });
     const err = h('div', { class: 'error' });
     const amount = h('input', { inputmode: 'decimal', class: 'amount', 'aria-label': 'Amount', placeholder: 'amount' });
@@ -488,7 +488,7 @@ function gapsCard(me, state, cat) {
     const save = async (body) => {
       const res = await api('POST', '/api/answers', body);
       if (!res.ok) return (err.textContent = res.data.error ?? 'That didn’t save.');
-      marginsScreen(me, state);
+      onSaved();
     };
     const affects = h('div', { class: 'small muted', text: `Affects ${g.dishes.join(', ')} · ${g.plates.toLocaleString()} plates in this period` });
     let question, form;
@@ -520,7 +520,7 @@ function gapsCard(me, state, cat) {
     return row;
   });
   return h('section', { class: 'card' },
-    h('div', { class: 'row' }, h('h2', { class: 'grow', text: `Plate costs with gaps (${cat.gaps.length})` }), h('span', { class: 'small muted', text: 'One answer fixes every dish that uses it.' })),
+    h('div', { class: 'row' }, h('h2', { class: 'grow', text: `Plate costs with gaps (${gaps.length})` }), h('span', { class: 'small muted', text: 'One answer fixes every dish that uses it.' })),
     h('div', { class: 'small muted', text: 'Dishes marked * leave these out of their cost, so they look cheaper than they are.' }),
     h('div', { class: 'asks' }, rows));
 }
@@ -1596,6 +1596,7 @@ function glanceCards(me, t, side) {
     const c = now / then - 1;
     return h('div', { class: `small ${c >= 0.03 ? 'trend-up' : c <= -0.03 ? 'trend-down' : 'trend-flat'}`, text: `${c >= 0 ? '+' : '−'}${Math.abs(Math.round(c * 100))}% ${words}` });
   };
+  if (g?.coverage) cards.push(coverageCard(me, g.coverage, side));
   if (g?.lastDay) cards.push(h('div', { class: 'card tight' },
     h('div', { class: 'small muted strong', text: `${of}Last service · ${weekdayName(g.lastDay.date)} ${shortDate(g.lastDay.date)}` }),
     h('div', { class: 'big', text: dollars(g.lastDay.netSales, { exact: true }) }),
@@ -1781,6 +1782,54 @@ function vendorSettings(me, d, done) {
         if (!res.ok) return (err.textContent = res.data.error ?? 'Not saved.');
         done();
       } }), err)));
+}
+
+// ------------------------------------------------------------------ recipe coverage
+
+/** One bar, three parts: sales with a full plate cost, with a card missing a price, with no card. */
+function coverageBar(c, big = false) {
+  const total = c.complete + c.gaps + c.noCard;
+  const parts = [['complete', c.complete, 'Fully costed'], ['gaps', c.gaps, 'Card missing a price'], ['nocard', c.noCard, 'No card yet']];
+  const bar = h('div', { class: `cov-bar${big ? ' big' : ''}`, role: 'img', 'aria-label': parts.map(([, v, l]) => `${l} ${total ? Math.round((v / total) * 100) : 0}%`).join(', ') },
+    parts.map(([k, v]) => { const seg = h('div', { class: `cov-${k}` }); seg.style.width = `${total ? (v / total) * 100 : 0}%`; return seg; }));
+  const legend = h('div', { class: 'cov-legend' }, parts.map(([k, v, l]) => h('div', {}, h('span', { class: `cov-key cov-${k}` }), h('span', { class: 'grow', text: l }), h('b', { text: `${total ? Math.round((v / total) * 100) : 0}%` }), big ? h('span', { class: 'small muted', text: dollars(v) }) : null)));
+  return [bar, legend];
+}
+
+function coverageCard(me, c, side) {
+  const total = c.complete + c.gaps + c.noCard;
+  if (!total) return null;
+  return h('button', { class: 'card tight cov-card', onclick: () => { if (side !== 'all') me.side = side; coverageScreen(me); }, 'aria-label': 'Recipe coverage: see what’s missing' },
+    h('div', { class: 'small muted strong', text: `Menu with full costs, last 90 days${side === 'all' ? '' : ` · ${AREA_NAMES[side]}`}` }),
+    coverageBar(c),
+    h('div', { class: 'small muted', text: [c.gapCount ? `${c.gapCount} price${c.gapCount === 1 ? '' : 's'} to fill in` : '', c.noCardCount ? `${c.noCardCount} item${c.noCardCount === 1 ? '' : 's'} without a card` : ''].filter(Boolean).join(' · ') || 'Everything is costed.' }));
+}
+
+/** What keeps the menu from being fully costed: prices and conversions to fill in, cards to write. */
+async function coverageScreen(me) {
+  loadingScreen(me, 'today', 'Recipe coverage');
+  const side = sideOf(me);
+  const [m, cards] = await Promise.all([api('GET', `/api/margins?area=${side}`), api('GET', `/api/cards?area=${side}`)]);
+  if (!m.ok) return show(shell(me, 'today', [h('h1', { text: 'Recipe coverage' }), h('div', { class: 'error', text: m.data.error ?? 'Couldn’t load.' })]));
+  const c = m.data.coverage;
+  const noCard = (cards.data.noCard ?? []).slice(0, 60);
+  const noCardBox = noCard.length ? h('section', { class: 'card' },
+    h('div', { class: 'row' }, h('h2', { class: 'grow', text: `Selling without a card (${cards.data.noCard.length})` }),
+      side === 'bar' ? h('button', { class: 'btn dark', text: 'Draft bar cards', onclick: () => draftsScreen(me) }) : null),
+    h('div', { class: 'small muted', text: 'Their sales aren’t counted in food cost until they have a card. Biggest sellers first.' }),
+    h('div', { class: 'list' }, noCard.map((x) => h('div', {},
+      h('div', { class: 'grow' }, h('div', { text: x.name }), h('div', { class: 'small muted', text: `${x.category} · ${x.sold} sold · ${dollars(x.netSales)} in 90 days` })),
+      h('button', { class: 'btn small-btn', text: 'Write card', onclick: () => cardEditor(me, cards.data, null, { name: x.itemName, kind: side === 'bar' ? 'drink' : 'dish', link: [x] }) }),
+      h('button', { class: 'link', text: 'No card needed', onclick: async () => { await api('POST', '/api/cards/no-card', { items: [x] }); coverageScreen(me); } }))))) : null;
+  show(shell(me, 'today', [
+    h('header', { class: 'row wrap' },
+      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[side]} · last 90 days of sales` }), h('h1', { text: 'Recipe coverage' }),
+        h('div', { class: 'sub', text: 'How much of what you sell has a full plate cost behind it. Fill in the missing prices and write the missing cards, and food cost covers the whole menu.' })),
+      h('div', { class: 'row wrap' }, h('button', { class: 'btn', text: '← Today', onclick: () => todayScreen(me) }), sideSwitch(me, () => coverageScreen(me)))),
+    h('section', { class: 'card' }, coverageBar(c, true)),
+    gapsCard(me, m.data.gaps, () => coverageScreen(me)) ?? h('div', { class: 'card small muted', text: 'Every card prices out completely.' }),
+    noCardBox,
+  ]));
 }
 
 // ------------------------------------------------------------------ settings
