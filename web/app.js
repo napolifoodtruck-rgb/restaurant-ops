@@ -965,6 +965,14 @@ async function prepWork(me, stationId, date) {
   ]));
 }
 
+/** Move up, move down, remove: small, at the end of a line in the list editor. */
+function editTools(up, down, name, remove) {
+  return h('div', { class: 'edit-tools' },
+    h('button', { class: 'btn small-btn', 'aria-label': `Move ${name} up`, title: 'Move up', text: '↑', onclick: up }),
+    h('button', { class: 'btn small-btn', 'aria-label': `Move ${name} down`, title: 'Move down', text: '↓', onclick: down }),
+    h('button', { class: 'btn small-btn remove', 'aria-label': `Remove ${name}`, title: 'Remove', text: '×', onclick: remove }));
+}
+
 // Editing a station's list: items (name, unit, par, kind, days) and cleaning tasks.
 async function prepEdit(me, stationId) {
   const r = await api('GET', `/api/prep/${stationId}/setup`);
@@ -1005,7 +1013,7 @@ async function prepEdit(me, stationId) {
     batchYield.addEventListener('change', () => save(`/api/prep/items/${it.id}`, { batchYield: batchYield.value.trim() === '' ? null : Number(batchYield.value) }));
     const recipeSelect = h('select', { 'aria-label': 'Recipe card' }, h('option', { value: '', text: 'No recipe card' }), (s.recipes ?? []).map((r) => h('option', { value: r.name, text: r.name, selected: it.recipeName === r.name ? true : undefined })));
     recipeSelect.addEventListener('change', async () => { if (await save(`/api/prep/items/${it.id}`, { recipeName: recipeSelect.value || null })) again(); });
-    const recipeRow = h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: 'Recipe card:' }), recipeSelect,
+    const recipeRow = h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Recipe' }), recipeSelect,
       it.recipeSuggestion ? h('button', { class: 'btn small-btn blue', text: `${it.recipeSuggestion}?`, onclick: async () => { if (await save(`/api/prep/items/${it.id}`, { recipeName: it.recipeSuggestion })) again(); } }) : null);
     const dated = it.activeFrom || it.activeUntil ? h('div', { class: 'row tight wrap' },
       h('span', { class: 'tag blue', text: [it.activeFrom ? `on the list from ${shortDate(it.activeFrom)}` : '', it.activeUntil ? `last day ${shortDate(it.activeUntil)}` : ''].filter(Boolean).join(' · ') }),
@@ -1013,23 +1021,24 @@ async function prepEdit(me, stationId) {
     const bulkFields = it.kind === 'batch' ? h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: 'Kept in' }), bulkUnit, h('span', { class: 'small muted', text: 'one batch makes' }), batchYield, h('span', { class: 'small muted', text: it.bulkUnit ?? '' })) : null;
     const base = (n) => n.replace(/\(.*?\)/g, '').trim().toLowerCase().replace(/s$/, '');
     const likely = !it.sourceItemId && others.find((b) => base(b.name) === base(it.name));
-    const link = it.kind === 'count' && others.length ? h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: 'Filled from:' }), source,
+    const link = it.kind === 'count' && others.length ? h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: 'Filled from' }), source,
       likely ? h('button', { class: 'btn small-btn blue', text: `Link to ${likely.name}?`, onclick: async () => { if (await save(`/api/prep/items/${it.id}`, { sourceItemId: likely.id })) again(); } }) : null,
       it.sourceItemId ? h('span', { class: 'row tight' }, h('span', { class: 'small muted', text: `one ${it.unit ?? 'container'} holds` }), holds, h('span', { class: 'small muted', text: sourceItem?.bulk_unit ?? '(set the bulk item’s unit)' })) : null) : null;
-    return h('div', { class: 'editrow' },
-      h('div', { class: 'row tight' }, h('button', { class: 'btn small-btn', 'aria-label': 'Move up', text: '↑', onclick: () => move(s.items, i, -1, 'items') }), h('button', { class: 'btn small-btn', 'aria-label': 'Move down', text: '↓', onclick: () => move(s.items, i, 1, 'items') })),
-      h('div', { class: 'grow editfields' }, h('div', { class: 'row tight wrap' }, name, unit, par, kind),
-        h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: days.length ? 'Only on:' : 'Every day · or only on:' }), dayChips), link, bulkFields, recipeRow, dated),
-      h('button', { class: 'link', text: 'Remove', onclick: async () => { if (await save(`/api/prep/items/${it.id}`, { active: false })) again(); } }));
+    // One line for what it is (name, unit, par, kind, order), one small line for the rest.
+    return h('div', { class: 'editrow compact' },
+      h('div', { class: 'edit-main' }, name, unit, par, kind,
+        editTools(() => move(s.items, i, -1, 'items'), () => move(s.items, i, 1, 'items'), it.name, async () => { if (await save(`/api/prep/items/${it.id}`, { active: false })) again(); })),
+      h('div', { class: 'edit-more' },
+        h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: days.length ? 'Only on' : 'Every day, or only' }), dayChips),
+        recipeRow, link, bulkFields, dated));
   };
   const checkRow = (c, i, list) => {
     const name = h('input', { type: 'text', value: c.name, 'aria-label': 'Task' });
     const freq = h('select', { 'aria-label': 'How often' }, [['daily', 'Daily'], ['weekly', 'Weekly']].map(([k, t]) => h('option', { value: k, text: t, selected: c.frequency === k ? true : undefined })));
     for (const el of [name, freq]) el.addEventListener('change', async () => { if (await save(`/api/prep/checklist/${c.id}`, { name: name.value, frequency: freq.value })) again(); });
-    return h('div', { class: 'editrow' },
-      h('div', { class: 'row tight' }, h('button', { class: 'btn small-btn', 'aria-label': 'Move up', text: '↑', onclick: () => move(list, i, -1, 'checklist') }), h('button', { class: 'btn small-btn', 'aria-label': 'Move down', text: '↓', onclick: () => move(list, i, 1, 'checklist') })),
-      h('div', { class: 'grow row tight wrap' }, name, freq),
-      h('button', { class: 'link', text: 'Remove', onclick: async () => { if (await save(`/api/prep/checklist/${c.id}`, { active: false })) again(); } }));
+    return h('div', { class: 'editrow compact' },
+      h('div', { class: 'edit-main tasks' }, name, freq,
+        editTools(() => move(list, i, -1, 'checklist'), () => move(list, i, 1, 'checklist'), c.name, async () => { if (await save(`/api/prep/checklist/${c.id}`, { active: false })) again(); })));
   };
   const newItem = h('input', { type: 'text', placeholder: 'New item', 'aria-label': 'New item' });
   const newTask = h('input', { type: 'text', placeholder: 'New cleaning task', 'aria-label': 'New cleaning task' });

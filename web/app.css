@@ -461,3 +461,27 @@ details.snoozed[open] summary { margin-bottom: -1px; }
 .snoozed-row .grow { flex: 1; min-width: 0; }
 .todo.choosing .todo-actions { grid-column: 2 / -1; justify-content: flex-start; align-items: center; }
 @media (max-width: 1000px) { .todo.choosing .todo-actions { grid-column: auto; } }
+
+/* The prep list editor: one tight line per item, the details in small type under it. */
+.editrow.compact { display: flex; flex-direction: column; align-items: stretch; gap: 6px; padding: 10px 0; }
+.edit-main { display: grid; grid-template-columns: minmax(150px, 2.6fr) minmax(70px, .8fr) 56px 136px auto; gap: 6px; align-items: center; }
+.edit-main.tasks { grid-template-columns: minmax(150px, 1fr) 110px auto; }
+.editrow .edit-main input, .editrow .edit-main input[type=text], .edit-main select { height: 36px; min-width: 0; width: 100%; max-width: none; padding: 0 8px; font-size: 14px; }
+.edit-main input[type=text]:first-child { font-weight: 600; }
+.edit-tools { display: flex; gap: 4px; }
+.edit-tools .btn.small-btn { width: 32px; height: 32px; padding: 0; font-size: 14px; letter-spacing: 0; }
+.edit-tools .remove:hover { border-color: var(--accent); color: var(--accent); }
+.edit-more { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; }
+.edit-more .row.tight { gap: 6px; }
+.edit-more .lchip { height: 26px; padding: 0 6px; font-size: 12px; }
+.edit-more .row.tight.wrap { gap: 4px; }
+.edit-more select { height: 30px; font-size: 13px; max-width: 190px; padding: 0 6px; }
+.editrow .edit-more input.amount, .editrow .edit-more input.unit-in, .editrow .edit-more input[type=text] { height: 30px; width: 90px; min-width: 0; padding: 0 6px; font-size: 13px; }
+.edit-more .btn.small-btn { height: 30px; font-size: 11px; padding: 0 10px; }
+@container main (max-width: 560px) {
+  .edit-main { grid-template-columns: 1fr 90px 60px; }
+  .edit-main > select { grid-column: 1 / 2; }
+  .edit-main > .edit-tools { grid-column: 2 / 4; justify-content: flex-end; }
+  .edit-main.tasks { grid-template-columns: 1fr 100px; }
+  .edit-main.tasks > .edit-tools { grid-column: 1 / -1; }
+}
