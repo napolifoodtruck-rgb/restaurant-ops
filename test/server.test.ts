@@ -164,6 +164,25 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   await call('POST', `/api/prep/${pizza}/${day}/done`, { body: { itemId: pizzaItem.id, state: 'undo' }, cookies: cookAgain });
   assert.equal((await call('GET', `/api/prep/${bulkSt}/${day}`, { cookies: ownerSession })).json.lines[0].onHand.amount, 5); // undo puts it back
 
+  // Containers and weights: the usual containers come ready; a manager adds the house's own; a weighed item shows its weight.
+  const units = (await call('GET', '/api/units', { cookies: cookAgain })).json;
+  assert.ok(units.containers.some((c: any) => c.name === 'deep 1/9 pan'));
+  assert.ok(units.fixed.volume.length && units.fixed.weight.length);
+  assert.equal((await call('POST', '/api/units/containers', { body: { name: 'pizza tub', volumeMl: 5000 }, cookies: cookAgain })).status, 403);
+  const tub = (await call('POST', '/api/units/containers', { body: { name: 'pizza tub', aliases: ['tub'], volumeMl: 5000 }, cookies: ownerSession })).json;
+  assert.ok(tub.id);
+  assert.equal((await call('POST', '/api/units/containers', { body: { name: 'Pizza Tub', volumeMl: 4000 }, cookies: ownerSession })).status, 409);
+  assert.equal((await call('POST', `/api/units/containers/${tub.id}/delete`, { body: {}, cookies: ownerSession })).status, 200);
+  assert.ok(!(await call('GET', '/api/units', { cookies: ownerSession })).json.containers.some((c: any) => c.name === 'pizza tub'));
+  await call('POST', `/api/prep/items/${pizzaItem.id}`, { body: { unitGrams: 1361 }, cookies: ownerSession }); // a sixth pan weighed: 3 lb
+  const weighed = (await call('GET', `/api/prep/${pizza}/setup`, { cookies: ownerSession })).json;
+  assert.deepEqual([weighed.items[0].unitGrams, weighed.items[0].unitWeight], [1361, { grams: 1361, source: 'weighed' }]);
+  assert.ok(weighed.containers.includes('1/6 pan'));
+  assert.deepEqual((await call('GET', `/api/prep/${pizza}/${day}`, { cookies: ownerSession })).json.lines[0].unitWeight, { grams: 1361, source: 'weighed' });
+  assert.equal((await call('POST', `/api/prep/items/${pizzaItem.id}`, { body: { unitGrams: -2 }, cookies: ownerSession })).status, 400);
+  await call('POST', `/api/prep/items/${pizzaItem.id}`, { body: { unitGrams: null }, cookies: ownerSession });
+  assert.equal((await call('GET', `/api/prep/${pizza}/setup`, { cookies: ownerSession })).json.items[0].unitWeight, undefined); // no recipe to go on
+
   // A dish coming to the menu: its prep joins the pizza list the day before it starts.
   assert.equal((await call('POST', '/api/plans', { body: { name: 'Winter Funghi', startsOn: '2026-10-20' }, cookies: cookAgain })).status, 403);
   const planId = (await call('POST', '/api/plans', { body: { name: 'Winter Funghi', startsOn: '2026-10-20' }, cookies: ownerSession })).json.id;

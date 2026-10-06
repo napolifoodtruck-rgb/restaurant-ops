@@ -22,6 +22,8 @@ import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { getModel } from './model.ts';
+import { loadContainers } from './units.ts';
+import { recipeWeight, unitWeight, type RecipeWeight, type WeightSource } from '../core/containers.ts';
 import { nameSimilarity } from '../core/menuLinks.ts';
 import { cookPace, itemTimes, itemUsuals, listSpan, median, minutesLeft, stationItemUsual, type ItemUsual, type Mark, type WorkedList } from '../core/prepTiming.ts';
 import { batchSuggestion, dayLines, dayShare, onHandFrom, weekdayOf, type BulkOnHand, type StationItem, type StationNeed } from '../core/stationLists.ts';
@@ -35,8 +37,8 @@ function addDays(day: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-interface ItemRow { id: string; name: string; unit: string | null; kind: StationItem['kind']; par: string | null; weekdays: number[] | null; recipe_name: string | null; note: string | null; sort_order: number; source_item_id: string | null; per_batch: string | null; bulk_unit: string | null; batch_yield: string | null; holds: string | null; active_from: string | null; active_until: string | null }
-const toItem = (r: ItemRow): StationItem & { note?: string; recipeName?: string; sourceItemId?: string; bulkUnit?: string; batchYield?: number; holds?: number } => ({
+interface ItemRow { id: string; name: string; unit: string | null; kind: StationItem['kind']; par: string | null; weekdays: number[] | null; recipe_name: string | null; note: string | null; sort_order: number; source_item_id: string | null; per_batch: string | null; bulk_unit: string | null; batch_yield: string | null; holds: string | null; unit_grams?: string | null; active_from: string | null; active_until: string | null }
+const toItem = (r: ItemRow): StationItem & { note?: string; recipeName?: string; sourceItemId?: string; bulkUnit?: string; batchYield?: number; holds?: number; unitGrams?: number } => ({
   id: r.id, name: r.name, kind: r.kind,
   ...(r.unit ? { unit: r.unit } : {}),
   ...(r.par !== null && r.par !== undefined ? { par: Number(r.par) } : {}),
@@ -47,6 +49,7 @@ const toItem = (r: ItemRow): StationItem & { note?: string; recipeName?: string;
   ...(r.bulk_unit ? { bulkUnit: r.bulk_unit } : {}),
   ...(r.batch_yield !== null && r.batch_yield !== undefined ? { batchYield: Number(r.batch_yield) } : {}),
   ...(r.holds !== null && r.holds !== undefined ? { holds: Number(r.holds) } : {}),
+  ...(r.unit_grams !== null && r.unit_grams !== undefined ? { unitGrams: Number(r.unit_grams) } : {}),
   ...(r.active_from ? { activeFrom: String(r.active_from).slice(0, 10) } : {}),
   ...(r.active_until ? { activeUntil: String(r.active_until).slice(0, 10) } : {}),
 });
@@ -60,7 +63,7 @@ async function station(db: Db, restaurantId: string, id: string) {
 }
 
 async function items(db: Db, restaurantId: string, stationId: string) {
-  return (await db.query<ItemRow>('SELECT id, name, unit, kind, par, weekdays, recipe_name, note, sort_order, source_item_id, per_batch, bulk_unit, batch_yield, holds, active_from::text AS active_from, active_until::text AS active_until FROM station_items WHERE restaurant_id = $1 AND station_id = $2 AND active ORDER BY sort_order, name', [restaurantId, stationId])).rows.map((r) => toItem({ ...r, weekdays: arr(r.weekdays) }));
+  return (await db.query<ItemRow>('SELECT id, name, unit, kind, par, weekdays, recipe_name, note, sort_order, source_item_id, per_batch, bulk_unit, batch_yield, holds, unit_grams, active_from::text AS active_from, active_until::text AS active_until FROM station_items WHERE restaurant_id = $1 AND station_id = $2 AND active ORDER BY sort_order, name', [restaurantId, stationId])).rows.map((r) => toItem({ ...r, weekdays: arr(r.weekdays) }));
 }
 
 async function listFor(db: Db, restaurantId: string, stationId: string, date: string) {
@@ -110,7 +113,7 @@ async function bulkSuggestions(db: Db, restaurantId: string, batchItems: Item[],
   const out = new Map<string, ReturnType<typeof batchSuggestion>>();
   if (!batchItems.length) return out;
   const linked = (await db.query<ItemRow & { station_id: string; station_name: string }>(
-    `SELECT i.id, i.name, i.unit, i.kind, i.par, i.weekdays, i.recipe_name, i.note, i.sort_order, i.source_item_id, i.per_batch, i.bulk_unit, i.batch_yield, i.holds, i.active_from::text AS active_from, i.active_until::text AS active_until, i.station_id, s.name AS station_name
+    `SELECT i.id, i.name, i.unit, i.kind, i.par, i.weekdays, i.recipe_name, i.note, i.sort_order, i.source_item_id, i.per_batch, i.bulk_unit, i.batch_yield, i.holds, i.unit_grams, i.active_from::text AS active_from, i.active_until::text AS active_until, i.station_id, s.name AS station_name
        FROM station_items i JOIN stations s ON s.id = i.station_id
       WHERE i.restaurant_id = $1 AND i.active AND i.source_item_id = ANY(string_to_array($2, ',')::uuid[])`,
     [restaurantId, batchItems.map((b) => b.id).join(',')])).rows;
@@ -123,6 +126,36 @@ async function bulkSuggestions(db: Db, restaurantId: string, batchItems: Item[],
     });
     const s = batchSuggestion(needs, onHand.get(b.id), { name: b.name, ...(b.bulkUnit ? { unit: b.bulkUnit } : {}), ...(b.batchYield ? { batchYield: b.batchYield } : {}) });
     if (s) out.set(b.id, s);
+  }
+  return out;
+}
+
+/**
+ * What one unit of each item weighs: weighed by someone, the unit itself a weight, or worked out from its
+ * recipe (what its ingredients weigh over what it makes) times the unit's volume or container size.
+ */
+export async function itemWeights(db: Db, restaurantId: string, list: Item[]) {
+  const containers = await loadContainers(db, restaurantId);
+  const needRecipes = list.some((it) => it.recipeName && !it.unitGrams);
+  const model = needRecipes ? await getModel(db, restaurantId, new Date().toISOString().slice(0, 10)) : undefined;
+  const facts = new Map<string, RecipeWeight | undefined>();
+  const factsOf = (name: string) => {
+    if (!model) return undefined;
+    if (facts.has(name)) return facts.get(name);
+    const r = model.recipes.find((x) => x.name.toLowerCase() === name.toLowerCase());
+    let f: RecipeWeight | undefined;
+    if (r) { const w = model.book.weightOf({ kind: 'recipe', id: r.id }, r.yield); f = recipeWeight(r.yield, r.conversions, w.mostly ? w.grams : undefined); }
+    facts.set(name, f);
+    return f;
+  };
+  const out = new Map<string, { grams: number; source: WeightSource; estimate?: number }>();
+  for (const it of list) {
+    // By what the line counts in (batches for a bulk item), so "make 2" weighs 2 of them.
+    const unit = it.unit;
+    const w = unitWeight(unit, it.unitGrams, it.recipeName ? factsOf(it.recipeName) : undefined, containers);
+    // A weighed item still shows what the recipe says, to compare.
+    const est = it.unitGrams && it.recipeName ? unitWeight(unit, undefined, factsOf(it.recipeName), containers) : undefined;
+    if (w) out.set(it.id, { grams: Math.round(w.grams), source: w.source, ...(est ? { estimate: Math.round(est.grams) } : {}) });
   }
   return out;
 }
@@ -141,6 +174,7 @@ export async function view(db: Db, who: SignedIn, stationId: string, date: strin
   const batchItems = all.filter((i) => i.kind === 'batch');
   const onHand = await bulkOnHand(db, who.restaurantId, batchItems.map((b) => b.id));
   const bulk = await bulkSuggestions(db, who.restaurantId, batchItems, date, share, onHand);
+  const weights = await itemWeights(db, who.restaurantId, all);
 
   // Cleaning: daily tasks, weekly ones on their day, and weekly ones with no day until done that week.
   const weekStart = addDays(date, -((weekdayOf(date) + 6) % 7)); // Monday
@@ -190,6 +224,7 @@ export async function view(db: Db, who: SignedIn, stationId: string, date: strin
         ...(chosen !== undefined ? { toMake: chosen } : d.suggested !== undefined ? { toMake: d.suggested } : {}),
         ...(l?.started_at ? { startedAt: l.started_at, startedBy: l.started_name } : {}),
         ...(l?.done_at ? { doneAt: l.done_at, doneBy: l.done_name } : {}),
+        ...(weights.get(d.item.id) ? { unitWeight: weights.get(d.item.id) } : {}),
       };
     }),
     checklist: checklist.map((c) => ({ id: c.id, name: c.name, frequency: c.frequency, ...(c.done_at ? { doneAt: c.done_at, doneBy: c.done_name } : {}) })),
@@ -234,6 +269,12 @@ function itemFields(b: Record<string, unknown>, partial: boolean): Record<string
   if (b.sourceItemId !== undefined) {
     if (b.sourceItemId !== null && !(typeof b.sourceItemId === 'string' && /^[0-9a-f-]{36}$/.test(b.sourceItemId))) throw new HttpError(400, 'Pick a bulk item.');
     out.source_item_id = b.sourceItemId;
+  }
+  // What one unit of it weighs, weighed on the scale (grams); null clears it.
+  if (b.unitGrams !== undefined) {
+    const g = num(b.unitGrams, 'Its weight');
+    if (g === 0) throw new HttpError(400, 'A weight more than 0, or clear it.');
+    out.unit_grams = g === null ? null : Math.round(g * 100) / 100;
   }
   for (const [key, col, what] of [['batchYield', 'batch_yield', 'A batch'], ['holds', 'holds', 'A container']] as const) {
     if (b[key] === undefined) continue;
@@ -487,7 +528,9 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
       const best = model.recipes.filter((r) => r.kind === 'prep').map((r) => ({ name: r.name, score: nameSimilarity(plain, r.name) })).sort((a, b) => b.score - a.score)[0];
       return best && best.score >= 0.7 ? { ...it, recipeSuggestion: best.name } : it;
     });
-    return send(res, 200, { station: st, items: list, checklist, batchItems, recipes }), true;
+    const weights = await itemWeights(db, who.restaurantId, list as Item[]);
+    const containers = (await loadContainers(db, who.restaurantId)).map((c) => c.name);
+    return send(res, 200, { station: st, items: list.map((it) => ({ ...it, ...(weights.get(it.id) ? { unitWeight: weights.get(it.id) } : {}) })), checklist, batchItems, recipes, containers }), true;
   }
 
   if ((m = path.match(new RegExp(`^/api/prep/(${UUID})/(items|checklist)$`))) && method === 'POST') {

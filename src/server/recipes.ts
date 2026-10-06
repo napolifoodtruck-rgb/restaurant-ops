@@ -10,6 +10,8 @@
  * Costs are shown to managers only.
  */
 
+import { loadContainers } from './units.ts';
+import { recipeWeight, unitWeight } from '../core/containers.ts';
 import type { ServerResponse } from 'node:http';
 import type { Db } from './db.ts';
 import { HttpError, send } from './http.ts';
@@ -88,14 +90,26 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
     // Scaled to an amount (what a prep list says to make) when it converts to the card's yield.
     let scale = 1, scaledTo: { amount: number; unit: string } | undefined;
     const amount = Number(url.searchParams.get('amount')), unit = url.searchParams.get('unit');
+    // What one batch weighs, from its ingredients (complete only when every ingredient can be weighed).
+    const rec = model.recipes.find((r) => r.name.toLowerCase() === c.card.name.toLowerCase());
+    const ingredients = rec ? model.book.weightOf({ kind: 'recipe', id: rec.id }, yields[0]!) : undefined;
+    const weight = recipeWeight(yields[0]!, yieldConversions(yields), ingredients?.mostly ? ingredients.grams : undefined);
+    const batchGrams = weight?.batchGrams;
     if (prep && amount > 0 && unit) {
       const inYield = tryConvert({ amount, unit }, yields[0]!.unit, yieldConversions(yields));
       if (inYield !== undefined && inYield > 0) { scale = inYield / yields[0]!.amount; scaledTo = { amount, unit }; }
+      else {
+        // Containers the recipe doesn't name ("3 × deep 1/9 pan"): by weight, the prep item's (from the list) or
+        // the container's typical size times what the recipe weighs per volume.
+        const asked = Number(url.searchParams.get('grams'));
+        const per = asked > 0 ? asked / amount : weight ? unitWeight(unit, undefined, weight, await loadContainers(db, who.restaurantId))?.grams : undefined;
+        if (per && batchGrams) { scale = (per * amount) / batchGrams; scaledTo = { amount, unit }; }
+      }
     }
     const manager = atLeast(who.roleLevel, 'manager');
     return send(res, 200, {
       name: c.card.name, kind, side: sideOf(c), section: sectionOf(c),
-      yields, scale, ...(scaledTo ? { scaledTo } : {}), ...(prep && amount > 0 && unit ? { asked: { amount, unit } } : {}),
+      yields, scale, ...(scaledTo ? { scaledTo } : {}), ...(batchGrams ? { batchGrams: Math.round(batchGrams), weightStated: weight!.stated } : {}), ...(prep && amount > 0 && unit ? { asked: { amount, unit } } : {}),
       ingredients: c.card.ingredients.map((i) => ({ amount: i.amount, unit: i.unit, name: i.name, ...(byName.has(cardKey(i.name)) ? { card: byName.get(cardKey(i.name))!.card.name } : {}), ...(i.yieldPercent && i.yieldPercent !== 100 ? { yieldPercent: i.yieldPercent } : {}), ...(i.note ? { note: i.note } : {}) })),
       ...(c.card.method ? { method: c.card.method } : {}),
       ...(c.card.shelfLifeDays ? { shelfLifeDays: c.card.shelfLifeDays } : {}),

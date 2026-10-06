@@ -12,7 +12,7 @@
  * question for whoever can answer it.
  */
 
-import { ConversionError, convert, type ItemConversions, type MissingFact, type Quantity } from './units.ts';
+import { ConversionError, convert, tryConvert, type ItemConversions, type MissingFact, type Quantity } from './units.ts';
 
 export type ItemRef = { kind: 'product'; id: string } | { kind: 'recipe'; id: string };
 
@@ -276,6 +276,25 @@ export class RecipeBook {
     }
     lines.sort((a, b) => (b.cost ?? 0) - (a.cost ?? 0));
     return { total, complete: issues.size === 0, lines, issues: issues.toArray() };
+  }
+
+  /**
+   * What a quantity of an item weighs, from its ingredients down to the products (grams). Not
+   * complete when a product can't be weighed (an "each" with no weight per piece, a volume with no
+   * density). Cooked-down recipes come out heavy: water lost in cooking isn't counted.
+   */
+  weightOf(item: ItemRef, quantity: Quantity): { grams: number; complete: boolean; mostly: boolean } {
+    const usage = this.explode(item, quantity);
+    let grams = 0, complete = usage.issues.size === 0, known = 0;
+    for (const [productId, amount] of usage.products) {
+      const product = this.products.get(productId)!;
+      const g = tryConvert({ amount, unit: product.baseUnit }, 'g', product.conversions);
+      if (g === undefined) { complete = false; continue; }
+      grams += g; known++;
+    }
+    // Mostly: all but a pinch can be weighed (a bunch of basil, two eggs), close enough for "about".
+    const mostly = complete || (usage.issues.size === 0 && usage.products.size > 0 && known / usage.products.size >= 0.75);
+    return { grams, complete, mostly };
   }
 
   /** Cost of one portion of a dish (one yield of the recipe). */

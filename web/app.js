@@ -1028,7 +1028,18 @@ const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const dayName = (d) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
 const qty = (n) => (n === undefined || n === null ? '–' : Number.isInteger(n) ? String(n) : String(+n.toFixed(2)));
 const plural = (n, unit) => (!unit ? '' : n === 1 || unit.includes('/') ? unit : unit.endsWith('h') ? `${unit}es` : `${unit}s`);
-const amountText = (n, unit) => `${qty(n)}${unit ? ' ' + plural(n, unit) : ''}`;
+// A unit that starts with a number (1/3 pan) gets a ×, so "2 1/3 pan" doesn't read as two and a third.
+const amountText = (n, unit) => (unit && /^\d/.test(String(unit).trim()) ? `${qty(n)} × ${unit}` : `${qty(n)}${unit ? ' ' + plural(n, unit) : ''}`);
+const MASS_UNITS = new Set(['g', 'gram', 'grams', 'kg', 'oz', 'ounce', 'ounces', 'lb', 'lbs', 'pound', 'pounds', '#']);
+const dimensionName = (u) => (MASS_UNITS.has(String(u ?? '').trim().toLowerCase()) ? 'mass' : 'other');
+/** Grams for the line: pounds from a pound up, grams below. */
+const weightText = (g) => { if (!(g > 0)) return ''; const lb = g / 453.59237; return lb >= 1 ? `${lb >= 10 ? Math.round(lb) : Math.round(lb * 10) / 10} lb` : `${Math.round(g)} g`; };
+/** "(about 6.3 lb)" after an amount of a prep item, when its weight per unit is known; "about" when it's from the recipe. */
+const weightOf = (n, l) => (l?.unitWeight && n > 0 && l.unitWeight.source !== 'unit' ? ` (${l.unitWeight.source === 'recipe' ? 'about ' : ''}${weightText(n * l.unitWeight.grams)})` : '');
+/** "3 deep 1/9 pans (about 6.3 lb)". */
+const amountWithWeight = (n, unit, l) => `${amountText(n, unit)}${weightOf(n, l)}`;
+/** "2.1 lb each" under a unit, so the weight stays on everyone's radar. */
+const eachWeight = (l) => (l?.unitWeight && l.unitWeight.source !== 'unit' ? `${l.unitWeight.source === 'recipe' ? 'about ' : ''}${weightText(l.unitWeight.grams)} each` : '');
 const timeOf = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 const remember = (k, v) => { try { v === undefined ? localStorage.getItem(k) : localStorage.setItem(k, v); } catch {} };
 const recall = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
@@ -1187,7 +1198,7 @@ function prepInsights(p) {
   const slowest = Math.max(...x.slowItems.map((i) => i.minutes), 1);
   const items = x.slowItems.length ? sideBox('Takes longest',
     h('div', { class: 'hbars' }, x.slowItems.map((i) => h('div', { class: 'hbar two-line' },
-      h('span', { class: 'hbar-label' }, h('span', { class: 'strong', text: i.name }), h('span', { class: 'small muted block', text: `${i.station ?? ''}${i.amount ? ` · ${qty(i.amount)} ${plural(i.amount, i.unit)}` : ''}` })),
+      h('span', { class: 'hbar-label' }, h('span', { class: 'strong', text: i.name }), h('span', { class: 'small muted block', text: `${i.station ?? ''}${i.amount ? ` · ${amountText(i.amount, i.unit)}` : ''}` })),
       (() => { const b = h('span', { class: 'hbar-track' }, h('span', { class: 'hbar-fill' })); b.firstChild.style.width = `${(i.minutes / slowest) * 100}%`; return b; })(),
       h('b', { class: 'hbar-value', text: `${i.minutes}m` })))),
     h('div', { class: 'small muted', text: 'The usual time for each, for the amount usually made.' })) : null;
@@ -1235,15 +1246,15 @@ async function prepCount(me, stationId, date) {
   const toCount = countable.length;
   const rows = countable.map((l) => {
     const isBatch = l.kind === 'batch';
-    const need = h('span', { class: 'small muted nowrap', text: l.toMake !== undefined ? `make ${amountText(l.toMake, l.unit)}` : '' });
+    const need = h('span', { class: 'small muted nowrap', text: l.toMake !== undefined ? `make ${amountWithWeight(l.toMake, l.unit, l)}` : '' });
     return h('div', { class: 'countrow' },
       h('div', { class: 'grow' }, h('div', { class: 'name', text: l.name }), h('div', { class: 'small muted', text: isBatch
         ? (l.bulkUnit ? `Optional: on hand in ${l.bulkUnit}. ${l.onHand ? `The app has ${l.onHand.estimated ? 'about ' : ''}${qty(l.onHand.amount)} ${l.bulkUnit}.` : 'Nothing recorded yet.'}` : 'Set its storage unit under Edit list to track it.')
-        : `${l.unit ?? ''}${l.dayPar !== undefined ? ` · par ${qty(l.dayPar)}` : ''}${l.note ? ` · ${l.note}` : ''}` })),
+        : [l.unit ?? '', eachWeight(l), l.dayPar !== undefined ? `par ${qty(l.dayPar)}` : '', l.note ?? ''].filter(Boolean).join(' · ') })),
       isBatch ? h('span') : need,
       isBatch && !l.bulkUnit ? h('span') : stepper(l.counted, isBatch ? 0.5 : l.dayPar !== undefined && l.dayPar < 4 ? 0.5 : 1, async (val) => {
         const res = await api('POST', `/api/prep/${stationId}/${date}/count`, { itemId: l.id, counted: val });
-        if (res.ok) { const nl = res.data.lines.find((x) => x.id === l.id); need.textContent = nl?.toMake !== undefined ? `make ${amountText(nl.toMake, nl.unit)}` : ''; }
+        if (res.ok) { const nl = res.data.lines.find((x) => x.id === l.id); need.textContent = nl?.toMake !== undefined ? `make ${amountWithWeight(nl.toMake, nl.unit, nl)}` : ''; }
         else need.textContent = res.data.error ?? 'Not saved';
       }, `${l.name} on hand`));
   });
@@ -1268,15 +1279,17 @@ async function prepReview(me, stationId, date) {
   const make = (l, val) => api('POST', `/api/prep/${stationId}/${date}/make`, { itemId: l.id, toMake: val });
   const uncounted = v.lines.filter((l) => l.kind === 'count' && l.counted === undefined);
   const rows = v.lines.map((l) => {
+    const total = h('span', { class: 'small muted nowrap review-weight', text: weightOf(l.toMake, l).trim() });
     if (l.kind === 'task') return h('div', { class: 'reviewrow' }, h('div', { class: 'grow' }, h('div', { class: 'name', text: l.name }), h('div', { class: 'small muted', text: 'Daily task' })));
     const info = l.kind === 'batch'
       ? l.reason ?? (l.onHand && l.bulkUnit ? `${l.onHand.estimated ? 'About ' : ''}${qty(l.onHand.amount)} ${l.bulkUnit} on hand. Link the station items it fills (Edit list) for a suggestion.` : 'Bulk, made as needed: set its unit and batch size and link the station items it fills (Edit list) for a suggestion. Leave empty to skip.')
       : l.counted === undefined ? `Par ${qty(l.dayPar)} · not counted` : l.reason ?? '';
     const changed = l.chosen !== undefined && l.suggested !== undefined && l.chosen !== l.suggested;
     return h('div', { class: 'reviewrow' },
-      h('div', { class: 'grow' }, h('div', { class: 'name', text: l.name }), h('div', { class: 'small muted', text: `${l.unit ?? ''}${l.note ? ` · ${l.note}` : ''}` }), h('div', { class: `small${changed ? ' changed' : ' muted'}`, text: changed ? `${info} You changed it from ${qty(l.suggested)}.` : info })),
+      h('div', { class: 'grow' }, h('div', { class: 'name', text: l.name }), h('div', { class: 'small muted', text: [l.unit ?? '', eachWeight(l), l.note ?? ''].filter(Boolean).join(' · ') }), h('div', { class: `small${changed ? ' changed' : ' muted'}`, text: changed ? `${info} You changed it from ${qty(l.suggested)}.` : info })),
       h('div', { class: 'small muted nowrap', text: 'Make' }),
-      stepper(l.toMake, l.dayPar !== undefined && l.dayPar < 4 ? 0.5 : 1, async (val) => { await make(l, val); }, `${l.name} to make`),
+      stepper(l.toMake, l.dayPar !== undefined && l.dayPar < 4 ? 0.5 : 1, async (val) => { total.textContent = weightOf(val, l).trim(); await make(l, val); }, `${l.name} to make`),
+      total,
       changed ? h('button', { class: 'link', text: 'Use suggestion', onclick: async () => { await make(l, null); again(); } }) : null);
   });
   const approved = v.status === 'approved';
@@ -1329,9 +1342,9 @@ async function prepWork(me, stationId, date) {
     h('button', { class: `check${l.doneAt ? ' on' : l.startedAt ? ' started' : ''}`, 'aria-label': l.doneAt ? `Undo ${l.name}` : `Mark ${l.name} done`, onclick: (e) => act(l, l.doneAt ? 'undo' : 'done', e.currentTarget) }, l.doneAt ? '✓' : ''),
     h('div', { class: 'grow' },
       h('div', { class: 'name', text: l.name }),
-      h('div', { class: 'small', text: l.kind === 'task' ? 'Daily' : `Make ${amountText(l.toMake, l.unit)}${l.note ? ` · ${l.note}` : ''}` }),
+      h('div', { class: 'small', text: l.kind === 'task' ? 'Daily' : `Make ${amountWithWeight(l.toMake, l.unit, l)}${l.note ? ` · ${l.note}` : ''}` }),
       h('div', { class: 'small muted', text: l.doneAt ? `Done by ${l.doneBy ?? ''} at ${timeOf(l.doneAt)}` : l.startedAt ? `Started by ${l.startedBy ?? ''} at ${timeOf(l.startedAt)}` : '' })),
-    l.recipeName ? h('button', { class: 'btn', text: 'Recipe', onclick: () => recipeSheet(me, l.recipeName, { amount: l.toMake, unit: l.unit }) }) : null,
+    l.recipeName ? h('button', { class: 'btn', text: 'Recipe', onclick: () => recipeSheet(me, l.recipeName, { amount: l.toMake, unit: l.unit, ...(l.unitWeight && l.unitWeight.source !== 'unit' ? { grams: l.toMake * l.unitWeight.grams } : {}) }) }) : null,
     !l.doneAt && !l.startedAt && l.kind !== 'task' ? h('button', { class: 'btn', text: 'Start', onclick: () => act(l, 'start') }) : null));
   const cleanDone = v.checklist.filter((c) => c.doneAt).length;
   const cleaning = sideBox(`Cleaning · ${cleanDone} of ${v.checklist.length}`,
@@ -1391,7 +1404,7 @@ async function prepEdit(me, stationId) {
   };
   const itemRow = (it, i) => {
     const name = h('input', { type: 'text', value: it.name, 'aria-label': 'Item name' });
-    const unit = h('input', { type: 'text', value: it.unit ?? '', placeholder: 'unit', class: 'unit-in', 'aria-label': 'Unit' });
+    const unit = h('input', { type: 'text', value: it.unit ?? '', placeholder: 'unit', class: 'unit-in', 'aria-label': 'Unit', list: 'container-names' });
     const par = h('input', { inputmode: 'decimal', class: 'amount', value: it.par ?? '', placeholder: 'par', 'aria-label': 'Par' });
     const kind = h('select', { 'aria-label': 'Kind' }, [['count', 'Count'], ['task', 'Daily task'], ['batch', 'Bulk, as needed']].map(([k, t]) => h('option', { value: k, text: t, selected: it.kind === k ? true : undefined })));
     const days = it.weekdays ?? [];
@@ -1433,13 +1446,27 @@ async function prepEdit(me, stationId) {
     const link = it.kind === 'count' && others.length ? h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: 'Filled from' }), source,
       likely ? h('button', { class: 'btn small-btn blue', text: `Link to ${likely.name}?`, onclick: async () => { if (await save(`/api/prep/items/${it.id}`, { sourceItemId: likely.id })) again(); } }) : null,
       it.sourceItemId ? h('span', { class: 'row tight' }, h('span', { class: 'small muted', text: `one ${it.unit ?? 'container'} holds` }), holds, sourceUnit()) : null) : null;
+    // What one of it weighs: weighed on the scale (best), else what the recipe says. Weight keeps everyone honest.
+    const wUnit = it.unit;
+    const weightRow = wUnit && it.kind !== 'task' && it.unitWeight?.source !== 'unit' && dimensionName(wUnit) !== 'mass' ? (() => {
+      const w = it.unitWeight;
+      const lbIn = h('input', { inputmode: 'decimal', class: 'amount', value: it.unitGrams ? String(Math.round((it.unitGrams / 453.59237) * 100) / 100) : '', placeholder: w ? String(Math.round((w.grams / 453.59237) * 100) / 100) : '?', 'aria-label': `What one ${wUnit} of ${it.name} weighs, in lb` });
+      lbIn.addEventListener('change', async () => {
+        const v = lbIn.value.trim();
+        if (v !== '' && !(Number(v) > 0)) return (alertLine.textContent = 'A weight in lb, more than 0.');
+        if (await save(`/api/prep/items/${it.id}`, { unitGrams: v === '' ? null : Number(v) * 453.59237 })) again();
+      });
+      const hint = it.unitGrams ? `weighed${w?.estimate ? `; the recipe says about ${weightText(w.estimate)}` : ''}`
+        : w?.source === 'recipe' ? `about ${weightText(w.grams)} from the recipe: weigh a full one to be exact` : 'weigh a full one';
+      return h('div', { class: 'row tight wrap' }, h('span', { class: 'small muted', text: `One ${wUnit} weighs` }), lbIn, h('span', { class: 'small muted', text: 'lb' }), h('span', { class: `small ${it.unitGrams ? '' : 'muted'}`, text: hint }));
+    })() : null;
     // One line for what it is (name, unit, par, kind, order), one small line for the rest.
     return h('div', { class: 'editrow compact' },
       h('div', { class: 'edit-main' }, name, unit, par, kind,
         editTools(() => move(s.items, i, -1, 'items'), () => move(s.items, i, 1, 'items'), it.name, async () => { if (await save(`/api/prep/items/${it.id}`, { active: false })) again(); })),
       h('div', { class: 'edit-more' },
         h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: days.length ? 'Only on' : 'Every day, or only' }), dayChips),
-        recipeRow, link, bulkFields, dated));
+        recipeRow, weightRow, link, bulkFields, dated));
   };
   const checkRow = (c, i, list) => {
     const name = h('input', { type: 'text', value: c.name, 'aria-label': 'Task' });
@@ -1466,6 +1493,12 @@ async function prepEdit(me, stationId) {
     h('section', { class: 'card' }, h('h2', { text: 'Cleaning tasks' }),
       h('div', { class: 'list' }, s.checklist.map((c, i) => checkRow(c, i, s.checklist))),
       h('div', { class: 'row' }, newTask, h('button', { class: 'btn dark', text: 'Add', onclick: async () => { if (newTask.value.trim() && await save(`/api/prep/${stationId}/checklist`, { name: newTask.value, frequency: 'daily' })) again(); } })))], [
+      h('datalist', { id: 'container-names' }, (s.containers ?? []).map((n) => h('option', { value: n }))),
+      sideBox('Weights', h('div', { class: 'small muted', text: 'Each item’s unit can be a container (1/9 pan, deep 1/9 pan, deli quart…). Weigh a full one once and enter it: the lists then show the weight beside every amount. Until then, items with a recipe show what the recipe says.' }),
+        h('div', { class: 'list compact' },
+          h('div', {}, h('span', { class: 'grow', text: 'Weighed' }), h('b', { text: String(s.items.filter((it) => it.unitGrams).length) })),
+          h('div', {}, h('span', { class: 'grow', text: 'From the recipe' }), h('b', { text: String(s.items.filter((it) => !it.unitGrams && it.unitWeight?.source === 'recipe').length) }))),
+        sideActions(h('button', { class: 'btn small-btn', text: 'Containers and units', onclick: () => unitsScreen(me, () => prepEdit(me, stationId)) }))),
       sideBox('On this list', h('div', { class: 'list compact' },
         h('div', {}, h('span', { class: 'grow', text: 'Prep items' }), h('b', { text: String(s.items.length) })),
         h('div', {}, h('span', { class: 'grow', text: 'Tied to a recipe' }), h('b', { text: String(s.items.filter((it) => it.recipeName).length) })),
@@ -1883,7 +1916,7 @@ async function recipePage(me, name, opts = {}) {
 
 /** A card over whatever's on screen (a prep list), so nobody loses their place. */
 async function recipeSheet(me, name, scaleTo, trail = []) {
-  const q = scaleTo?.amount > 0 && scaleTo.unit ? `?amount=${scaleTo.amount}&unit=${encodeURIComponent(scaleTo.unit)}` : '';
+  const q = scaleTo?.amount > 0 && scaleTo.unit ? `?amount=${scaleTo.amount}&unit=${encodeURIComponent(scaleTo.unit)}${scaleTo.grams > 0 ? `&grams=${Math.round(scaleTo.grams)}` : ''}` : '';
   const r = await api('GET', `/api/recipes/${encodeURIComponent(name)}${q}`);
   document.querySelector('.sheet-wrap')?.remove();
   const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey); };
@@ -1914,7 +1947,7 @@ function recipeView(me, r, opts) {
   const page = Boolean(opts.page);
   const body = h('div', { class: 'recipe' });
   const side = page ? h('div', { class: 'page-side-boxes' }) : null;
-  const makesText = () => (prep ? `Makes ${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}${r.yields.length > 1 ? ` (${r.yields.slice(1).map((x) => `${nice(x.amount * scale)} ${UNIT_LABEL(x.unit)}`).join(', ')})` : ''}` : r.kind === 'drink' ? 'One drink' : 'One plate');
+  const makesText = () => (prep ? `Makes ${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}${r.yields.length > 1 ? ` (${r.yields.slice(1).map((x) => `${nice(x.amount * scale)} ${UNIT_LABEL(x.unit)}`).join(', ')})` : ''}${r.batchGrams && dimensionName(y.unit) !== 'mass' ? `, about ${weightText(r.batchGrams * scale)}` : ''}` : r.kind === 'drink' ? 'One drink' : 'One plate');
   const sellsAs = r.sellsAs.filter((n) => n.toLowerCase() !== r.name.toLowerCase());
   const editButton = r.canEdit && !opts.sheet ? h('button', { class: 'btn', text: 'Edit recipe', onclick: async () => { const d = (await api('GET', '/api/cards')).data; const c = d.cards.find((x) => x.name === r.name); if (c) cardEditor(me, d, c, { back: { label: r.name, go: (saved) => recipePage(me, saved || c.name), rail: 'recipes' } }); } }) : null;
   const usedIn = () => (r.usedBy.length ? r.usedBy.map((n, k) => [k ? ', ' : '', h('button', { class: 'linkish card-link', text: n, onclick: () => opts.open(n) })]) : null);
@@ -1929,8 +1962,8 @@ function recipeView(me, r, opts) {
     const scaler = prep ? h('div', { class: 'seg', role: 'group', 'aria-label': 'How much to make' },
       sizes.map((k) => h('button', { class: Math.abs(scale - k) < 1e-6 ? 'on' : '', 'aria-pressed': String(Math.abs(scale - k) < 1e-6), 'aria-label': `${k} batch${k > 1 ? 'es' : ''}`,
         text: page ? (k === 0.5 ? '½' : String(k)) : k === 0.5 ? '½ batch' : k === 1 ? '1 batch' : `${k} batches`, onclick: () => { scale = k; draw(); } })),
-      other ? h('button', { class: Math.abs(scale - r.scale) < 1e-6 ? 'on' : '', text: `For ${nice(r.scaledTo.amount)} ${UNIT_LABEL(r.scaledTo.unit)}`, onclick: () => { scale = r.scale; draw(); } }) : null) : null;
-    const asked = r.asked && !r.scaledTo && prep ? h('div', { class: 'note', text: `The list says make ${nice(r.asked.amount)} ${UNIT_LABEL(r.asked.unit)}. This recipe is written in ${UNIT_LABEL(y.unit)}, so it shows one batch.` }) : null;
+      other ? h('button', { class: Math.abs(scale - r.scale) < 1e-6 ? 'on' : '', text: `For ${nice(r.scaledTo.amount)}${/^\d/.test(UNIT_LABEL(r.scaledTo.unit)) ? ' ×' : ''} ${UNIT_LABEL(r.scaledTo.unit)}`, onclick: () => { scale = r.scale; draw(); } }) : null) : null;
+    const asked = r.asked && !r.scaledTo && prep ? h('div', { class: 'note', text: `The list says make ${nice(r.asked.amount)}${/^\d/.test(UNIT_LABEL(r.asked.unit)) ? ' ×' : ''} ${UNIT_LABEL(r.asked.unit)}. This recipe is written in ${UNIT_LABEL(y.unit)}, so it shows one batch.` }) : null;
     const table = h('table', { class: 'ingredients' }, h('tbody', {}, r.ingredients.map((i) => h('tr', {},
       h('td', { class: 'amt', text: `${nice(i.amount * scale)} ${UNIT_LABEL(i.unit)}` }),
       h('td', {}, i.card ? h('button', { class: 'linkish card-link', text: i.card, onclick: () => opts.open(i.card) }) : h('span', { text: i.name }),
@@ -3522,6 +3555,76 @@ async function coverageScreen(me) {
   ]));
 }
 
+// ------------------------------------------------------------------ units
+
+const VOLUME_CHOICES = [['floz', 'fl oz', 29.5735295625], ['cup', 'cups', 236.5882365], ['qt', 'qt', 946.352946], ['gal', 'gal', 3785.411784], ['ml', 'ml', 1], ['l', 'l', 1000]];
+/** A volume for display: quarts from a quart up, fl oz below. */
+const volumeText = (ml) => (ml >= 946 ? `${Math.round((ml / 946.352946) * 10) / 10} qt` : `${Math.round(ml / 29.5735295625)} fl oz`);
+
+/**
+ * Units: the fixed conversions (they never change), and the containers everyone shares, edited here. A
+ * container's size is what it holds of a liquid; each prep item's own weight in it is set on its list.
+ */
+async function unitsScreen(me, back) {
+  loadingScreen(me, 'settings', 'Units');
+  const r = await api('GET', '/api/units');
+  if (!r.ok) return show(shell(me, 'settings', [h('h1', { text: 'Units' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const d = r.data;
+  const manager = atLeast(me.roleLevel, 'manager');
+  const again = () => refreshInPlace(() => unitsScreen(me, back));
+  const err = h('div', { class: 'error', role: 'alert' });
+  const sizeInputs = (ml) => {
+    const unit = h('select', { 'aria-label': 'Unit', class: 'fit' }, VOLUME_CHOICES.map(([k, label]) => h('option', { value: k, text: label })));
+    const best = ml >= 700 ? 'qt' : 'floz'; // pans in quarts (a 1/9 holds 0.9), delis and bottles in fl oz
+    unit.value = best;
+    const per = VOLUME_CHOICES.find(([k]) => k === best)[2];
+    const amt = h('input', { inputmode: 'decimal', class: 'amount', value: ml ? String(Math.round((ml / per) * 100) / 100) : '', placeholder: '?', 'aria-label': 'Holds' });
+    return { amt, unit, ml: () => { const v = Number(amt.value); return amt.value.trim() === '' ? null : v > 0 ? v * VOLUME_CHOICES.find(([k]) => k === unit.value)[2] : NaN; } };
+  };
+  const saveContainer = async (el, body) => {
+    busy(el, true);
+    const res = await api('POST', '/api/units/containers', body);
+    if (!res.ok) { busy(el, false); return (err.textContent = res.data.error ?? 'Not saved.'); }
+    again();
+  };
+  const row = (c) => {
+    const name = h('input', { type: 'text', value: c.name, 'aria-label': 'Container name' });
+    const aliases = h('input', { type: 'text', value: c.aliases.join(', '), placeholder: 'other names, comma between', 'aria-label': 'Other names' });
+    const size = sizeInputs(c.volumeMl);
+    const note = h('input', { type: 'text', value: c.note ?? '', placeholder: 'e.g. 4" deep', 'aria-label': 'Note', class: 'short' });
+    const save = h('button', { class: 'btn small-btn', text: 'Save', onclick: () => {
+      const ml = size.ml();
+      if (Number.isNaN(ml)) return (err.textContent = 'What it holds, more than 0.');
+      saveContainer(save, { id: c.id, name: name.value, aliases: aliases.value, volumeMl: ml, note: note.value });
+    } });
+    const del = h('button', { class: 'link danger', text: 'Remove', onclick: async (e) => { if (!confirmText(`Remove ${c.name}? Items using it keep their own weights.`)) return; busy(e.currentTarget, true); await api('POST', `/api/units/containers/${c.id}/delete`); again(); } });
+    if (!manager) return h('div', { class: 'unit-row' }, h('b', { text: c.name }), h('span', { class: 'small muted', text: c.aliases.join(', ') }), h('span', { text: c.volumeMl ? volumeText(c.volumeMl) : '–' }), h('span', { class: 'small muted', text: c.note ?? '' }));
+    return h('div', { class: 'unit-row' }, name, aliases, h('span', { class: 'row tight' }, h('span', { class: 'small muted', text: 'holds' }), size.amt, size.unit), note, h('span', { class: 'row tight' }, save, del));
+  };
+  const add = (() => {
+    const name = h('input', { type: 'text', placeholder: 'New container, e.g. 1/9 pan 6"', 'aria-label': 'New container' });
+    const size = sizeInputs(undefined);
+    const btn = h('button', { class: 'btn dark small-btn', text: 'Add', onclick: () => {
+      if (!name.value.trim()) return;
+      const ml = size.ml();
+      if (Number.isNaN(ml)) return (err.textContent = 'What it holds, more than 0.');
+      saveContainer(btn, { name: name.value, aliases: '', volumeMl: ml });
+    } });
+    return h('div', { class: 'row wrap' }, name, h('span', { class: 'small muted', text: 'holds' }), size.amt, size.unit, btn);
+  })();
+  const fixed = (title, rows) => sideBox(title, h('div', { class: 'list compact' }, rows.map(([a, b]) => h('div', {}, h('b', { text: a }), h('span', { class: 'grow right small', text: `= ${b}` })))));
+  show(shell(me, 'settings', [
+    h('header', { class: 'row wrap' }, h('div', { class: 'grow' }, h('div', { class: 'kicker', text: 'Settings' }), h('h1', { text: 'Units and containers' }),
+      h('div', { class: 'sub', text: 'Weight is the base: everything is worked out in grams. Containers keep names straight; each prep item’s weight in its container is set on its list (Edit list).' })),
+      back ? h('button', { class: 'btn', text: '← Back', onclick: back }) : null),
+    page([err, h('section', { class: 'card' }, h('h2', { text: 'Containers' }),
+      h('div', { class: 'small muted', text: 'Sizes are typical; pans vary by maker, so check yours. A size is what it holds of a liquid: a full 1/9 pan of lettuce weighs far less than one of marinara, which is why each item gets its own weight.' }),
+      h('div', { class: 'unit-list' }, d.containers.map(row)), manager ? add : null)],
+    [fixed('Volume · fixed', d.fixed.volume), fixed('Weight · fixed', d.fixed.weight),
+      sideBox('Ounces', h('div', { class: 'small', text: 'fl oz is volume (a 2 oz pour); oz is weight (2 oz of prosciutto). They’re only the same for water. The app keeps them apart.' }))]),
+  ]));
+}
+
 // ------------------------------------------------------------------ settings
 
 async function home(me) {
@@ -3531,7 +3634,9 @@ async function home(me) {
     h('div', { class: 'grow' }, h('div', { class: 'kicker', text: me.restaurantName ?? '' }), h('h1', { text: 'Settings' }),
       h('div', { class: 'sub', text: manager ? 'Your team, kitchen iPads and how the menu is split, in the middle; connections and your own sign-in on the right.' : 'Your prep list will show up here once your station is set up.' })));
   const you = sideBox('Signed in', h('div', { class: 'strong', text: me.name }), h('div', { class: 'small muted', text: `${ACCESS_NAMES[me.access] ?? me.access}${me.area ? ` · ${AREA_NAMES[me.area] ?? me.area}` : ''}` }), sideActions(signOut));
-  const main = manager ? [await teamCard(me), await areasCard(), await deviceCard(), await importCard(), await prepImportCard()] : [h('div', { class: 'card small muted', text: 'Nothing to set up here yet.' })];
+  const unitsCard = h('section', { class: 'card' }, h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: 'Units and containers' }), h('button', { class: 'btn small-btn', text: 'Open', onclick: () => unitsScreen(me, () => home(me)) })),
+    h('div', { class: 'small muted', text: 'The fixed conversions, and the containers everyone shares (1/9 pan, deep 1/9 pan, deli quart, Cambros…).' }));
+  const main = manager ? [await teamCard(me), unitsCard, await areasCard(), await deviceCard(), await importCard(), await prepImportCard()] : [h('div', { class: 'card small muted', text: 'Nothing to set up here yet.' })];
   const side = [you, manager ? await syncCard('square') : null, manager ? await syncCard('marginedge') : null, ownPinCard(me), canAdminister(me) ? brandCard(me) : null];
   show(shell(me, 'settings', [header, page(main, side)]));
 }

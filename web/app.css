@@ -464,7 +464,7 @@ details.snoozed[open] summary { margin-bottom: -1px; }
 
 /* The prep list editor: one tight line per item, the details in small type under it. */
 .editrow.compact { display: flex; flex-direction: column; align-items: stretch; gap: 6px; padding: 10px 0; }
-.edit-main { display: grid; grid-template-columns: minmax(150px, 2.6fr) minmax(70px, .8fr) 56px 136px auto; gap: 6px; align-items: center; }
+.edit-main { display: grid; grid-template-columns: minmax(150px, 2.2fr) minmax(108px, 1fr) 56px 136px auto; gap: 6px; align-items: center; }
 .edit-main.tasks { grid-template-columns: minmax(150px, 1fr) 110px auto; }
 .editrow .edit-main input, .editrow .edit-main input[type=text], .edit-main select { height: 36px; min-width: 0; width: 100%; max-width: none; padding: 0 8px; font-size: 14px; }
 .edit-main input[type=text]:first-child { font-weight: 600; }
@@ -479,7 +479,7 @@ details.snoozed[open] summary { margin-bottom: -1px; }
 .editrow .edit-more input.amount, .editrow .edit-more input.unit-in, .editrow .edit-more input[type=text] { height: 30px; width: 90px; min-width: 0; padding: 0 6px; font-size: 13px; }
 .edit-more .btn.small-btn { height: 30px; font-size: 11px; padding: 0 10px; }
 @container main (max-width: 560px) {
-  .edit-main { grid-template-columns: 1fr 90px 60px; }
+  .edit-main { grid-template-columns: 1fr 132px 56px; }
   .edit-main > select { grid-column: 1 / 2; }
   .edit-main > .edit-tools { grid-column: 2 / 4; justify-content: flex-end; }
   .edit-main.tasks { grid-template-columns: 1fr 100px; }
@@ -806,3 +806,11 @@ button.donut-row { display: flex; min-width: 0; }
 .drill.large .donut-legend { display: block; columns: 2 220px; column-gap: 20px; }
 .drill.large .donut-row { break-inside: avoid; }
 @container main (max-width: 700px) { .pie-big-body { grid-template-columns: minmax(0, 1fr); } .drill.large .donut-wrap { width: min(320px, 100%); height: auto; aspect-ratio: 1; margin: 0 auto; } }
+
+/* Units and containers */
+.unit-list { display: grid; }
+.unit-row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(140px, 1.4fr) auto 110px auto; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid var(--soft); }
+.unit-row input { min-width: 0; width: 100%; box-sizing: border-box; }
+.unit-row input.amount { width: 70px; }
+@container main (max-width: 700px) { .unit-row { grid-template-columns: 1fr 1fr; } }
+.review-weight { min-width: 64px; text-align: right; }
