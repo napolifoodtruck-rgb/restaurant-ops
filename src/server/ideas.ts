@@ -20,6 +20,7 @@ import { hoursGrid, priceHistory, purchaseKind } from '../core/costReports.ts';
 import { dishIdeas, foodCostIdeas, laborIdeas, prepIdeas, priceIdeas, rankIdeas, unusedIdeas, vendorIdeas, wasteIdeas, type Idea, type ProductPrices } from '../core/ideas.ts';
 
 const shift = (day: string, n: number) => new Date(Date.parse(`${day}T12:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+const LABOR_IDEAS = false;
 const cache = new Map<string, { at: number; today: string; ideas: Idea[]; notes: string[] }>();
 
 /** Every idea for the restaurant, before anything set aside is taken out. */
@@ -72,8 +73,9 @@ export async function workOutIdeas(db: Db, restaurantId: string, today: string, 
     "SELECT day::text AS day, to_char(clock_in, 'YYYY-MM-DD HH24:MI:SS') AS clock_in, to_char(clock_out, 'YYYY-MM-DD HH24:MI:SS') AS clock_out, labor_cost AS cost, hours FROM pos_timecards WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3", [restaurantId, from, to])).rows;
   const hours = shifts.reduce((a, s) => a + Number(s.hours), 0), cost = shifts.reduce((a, s) => a + Number(s.cost), 0);
   const wage = hours > 0 ? cost / hours : 0;
-  if (sales.length && shifts.length) ideas.push(...laborIdeas(hoursGrid(sales, shifts.map((s) => ({ day: s.day, clockIn: s.clock_in, clockOut: s.clock_out, cost: Number(s.cost) }))).cells, wage));
-  else notes.push('Labor ideas come once Square timecards and hourly sales have synced.');
+  // Labor ideas wait for the version that knows opening hours and splits service, line and prep
+  // (docs/labor-ideas.md): judged by hour against sales alone, prep and setup before opening look like waste.
+  if (LABOR_IDEAS && sales.length && shifts.length) ideas.push(...laborIdeas(hoursGrid(sales, shifts.map((s) => ({ day: s.day, clockIn: s.clock_in, clockOut: s.clock_out, cost: Number(s.cost) }))).cells, wage));
 
   // Prep: the last 6 weeks of timed check-offs.
   const timing = await prepTiming(db, restaurantId, today, tz, { days: 42 });
