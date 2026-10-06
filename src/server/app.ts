@@ -34,6 +34,7 @@
  *   /api/cards/…                 recipe cards, written in the app, and bar drafts: see cards.ts
  *   GET  /api/recipes[/:name]    the recipe book, for anyone signed in: see recipes.ts
  *   /api/orders/…                vendor orders: drafted, approved by a manager, then sent: see orders.ts
+ *   /api/online/…                online ordering: what's sold online, pickup windows (manager or up): see online.ts
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -54,6 +55,7 @@ import { planRoutes } from './plans.ts';
 import { SNOOZE_MORNING, todayView } from './today.ts';
 import { cardRoutes } from './cards.ts';
 import { orderRoutes } from './orders.ts';
+import { onlineRoutes } from './online.ts';
 import { reportRoutes } from './reports.ts';
 import { costRoutes } from './costs.ts';
 import { ideaRoutes } from './ideas.ts';
@@ -606,6 +608,12 @@ export function createApp(config: AppConfig) {
     if (path.startsWith('/api/orders')) {
       const who = await signedIn(req);
       if (await orderRoutes(db, req, res, url, method, who)) return;
+    }
+
+    if (path.startsWith('/api/online/')) {
+      const who = await signedIn(req);
+      const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+      if (await onlineRoutes(db, req, res, path, url, who, tz)) return;
     }
 
     if (path.startsWith('/api/cards')) {

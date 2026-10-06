@@ -45,6 +45,9 @@ Back-of-house foundation:
 | `src/server/prep.ts` | Prep lists over HTTP: nightly count, chef review and approval, next-day check-offs, cleaning checklists, editing lists, importing them. |
 | `src/server/http.ts` | Small HTTP helpers shared by the routes. |
 | `src/server/plans.ts` | Dishes coming to the menu, planned before they sell: their preps join station lists the day before the start, the replaced dish's own preps come off. |
+| `src/core/onlineMenu.ts` | The online menu: every Square item with whether it's sold online, whether it counts as a pizza (from its category unless set), sold out tonight, and how each option shows online (shown, hidden, or always on, like "partially cooked"). Flags a published item whose required choice has nothing left to pick. |
+| `src/core/pickupWindows.ts` | Online pickup windows: 20 minutes each from 5 to 9 pm, each taking so many pizzas from a weekly plan, with a date's own limits on top. An order goes in the first window with room for all its pizzas; more than any window takes means a phone call. |
+| `src/server/online.ts` | Online ordering settings over HTTP (managers): publishing items, option modes, the weekly window plan, and a date's own limits or closing the rest of tonight. Shown on the Menu screen under Online and Pickup windows. |
 | `src/server/main.ts` | Starts the app: connect, migrate, listen. |
 | `render.yaml` | Render Blueprint: web service plus PostgreSQL. Secrets are entered in the Render dashboard. |
 | `db/migrations/` | PostgreSQL schema, applied in order at startup (`0001_schema.sql` is the base; later files add to it) for restaurants, staff, stations and roles, vendors, products, invoices, price history, recipes and breakdowns, menus, POS links with components, modifier effects, prep batches and timed prep tasks, counts, waste, to-do items and questions. Built for many restaurants: every reference includes the restaurant. |

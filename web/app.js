@@ -1723,10 +1723,11 @@ async function menuScreen(me) {
   // Chips: one per category, then Needs you and Coming up. The choice is remembered on this device.
   const chipKey = `menuChip:${side}`;
   const canPlan = atLeast(me.roleLevel, 'chef') && side === 'kitchen';
-  const valid = (k) => k === 'needs' ? needCount > 0 : k === 'coming' ? canPlan : sections.includes(k);
+  const canOnline = manager && side === 'kitchen';
+  const valid = (k) => k === 'needs' ? needCount > 0 : k === 'coming' ? canPlan : k === 'online' || k === 'windows' ? canOnline : sections.includes(k);
   let chip = recall(chipKey);
   if (!valid(chip)) chip = needCount ? 'needs' : sections[0] ?? (canPlan ? 'coming' : 'needs');
-  let coming = null;
+  let coming = null, online = null, windows = null;
   const pickChip = (k) => { chip = k; remember(chipKey, k); draw(); };
 
   // The side: what's on, what came off (each can be put back), adding a dish back, buttons kept apart, answers.
@@ -1751,13 +1752,21 @@ async function menuScreen(me) {
       sections.map((sec) => h('button', { class: `chip${chip === sec ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === sec), onclick: () => pickChip(sec) },
         sec, h('span', { class: 'chip-count', text: String(m.current.filter((x) => baseOf(x.section) === sec).length) }))),
       needCount ? h('button', { class: `chip needs${chip === 'needs' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'needs'), onclick: () => pickChip('needs') }, 'Needs you', h('span', { class: 'chip-count', text: String(needCount) })) : null,
-      canPlan ? h('button', { class: `chip${chip === 'coming' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'coming'), onclick: () => pickChip('coming') }, 'Coming up') : null);
+      canPlan ? h('button', { class: `chip${chip === 'coming' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'coming'), onclick: () => pickChip('coming') }, 'Coming up') : null,
+      canOnline ? h('button', { class: `chip${chip === 'online' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'online'), onclick: () => pickChip('online') }, 'Online') : null,
+      canOnline ? h('button', { class: `chip${chip === 'windows' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'windows'), onclick: () => pickChip('windows') }, 'Pickup windows') : null);
     let main;
     if (chip === 'needs') {
       main = [quietCard, questionRows.length ? h('section', { class: 'card', id: 'menu-questions' },
         h('div', { class: 'row' }, h('h2', { class: 'grow', text: `About what’s selling (${questionRows.length})` }), h('span', { class: 'small muted', text: 'Answers update margins straight away.' })),
         h('div', { class: 'asks' }, questionRows)) : null];
       if (!quietCard && !questionRows.length) main = [h('section', { class: 'card small muted', text: 'Nothing needs you.' })];
+    } else if (chip === 'online') {
+      online ??= await onlineMenuCard(me);
+      main = [online];
+    } else if (chip === 'windows') {
+      windows ??= await pickupWindowsCard(me);
+      main = [windows];
     } else if (chip === 'coming') {
       coming ??= await comingUpCard(me);
       main = [coming ?? h('section', { class: 'card small muted', text: 'Couldn’t load what’s coming up.' })];
@@ -1881,6 +1890,146 @@ async function comingUpCard(me) {
   fill(box, h('h2', { text: 'Coming up' }),
     h('div', { class: 'small muted', text: 'Plan a dish before it sells: its preps join the station lists the day before it starts, and the old dish’s own preps come off.' }),
     form, err, planRows.length ? h('div', { class: 'asks' }, planRows) : null);
+  return box;
+}
+
+// ------------------------------------------------------------------ online ordering
+
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const clock = (hhmm) => { const [hh, mm] = hhmm.split(':').map(Number); return `${hh % 12 || 12}:${String(mm).padStart(2, '0')}`; };
+const MODE_LABELS = { shown: 'Shown', hidden: 'Hidden online', always: 'Always on' };
+
+/**
+ * What's sold online: every Square item, with Online, Counts as a pizza and Sold out tonight, and how
+ * each of its options shows online. Options are shared across items in Square, so a change to one
+ * changes it everywhere it's used.
+ */
+async function onlineMenuCard(me) {
+  const box = h('section', { class: 'card', 'aria-label': 'Sold online' });
+  let onlyOnline = recall('onlineOnly') === '1';
+  const open = new Set();
+  async function draw() {
+    const r = await api('GET', '/api/online/menu');
+    if (!r.ok) return fill(box, h('h2', { text: 'Sold online' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' }));
+    const items = r.data.items;
+    const save = (el, path, body) => pageAction(async () => {
+      const res = await api('POST', path, body);
+      if (!res.ok) return el.closest('.ask')?.append(h('div', { class: 'error small', text: res.data.error ?? 'Not saved.' }));
+      await draw();
+    });
+    const price = (x) => x.variations.map((v) => (v.price !== undefined ? `${x.variations.length > 1 ? `${v.name} ` : ''}${dollars(v.price, { cents: v.price % 1 !== 0 })}` : null)).filter(Boolean).join(' · ');
+    const options = (x) => h('div', { class: 'stack' }, x.modifierLists.map((list) => h('div', { class: 'small' },
+      h('div', { class: 'strong', text: `${list.name}${list.min ? ' (required)' : ''}` }),
+      list.modifiers.map((mod) => {
+        const pick = h('select', { class: 'small-select', 'aria-label': `${mod.name} online` }, ['shown', 'hidden', 'always'].map((k) => h('option', { value: k, text: MODE_LABELS[k], selected: mod.mode === k ? true : undefined })));
+        pick.addEventListener('change', () => save(pick, `/api/online/modifiers/${mod.id}`, { mode: pick.value }));
+        return h('div', { class: 'row tight wrap' }, pick, h('span', { text: mod.name }), mod.price ? h('span', { class: 'muted', text: `+${dollars(mod.price, { cents: true })}` }) : null);
+      }))));
+    const itemRow = (x) => {
+      const row = h('div', { class: 'ask' });
+      const online = h('input', { type: 'checkbox', checked: x.published ? true : undefined, 'aria-label': `Sell ${x.name} online` });
+      online.addEventListener('change', () => save(online, `/api/online/items/${x.itemId}`, { published: online.checked }));
+      const pizza = h('input', { type: 'checkbox', checked: x.countsAsPizza ? true : undefined, 'aria-label': `${x.name} counts as a pizza` });
+      pizza.addEventListener('change', () => save(pizza, `/api/online/items/${x.itemId}`, { countsAsPizza: pizza.checked }));
+      const showOptions = x.modifierLists.length ? h('button', { class: 'link', text: open.has(x.itemId) ? 'Hide options' : `Options (${x.modifierLists.length})`, onclick: () => { open.has(x.itemId) ? open.delete(x.itemId) : open.add(x.itemId); draw(); } }) : null;
+      fill(row,
+        h('div', { class: 'row wrap' },
+          h('label', { class: 'inline grow' }, online, photo(x.image, 'thumb small'), h('span', {}, h('b', { text: x.name }), h('span', { class: 'small muted', text: price(x) ? ` · ${price(x)}` : '' }))),
+          x.published && x.soldOutToday ? h('span', { class: 'tag bad', text: 'Sold out tonight' }) : null,
+          x.published ? h('button', { class: 'btn small-btn', text: x.soldOutToday ? 'Back on tonight' : 'Sold out tonight', onclick: (e) => save(e.currentTarget, `/api/online/items/${x.itemId}`, { soldOutToday: !x.soldOutToday }) }) : null,
+          h('label', { class: 'inline small', title: x.pizzaFromCategory ? `From its category, ${x.category}` : 'Set by hand' }, pizza, 'Counts as a pizza'),
+          showOptions),
+        x.problems.map((p) => h('div', { class: 'tag warn', text: p })),
+        open.has(x.itemId) ? options(x) : null);
+      return row;
+    };
+    const shown = onlyOnline ? items.filter((x) => x.published) : items;
+    const categories = [...new Set(shown.map((x) => x.category))];
+    const only = h('input', { type: 'checkbox', checked: onlyOnline ? true : undefined, 'aria-label': 'Only what’s online' });
+    only.addEventListener('change', () => { onlyOnline = only.checked; remember('onlineOnly', onlyOnline ? '1' : '0'); draw(); });
+    fill(box,
+      h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: `Sold online (${items.filter((x) => x.published).length})` }), h('label', { class: 'inline small' }, only, 'Only what’s online')),
+      h('div', { class: 'small muted', text: 'Tick an item to sell it online. Names, prices and options come from Square. Under Options, set “Partially cooked” to Always on and hide fully cooked and gluten-sensitive crust: an option changes everywhere it’s used.' }),
+      r.data.synced ? null : h('div', { class: 'tag warn', text: 'No Square menu yet: run the Square sync under Settings.' }),
+      categories.map((cat) => [h('h3', { text: cat }), h('div', { class: 'asks' }, shown.filter((x) => x.category === cat).map(itemRow))]),
+      onlyOnline && !shown.length ? h('div', { class: 'small muted', text: 'Nothing is online yet.' }) : null);
+  }
+  await draw();
+  return box;
+}
+
+/**
+ * Pickup windows: how many pizzas each 20-minute window takes. Tonight (or any date) on top, changed
+ * on its own; the weekly plan under it, a column per weekday. Every number saves as it's typed.
+ */
+async function pickupWindowsCard(me) {
+  const box = h('section', { class: 'stack', 'aria-label': 'Pickup windows' });
+  let day = null;
+  async function draw() {
+    const r = await api('GET', `/api/online/windows${day ? `?day=${day}` : ''}`);
+    if (!r.ok) return fill(box, h('section', { class: 'card' }, h('h2', { text: 'Pickup windows' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })));
+    const w = r.data;
+    day = w.day;
+    const err = h('div', { class: 'error small' });
+    const post = (path, body) => pageAction(async () => {
+      const res = await api('POST', path, body);
+      if (!res.ok) { err.textContent = res.data.error ?? 'Not saved.'; return; }
+      await draw();
+    });
+    const number = (value, label, onSave) => {
+      const input = h('input', { class: 'amount', type: 'number', inputmode: 'numeric', min: '0', max: '99', step: '1', value: String(value), 'aria-label': label });
+      input.addEventListener('change', () => {
+        if (!input.value.trim()) { input.value = String(value); return; }
+        const n = Number(input.value);
+        if (!Number.isInteger(n) || n < 0 || n > 99) { err.textContent = 'A window takes 0 to 99 pizzas.'; input.value = String(value); return; }
+        onSave(n);
+      });
+      return input;
+    };
+
+    // One date: its windows, each changed on its own, or the rest of the evening closed.
+    const isToday = w.day === w.today;
+    const dayPick = h('input', { type: 'date', min: w.today, value: w.day, 'aria-label': 'Date' });
+    dayPick.addEventListener('change', () => { if (dayPick.value) { day = dayPick.value; draw(); } });
+    const left = w.windows.filter((x) => x.max > 0 && (!isToday || x.starts > w.now));
+    const closeFrom = h('select', { class: 'small-select', 'aria-label': 'Close online orders from' }, left.map((x) => h('option', { value: x.starts, text: `from ${clock(x.starts)}` })));
+    const anyChanged = w.windows.some((x) => x.changed);
+    const dayCard = h('section', { class: 'card' },
+      h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: isToday ? 'Tonight' : longDay(w.day) }), dayPick),
+      h('div', { class: 'small muted', text: 'Pizzas each window takes on this date. A change here is for this date only; the weekly plan stays as it is.' }),
+      h('div', { class: 'wlist' }, w.windows.map((x) => h('div', { class: `wcell${isToday && x.starts <= w.now ? ' past' : ''}` },
+        h('div', { class: 'small strong', text: `${clock(x.starts)}–${clock(x.ends)}` }),
+        number(x.max, `${clock(x.starts)} window, pizzas`, (n) => post('/api/online/windows/day', { day: w.day, cells: [{ starts: x.starts, maxPizzas: n }] })),
+        x.changed ? h('button', { class: 'link small', text: 'Use plan', title: 'Back to the weekly plan for this window', onclick: () => post('/api/online/windows/day', { day: w.day, cells: [{ starts: x.starts, maxPizzas: null }] }) }) : h('span', { class: 'small muted', text: 'plan' })))),
+      h('div', { class: 'row wrap' },
+        left.length ? [h('span', { class: 'small', text: 'Dine-in slammed?' }), closeFrom, h('button', { class: 'btn small-btn dark', text: 'Close online orders', onclick: () => {
+          if (confirmText(`No more online orders ${isToday ? 'tonight' : `on ${shortDate(w.day)}`} from ${clock(closeFrom.value)}? Orders already placed stay.`)) post('/api/online/windows/day', { day: w.day, closeFrom: closeFrom.value });
+        } })] : h('span', { class: 'small muted', text: 'No windows left tonight.' }),
+        anyChanged ? h('button', { class: 'link', text: 'Back to the weekly plan', onclick: () => post('/api/online/windows/day', { day: w.day, reset: true }) }) : null),
+      err);
+
+    // The weekly plan: windows down the side, weekdays across. A blank weekday sells nothing online.
+    const cell = (weekday, starts) => w.plan.find((c) => c.weekday === weekday && c.starts === starts)?.maxPizzas ?? 0;
+    const order = [1, 2, 3, 4, 5, 6, 0];
+    const savePlan = (cells) => post('/api/online/windows/plan', { cells });
+    const grid = h('table', { class: 'wgrid' },
+      h('thead', {}, h('tr', {}, h('th', { text: '' }), order.map((d) => h('th', { text: WEEKDAYS[d] })))),
+      h('tbody', {},
+        h('tr', { class: 'all' }, h('th', { class: 'small', text: 'Every window' }), order.map((d) => h('td', {},
+          number('', `${WEEKDAYS[d]}, every window`, (n) => savePlan(w.starts.map((starts) => ({ weekday: d, starts, maxPizzas: n }))))))),
+        w.starts.map((starts) => h('tr', {}, h('th', { class: 'small', text: clock(starts) }), order.map((d) => h('td', {},
+          number(cell(d, starts), `${WEEKDAYS[d]} ${clock(starts)}, pizzas`, (n) => savePlan([{ weekday: d, starts, maxPizzas: n }]))))))));
+    const planCard = h('section', { class: 'card' },
+      h('h2', { text: 'Weekly plan' }),
+      h('div', { class: 'small muted', text: 'Pizzas each 20-minute window takes, by weekday. Salads, gelato and drinks don’t count. An order goes in the first window with room for all its pizzas; 0 means no online orders in that window.' }),
+      h('div', { class: 'wgrid-wrap' }, grid));
+
+    const changedCard = w.changedDays.length ? sideBox('Dates with their own limits', h('div', { class: 'list compact' }, w.changedDays.map((c) => h('div', {},
+      h('button', { class: 'linkish grow', text: `${shortDate(c.day)}${c.note ? ` · ${c.note}` : ''}`, onclick: () => { day = c.day; draw(); } }),
+      h('span', { class: 'small muted nowrap', text: c.closed ? 'closed online' : `${c.windows} window${c.windows === 1 ? '' : 's'} changed` }))))) : null;
+    fill(box, dayCard, planCard, changedCard);
+  }
+  await draw();
   return box;
 }
 
