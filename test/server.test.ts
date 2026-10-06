@@ -126,8 +126,17 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   const approvedList = (await call('POST', `/api/prep/${expo}/${day}/approve`, { body: {}, cookies: ownerSession })).json;
   assert.deepEqual([approvedList.status, approvedList.lines[0].toMake, approvedList.lines[0].suggested], ['approved', 2.5, 2]);
   assert.equal((await call('POST', `/api/prep/${expo}/${day}/count`, { body: { itemId: dressing, counted: 0 }, cookies: cookAgain })).status, 409); // counts lock once approved
+  // Start prep: the list's own clock, tapped once; a second tap keeps the first time.
+  const begun = (await call('POST', `/api/prep/${expo}/${day}/start`, { body: {}, cookies: cookAgain })).json;
+  assert.equal(begun.workStartedBy, 'Marco');
+  assert.equal((await call('POST', `/api/prep/${expo}/${day}/start`, { body: {}, cookies: ownerSession })).json.workStartedAt, begun.workStartedAt);
   const worked = (await call('POST', `/api/prep/${expo}/${day}/done`, { body: { itemId: dressing, state: 'done' }, cookies: cookAgain })).json;
   assert.equal(worked.lines[0].doneBy, 'Marco');
+  // What was made is kept with the check-off, for comparing like with like.
+  assert.equal((await db!.query<{ made: number }>('SELECT made FROM prep_list_lines WHERE item_id = $1', [dressing])).rows[0]!.made, 2.5);
+  // Timing: managers get the team's insights; a cook's Prep page doesn't.
+  assert.ok((await call('GET', '/api/prep', { cookies: ownerSession })).json.insights);
+  assert.equal((await call('GET', '/api/prep', { cookies: cookAgain })).json.insights, undefined);
   const cleaned = (await call('POST', `/api/prep/${expo}/${day}/check`, { body: { checklistId: worked.checklist[0].id, done: true }, cookies: cookAgain })).json;
   assert.equal(cleaned.checklist[0].doneBy, 'Marco');
 

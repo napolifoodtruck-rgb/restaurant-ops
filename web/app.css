@@ -485,3 +485,46 @@ details.snoozed[open] summary { margin-bottom: -1px; }
   .edit-main.tasks { grid-template-columns: 1fr 100px; }
   .edit-main.tasks > .edit-tools { grid-column: 1 / -1; }
 }
+
+/* Prep: a station per row, its usual time on the right of the box */
+.station-body { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 24px; align-items: start; }
+.station-days { display: flex; flex-direction: column; gap: 12px; }
+.station-time { display: flex; flex-direction: column; gap: 6px; border-left: 1px solid var(--soft); padding-left: 20px; }
+.station-time.empty { justify-content: center; min-height: 80px; }
+.big-ish { font-size: 22px; font-weight: 500; }
+svg.time-bars rect { fill: #CFCFCA; }
+svg.time-bars rect.last { fill: #000; }
+svg.time-bars line.usual { stroke: var(--orange); stroke-width: 1; stroke-dasharray: 3 3; }
+@container main (max-width: 560px) {
+  .station-body { grid-template-columns: 1fr; }
+  .station-time { border-left: 0; padding-left: 0; border-top: 1px solid var(--soft); padding-top: 12px; }
+}
+
+/* Small horizontal bars in the right column */
+.hbars { display: flex; flex-direction: column; gap: 8px; }
+.hbar { display: grid; grid-template-columns: 82px minmax(0, 1fr) 44px; gap: 8px; align-items: center; font-size: 14px; }
+.hbar.two-line { grid-template-columns: minmax(0, 1fr) 44px; grid-template-areas: "label value" "track track"; row-gap: 3px; }
+.hbar.two-line .hbar-label { grid-area: label; }
+.hbar.two-line .hbar-track { grid-area: track; }
+.hbar.two-line .hbar-value { grid-area: value; }
+.hbar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbar-track { height: 10px; background: var(--soft); position: relative; }
+.hbar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: #000; }
+.hbar-value { text-align: right; font-size: 13px; }
+
+/* Pace by cook: centred on the usual */
+.pace { display: flex; flex-direction: column; gap: 10px; }
+.pace-row { display: grid; grid-template-columns: 64px minmax(0, 1fr) 92px; grid-template-areas: "name track value" "name n n"; column-gap: 8px; row-gap: 0; align-items: center; font-size: 14px; }
+.pace-name { grid-area: name; font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.pace-track { grid-area: track; height: 12px; background: var(--soft); position: relative; }
+.pace-mid { position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: #000; }
+.pace-fill { position: absolute; top: 0; bottom: 0; }
+.pace-fill.quick { background: var(--green); }
+.pace-fill.slow { background: var(--orange); }
+.pace-fill.even { background: #000; }
+.pace-value { grid-area: value; text-align: right; font-size: 13px; font-weight: 600; }
+.pace-n { grid-area: n; text-align: right; }
+.hbar.two-line .hbar-label { white-space: normal; }
+.block { display: block; }
+.check, .check.small, .check.on { border-radius: 0; }
+.station-time .big-ish { white-space: nowrap; }

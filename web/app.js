@@ -806,19 +806,23 @@ async function prepHome(me, allStations = false) {
   }
   const status = (l, kind) => {
     if (!l) return h('span', { class: 'tag', text: kind === 'tomorrow' ? 'Not counted' : 'No list' });
-    if (l.status === 'approved') return h('span', { class: 'tag ok', text: kind === 'today' ? `Approved · ${l.done}/${l.lines} done` : 'Approved' });
+    if (l.status === 'approved') return h('span', { class: 'tag ok', text: kind === 'today' && Number(l.done) ? `Approved · ${l.done} done` : 'Approved' });
     return Number(l.counted) ? h('span', { class: 'tag warn', text: `Counted · waiting for chef` }) : h('span', { class: 'tag', text: 'Not counted' });
   };
   // An iPad that belongs to a station shows just that one; the rest are a tap away.
   const mine = me.device?.stationId && p.stations.find((s) => s.id === me.device.stationId);
   const shown = mine && !allStations ? [mine] : p.stations;
-  const cards = shown.map((s) => h('section', { class: 'card' },
+  // One station per row, full width: today and tonight on the left, how long its prep takes on the right.
+  const cards = shown.map((s) => h('section', { class: 'card station-card' },
     h('div', { class: 'row' }, h('h2', { class: 'grow', text: s.name }), p.canEdit ? h('button', { class: 'link', text: 'Edit list', onclick: () => prepEdit(me, s.id) }) : null),
-    h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'small muted', text: `Today · ${dayName(p.today)}` }), status(s.today, 'today')),
-      h('button', { class: 'btn dark', text: 'Today’s prep', onclick: () => { remember('station', s.id); prepWork(me, s.id, p.today); } })),
-    h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'small muted', text: `Tonight’s count for ${dayName(p.tomorrow)}` }), status(s.tomorrow, 'tomorrow')),
-      h('button', { class: 'btn', text: 'Count', onclick: () => prepCount(me, s.id, p.tomorrow) }),
-      p.canApprove ? h('button', { class: 'btn', text: 'Review', onclick: () => prepReview(me, s.id, p.tomorrow) }) : null)));
+    h('div', { class: 'station-body' },
+      h('div', { class: 'station-days' },
+        h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'small muted', text: `Today · ${dayName(p.today)}` }), h('div', { class: 'row tight wrap' }, status(s.today, 'today'), goingText(s))),
+          h('button', { class: 'btn dark', text: 'Today’s prep', onclick: () => { remember('station', s.id); prepWork(me, s.id, p.today); } })),
+        h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'small muted', text: `Tonight’s count for ${dayName(p.tomorrow)}` }), status(s.tomorrow, 'tomorrow')),
+          h('button', { class: 'btn', text: 'Count', onclick: () => prepCount(me, s.id, p.tomorrow) }),
+          p.canApprove ? h('button', { class: 'btn', text: 'Review', onclick: () => prepReview(me, s.id, p.tomorrow) }) : null)),
+      stationTime(s))));
   // Tonight's counts at a glance: how many stations are counted and approved.
   const counted = p.stations.filter((s) => s.tomorrow && (s.tomorrow.status === 'approved' || Number(s.tomorrow.counted))).length;
   const approved = p.stations.filter((s) => s.tomorrow?.status === 'approved').length;
@@ -833,9 +837,78 @@ async function prepHome(me, allStations = false) {
     page([
       mine ? h('div', { class: 'row' }, h('div', { class: 'grow small muted', text: allStations ? `This iPad is the ${mine.name} station’s.` : `This iPad is the ${mine.name} station’s. Other stations are a tap away.` }),
         h('button', { class: 'link', text: allStations ? `Just ${mine.name}` : 'All stations', onclick: () => prepHome(me, !allStations) })) : null,
-      h('div', { class: 'grid' }, cards), addStation ? h('div', {}, addStation) : null,
-    ], [tonight, coming, how, book])]));
+      h('div', { class: 'stack' }, cards), addStation ? h('div', {}, addStation) : null,
+    ], [tonight, p.insights ? prepInsights(p) : null, coming, how, book])]));
 }
+
+/** "1 h 35 min", "45 min". */
+const duration = (min) => (min < 60 ? `${Math.round(min)} min` : `${Math.floor(min / 60)} h${Math.round(min % 60) ? ` ${Math.round(min % 60)} min` : ''}`);
+const shortDuration = (min) => (min < 60 ? `${Math.round(min)}m` : `${Math.floor(min / 60)}h${String(Math.round(min % 60)).padStart(2, '0')}`);
+
+/** Today's list under way: when it started and how long it's been going. */
+function goingText(s) {
+  if (!s.going) return null;
+  const mins = Math.max(0, (Date.now() - Date.parse(s.going.startedAt)) / 60000);
+  return h('span', { class: 'small muted', text: `Started ${s.going.start}${s.going.by ? ` by ${s.going.by}` : ''} · ${duration(mins)} ago` });
+}
+
+/** A station's usual prep time, and its recent lists as small bars (the latest darkest). */
+function stationTime(s) {
+  const t = s.timing;
+  if (!t?.lists?.length) return h('div', { class: 'station-time empty' }, h('div', { class: 'small muted', text: 'Usual time to finish shows here once a few lists are checked off.' }));
+  const W = 220, H = 40, gap = 3, n = t.lists.length, bw = Math.max(4, (W - gap * (n - 1)) / Math.max(n, 7));
+  const max = Math.max(...t.lists.map((l) => l.minutes), t.usualMinutes, 1);
+  const svg = s_('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}`, class: 'time-bars', role: 'img', 'aria-label': `Last ${n} lists: ${t.lists.map((l) => `${shortDate(l.date)} ${duration(l.minutes)}`).join(', ')}` });
+  t.lists.forEach((l, i) => {
+    const bh = Math.max(2, (l.minutes / max) * (H - 4));
+    const r = s_('rect', { x: i * (bw + gap), y: H - bh, width: bw, height: bh, class: i === n - 1 ? 'last' : '' });
+    r.append(s_('title', {}, document.createTextNode(`${weekdayName(l.date)} ${shortDate(l.date)}: ${duration(l.minutes)}, ${l.start} – ${l.end}`)));
+    svg.append(r);
+  });
+  const uy = H - (t.usualMinutes / max) * (H - 4);
+  svg.append(s_('line', { x1: 0, x2: W, y1: uy, y2: uy, class: 'usual' }));
+  return h('div', { class: 'station-time' },
+    h('div', { class: 'small muted strong', text: 'Usual time to finish' }),
+    h('div', { class: 'big-ish', text: duration(t.usualMinutes) }), h('div', { class: 'small muted', text: `Usually ${t.usualStart} – ${t.usualEnd}` }),
+    svg, h('div', { class: 'small muted', text: `Last ${n} lists · the line is the usual` }));
+}
+
+/** The right column, for managers: how long prep takes, which items take longest, each cook's pace. */
+function prepInsights(p) {
+  const x = p.insights;
+  if (!x.timed) return sideBox('Prep times', h('div', { class: 'small muted', text: 'How long each list and item takes shows here once cooks have checked off a few lists. A tap on Start prep at the top of the list makes the times exact.' }));
+  const timed = p.stations.filter((s) => s.timing?.usualMinutes);
+  const most = Math.max(...timed.map((s) => s.timing.usualMinutes), 1);
+  const byStation = timed.length ? sideBox(`Time to finish, last ${Math.round(x.days / 7)} weeks`,
+    h('div', { class: 'hbars' }, timed.map((s) => h('div', { class: 'hbar' },
+      h('span', { class: 'hbar-label', text: s.name }),
+      (() => { const b = h('span', { class: 'hbar-track' }, h('span', { class: 'hbar-fill' })); b.firstChild.style.width = `${(s.timing.usualMinutes / most) * 100}%`; return b; })(),
+      h('b', { class: 'hbar-value', text: shortDuration(s.timing.usualMinutes) })))),
+    h('div', { class: 'small muted', text: 'The usual list, start to last check-off.' })) : null;
+  const slowest = Math.max(...x.slowItems.map((i) => i.minutes), 1);
+  const items = x.slowItems.length ? sideBox('Takes longest',
+    h('div', { class: 'hbars' }, x.slowItems.map((i) => h('div', { class: 'hbar two-line' },
+      h('span', { class: 'hbar-label' }, h('span', { class: 'strong', text: i.name }), h('span', { class: 'small muted block', text: `${i.station ?? ''}${i.amount ? ` · ${qty(i.amount)} ${plural(i.amount, i.unit)}` : ''}` })),
+      (() => { const b = h('span', { class: 'hbar-track' }, h('span', { class: 'hbar-fill' })); b.firstChild.style.width = `${(i.minutes / slowest) * 100}%`; return b; })(),
+      h('b', { class: 'hbar-value', text: `${i.minutes}m` })))),
+    h('div', { class: 'small muted', text: 'The usual time for each, for the amount usually made.' })) : null;
+  // Pace: centred on the usual; quicker to the left, slower to the right. Same items, same amounts.
+  const span = Math.max(0.25, ...x.cooks.map((c) => Math.abs(c.ratio - 1)));
+  const pace = x.cooks.length ? sideBox('Pace by cook',
+    h('div', { class: 'pace' }, x.cooks.map((c) => {
+      const off = c.ratio - 1, steady = Math.abs(off) < 0.05;
+      const bar = h('span', { class: 'pace-track' }, h('span', { class: `pace-fill ${steady ? 'even' : off < 0 ? 'quick' : 'slow'}` }), h('span', { class: 'pace-mid' }));
+      const w = (Math.min(Math.abs(off), span) / span) * 50;
+      Object.assign(bar.firstChild.style, off < 0 ? { right: '50%', width: `${w}%` } : { left: '50%', width: `${Math.max(w, steady ? 1 : 0)}%` });
+      return h('div', { class: 'pace-row' }, h('span', { class: 'pace-name', text: c.name }), bar,
+        h('span', { class: `pace-value ${steady ? '' : off < 0 ? 'trend-up' : 'warn-text'}`, text: steady ? 'usual' : `${Math.round(Math.abs(off) * 100)}% ${off < 0 ? 'quicker' : 'slower'}` }),
+        h('span', { class: 'small muted pace-n', text: `${c.items} items` }));
+    })),
+    h('div', { class: 'small muted', text: 'Each cook against the usual time for the same items in the same amounts, so who makes the dough isn’t held against them. Shown after 8 timed items; only managers see this.' }),
+    h('div', { class: 'small muted', text: `From ${x.timed} item times in the last ${Math.round(x.days / 7)} weeks: ${Math.round((x.exact / x.timed) * 100)}% timed from a Start tap, the rest from the time between check-offs (breaks left out).` })) : null;
+  return [byStation, items, pace];
+}
+const s_ = (tag, attrs = {}, ...kids) => { const el = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const [k, v] of Object.entries(attrs)) if (v !== '' && v !== undefined) el.setAttribute(k, v); for (const c of kids) el.append(c); return el; };
 
 function prepHeader(me, v, title, sub, extra) {
   return h('header', { class: 'row' },
@@ -959,7 +1032,7 @@ async function prepWork(me, stationId, date) {
   show(shell(me, 'prep', [
     prepHeader(me, v, `${v.station.name} prep`, `Approved by ${v.approvedBy ?? 'the chef'}. Cleaning last.`),
     page(h('section', { class: 'card' }, work.length ? h('div', { class: 'list' }, rows) : h('div', { class: 'muted', text: 'Nothing to make today.' })), [
-      sideBox('Done', progress(done, work.length), h('div', { class: 'small', text: `${done} of ${work.length}` })),
+      clockBox(v, done, work.length, async (undo) => { const res = await api('POST', `/api/prep/${stationId}/${date}/start`, undo ? { undo: true } : {}); if (res.ok) again(); }),
       v.checklist.length ? cleaning : null,
     ]),
   ]));
@@ -971,6 +1044,23 @@ function editTools(up, down, name, remove) {
     h('button', { class: 'btn small-btn', 'aria-label': `Move ${name} up`, title: 'Move up', text: '↑', onclick: up }),
     h('button', { class: 'btn small-btn', 'aria-label': `Move ${name} down`, title: 'Move down', text: '↓', onclick: down }),
     h('button', { class: 'btn small-btn remove', 'aria-label': `Remove ${name}`, title: 'Remove', text: '×', onclick: remove }));
+}
+
+/** The list's clock: Start prep once at the top, then how long it's been going against the usual. */
+function clockBox(v, done, total, start) {
+  const first = v.workStartedAt ?? [...v.lines.map((l) => l.startedAt), ...v.lines.map((l) => l.doneAt)].filter(Boolean).sort()[0];
+  const finished = total > 0 && done >= total;
+  const last = v.lines.map((l) => l.doneAt).filter(Boolean).sort().pop();
+  const mins = first ? Math.max(0, ((finished && last ? Date.parse(last) : Date.now()) - Date.parse(first)) / 60000) : 0;
+  const usual = v.usualMinutes ? h('div', { class: 'small muted', text: `Usually ${duration(v.usualMinutes)}.` }) : null;
+  if (!first) return sideBox('Prep', progress(0, total), h('div', { class: 'small', text: `${total} thing${total === 1 ? '' : 's'} to make` }),
+    sideActions(h('button', { class: 'btn dark', text: 'Start prep', onclick: () => start() })),
+    h('div', { class: 'small muted', text: 'Tap when you begin, so the list’s time is right.' }), usual);
+  return sideBox(finished ? 'Done' : 'Going', progress(done, total),
+    h('div', { class: 'small', text: `${done} of ${total} · ${finished ? `took ${duration(mins)}` : `${duration(mins)} so far`}` }),
+    h('div', { class: 'small muted', text: v.workStartedAt ? `Started ${timeOf(v.workStartedAt)}${v.workStartedBy ? ` by ${v.workStartedBy}` : ''}.` : `First check-off ${timeOf(first)}.` }),
+    usual,
+    v.workStartedAt && !done ? h('button', { class: 'link', text: 'Not started yet', onclick: () => start(true) }) : null);
 }
 
 // Editing a station's list: items (name, unit, par, kind, days) and cleaning tasks.

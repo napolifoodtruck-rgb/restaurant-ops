@@ -23,6 +23,7 @@ import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { getModel } from './model.ts';
 import { nameSimilarity } from '../core/menuLinks.ts';
+import { cookPace, itemTimes, itemUsuals, listSpan, median, type Mark, type WorkedList } from '../core/prepTiming.ts';
 import { batchSuggestion, dayLines, dayShare, onHandFrom, weekdayOf, type BulkOnHand, type StationItem, type StationNeed } from '../core/stationLists.ts';
 
 const UUID = '[0-9a-f-]{36}';
@@ -63,13 +64,14 @@ async function items(db: Db, restaurantId: string, stationId: string) {
 }
 
 async function listFor(db: Db, restaurantId: string, stationId: string, date: string) {
-  const found = (await db.query<{ id: string; status: string; counted_at: string | null; approved_at: string | null; approved_by: string | null; counted_by: string | null }>(
-    'SELECT id, status, counted_at, approved_at, approved_by, counted_by FROM prep_lists WHERE restaurant_id = $1 AND station_id = $2 AND for_date = $3', [restaurantId, stationId, date])).rows[0];
+  type Row = { id: string; status: string; counted_at: string | null; approved_at: string | null; approved_by: string | null; counted_by: string | null; work_started_at: string | null; work_started_by: string | null };
+  const found = (await db.query<Row>(
+    'SELECT id, status, counted_at, approved_at, approved_by, counted_by, work_started_at, work_started_by FROM prep_lists WHERE restaurant_id = $1 AND station_id = $2 AND for_date = $3', [restaurantId, stationId, date])).rows[0];
   if (found) return found;
-  return (await db.query<{ id: string; status: string; counted_at: string | null; approved_at: string | null; approved_by: string | null; counted_by: string | null }>(
+  return (await db.query<Row>(
     `INSERT INTO prep_lists (restaurant_id, station_id, for_date) VALUES ($1, $2, $3)
      ON CONFLICT (restaurant_id, station_id, for_date) DO UPDATE SET for_date = EXCLUDED.for_date
-     RETURNING id, status, counted_at, approved_at, approved_by, counted_by`, [restaurantId, stationId, date])).rows[0]!;
+     RETURNING id, status, counted_at, approved_at, approved_by, counted_by, work_started_at, work_started_by`, [restaurantId, stationId, date])).rows[0]!;
 }
 
 /** Daily sales for the last 8 weeks, for scaling pars to the day. */
@@ -154,7 +156,7 @@ export async function view(db: Db, who: SignedIn, stationId: string, date: strin
     .filter((c) => c.frequency === 'daily' || (c.weekday !== null ? Number(c.weekday) === weekdayOf(date) : !c.done_this_week || c.done_at));
 
   const names = new Map<string, string>();
-  for (const id of [list.approved_by, list.counted_by].filter(Boolean) as string[]) {
+  for (const id of [list.approved_by, list.counted_by, list.work_started_by].filter(Boolean) as string[]) {
     const n = (await db.query<{ display_name: string }>('SELECT display_name FROM staff WHERE id = $1', [id])).rows[0];
     if (n) names.set(id, n.display_name);
   }
@@ -166,6 +168,8 @@ export async function view(db: Db, who: SignedIn, stationId: string, date: strin
     countedBy: list.counted_by ? names.get(list.counted_by) : undefined,
     approvedAt: list.approved_at,
     approvedBy: list.approved_by ? names.get(list.approved_by) : undefined,
+    ...(list.work_started_at ? { workStartedAt: list.work_started_at, workStartedBy: list.work_started_by ? names.get(list.work_started_by) : undefined } : {}),
+    usualMinutes: (await prepTiming(db, who.restaurantId, date, 'UTC', { stationId })).stations.get(stationId)?.usualMinutes,
     ...(share ? { share: Math.round(share.share * 100) / 100, busiest: share.busiest } : {}),
     canApprove: atLeast(who.roleLevel, 'chef'),
     lines: day.map((d) => {
@@ -295,6 +299,73 @@ export async function importPrep(db: Db, restaurantId: string, data: PrepImport)
   return { stations: data.stations.length, items: n };
 }
 
+/** A time of day where the restaurant is ("9:10 am"), and minutes past midnight for averaging. */
+function clockOf(ms: number, tz: string): { text: string; minute: number } {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  const minute = Number(p.hour) * 60 + Number(p.minute);
+  return { text: clockText(minute), minute };
+}
+const clockText = (minute: number) => { const h = Math.floor(minute / 60) % 24, m = Math.round(minute % 60); return `${((h + 11) % 12) + 1}:${String(m).padStart(2, '0')} ${h < 12 ? 'am' : 'pm'}`; };
+
+/**
+ * How long prep has been taking: each station's lists over the last few weeks (time, start,
+ * finish), and across stations the items that take longest and each cook's pace against the
+ * usual for the same items. Today's list is in progress, so it's left out of the usuals.
+ */
+export async function prepTiming(db: Db, restaurantId: string, today: string, tz: string, opts: { days?: number; stationId?: string } = {}) {
+  const days = opts.days ?? 28;
+  const where = `p.restaurant_id = $1 AND p.for_date > $2::date - $3::int AND p.for_date <= $2::date${opts.stationId ? ' AND p.station_id = $4' : ''}`;
+  const args = [restaurantId, today, days, ...(opts.stationId ? [opts.stationId] : [])];
+  const rows = (await db.query<{ list_id: string; station_id: string; for_date: string; work_started_at: string | null; item_id: string; name: string; unit: string | null; made: string | null; started_at: string | null; done_at: string; done_by: string | null; by_name: string | null }>(
+    `SELECT p.id AS list_id, p.station_id, p.for_date::text AS for_date, p.work_started_at, l.item_id, i.name, i.unit, l.made, l.started_at, l.done_at, l.done_by, s.display_name AS by_name
+       FROM prep_lists p JOIN prep_list_lines l ON l.list_id = p.id JOIN station_items i ON i.id = l.item_id LEFT JOIN staff s ON s.id = l.done_by
+      WHERE ${where} AND l.done_at IS NOT NULL`, args)).rows;
+  const checks = (await db.query<{ list_id: string; station_id: string; for_date: string; work_started_at: string | null; done_at: string; done_by: string | null }>(
+    `SELECT p.id AS list_id, p.station_id, p.for_date::text AS for_date, p.work_started_at, k.done_at, k.done_by
+       FROM prep_lists p JOIN prep_list_checks k ON k.list_id = p.id WHERE ${where}`, args)).rows;
+  const lists = new Map<string, WorkedList>();
+  const listOf = (r: { list_id: string; station_id: string; for_date: string; work_started_at: string | null }) => {
+    let l = lists.get(r.list_id);
+    if (!l) { l = { listId: r.list_id, stationId: r.station_id, date: r.for_date, ...(r.work_started_at ? { startedAt: Date.parse(r.work_started_at) } : {}), marks: [] }; lists.set(r.list_id, l); }
+    return l;
+  };
+  for (const r of rows) {
+    const m: Mark = { itemId: r.item_id, name: r.name, doneAt: Date.parse(r.done_at), ...(r.unit ? { unit: r.unit } : {}), ...(r.made !== null ? { amount: Number(r.made) } : {}),
+      ...(r.started_at ? { startedAt: Date.parse(r.started_at) } : {}), ...(r.done_by ? { by: r.done_by } : {}), ...(r.by_name ? { byName: r.by_name } : {}) };
+    listOf(r).marks.push(m);
+  }
+  for (const c of checks) listOf(c).marks.push({ doneAt: Date.parse(c.done_at), ...(c.done_by ? { by: c.done_by } : {}) });
+
+  // A finished day's list counts once a few things were checked off on it.
+  const past = [...lists.values()].filter((l) => l.date < today && l.marks.filter((m) => m.itemId).length >= 3);
+  const stations = new Map<string, { usualMinutes?: number; usualStart?: string; usualEnd?: string; lists: { date: string; minutes: number; start: string; end: string }[] }>();
+  for (const l of past.sort((a, b) => a.date.localeCompare(b.date))) {
+    const span = listSpan(l)!;
+    const st = stations.get(l.stationId) ?? { lists: [] };
+    st.lists.push({ date: l.date, minutes: span.minutes, start: clockOf(span.start, tz).text, end: clockOf(span.end, tz).text });
+    stations.set(l.stationId, st);
+  }
+  for (const [id, st] of stations) {
+    const spans = past.filter((l) => l.stationId === id).map((l) => listSpan(l)!);
+    st.usualMinutes = Math.round(median(spans.map((x) => x.minutes)));
+    st.usualStart = clockText(median(spans.map((x) => clockOf(x.start, tz).minute)));
+    st.usualEnd = clockText(median(spans.map((x) => clockOf(x.end, tz).minute)));
+    st.lists = st.lists.slice(-14);
+  }
+  const times = itemTimes(past);
+  const usuals = itemUsuals(times);
+  const stationOfItem = new Map(times.map((t) => [t.itemId, t.stationId]));
+  return {
+    days,
+    stations,
+    timed: times.length,
+    exact: times.filter((t) => t.exact).length,
+    slowItems: [...usuals.values()].sort((a, b) => b.minutes - a.minutes).slice(0, 6)
+      .map((u) => ({ name: u.name, stationId: stationOfItem.get(u.itemId), minutes: Math.round(u.minutes), times: u.times, ...(u.amount ? { amount: u.amount } : {}), ...(u.unit ? { unit: u.unit } : {}) })),
+    cooks: cookPace(times, usuals).map((c) => ({ name: c.name, items: c.items, ratio: c.ratio, hours: c.hours })),
+  };
+}
+
 /** Handles /api/prep routes. Returns false when the path isn't one of them. */
 export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerResponse, path: string, method: string, who: SignedIn, today: string): Promise<boolean> {
   const chef = () => { if (!atLeast(who.roleLevel, 'chef')) throw new HttpError(403, 'A chef or manager does that.'); };
@@ -311,9 +382,21 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
          FROM prep_lists p WHERE p.restaurant_id = $1 AND p.for_date IN ($2, $3)`, [who.restaurantId, today, tomorrow])).rows;
     const itemCounts = new Map((await db.query<{ station_id: string; n: string }>("SELECT station_id, count(*) AS n FROM station_items WHERE restaurant_id = $1 AND active AND kind = 'count' GROUP BY station_id", [who.restaurantId])).rows.map((r) => [r.station_id, Number(r.n)]));
     const at = (id: string, d: string) => lists.find((l) => l.station_id === id && l.for_date === d);
+    const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+    const timing = await prepTiming(db, who.restaurantId, today, tz);
+    // Today's lists so far: when each started and how many minutes it's been going.
+    const going = new Map((await db.query<{ station_id: string; started: string | null; last: string | null; by_name: string | null }>(
+      `SELECT p.station_id, least(p.work_started_at, (SELECT min(coalesce(l.started_at, l.done_at)) FROM prep_list_lines l WHERE l.list_id = p.id)) AS started,
+              (SELECT max(l.done_at) FROM prep_list_lines l WHERE l.list_id = p.id) AS last, s.display_name AS by_name
+         FROM prep_lists p LEFT JOIN staff s ON s.id = p.work_started_by WHERE p.restaurant_id = $1 AND p.for_date = $2`, [who.restaurantId, today])).rows
+      .filter((r) => r.started).map((r) => [r.station_id, { startedAt: r.started!, start: clockOf(Date.parse(r.started!), tz).text, ...(r.by_name ? { by: r.by_name } : {}), ...(r.last ? { lastDoneAt: r.last } : {}) }]));
+    const manager = atLeast(who.roleLevel, 'manager');
     return send(res, 200, {
       today, tomorrow, canApprove: atLeast(who.roleLevel, 'chef'), canEdit: atLeast(who.roleLevel, 'chef'),
-      stations: stations.map((s) => ({ id: s.id, name: s.name, toCount: itemCounts.get(s.id) ?? 0, today: at(s.id, today) ?? null, tomorrow: at(s.id, tomorrow) ?? null })),
+      stations: stations.map((s) => ({ id: s.id, name: s.name, toCount: itemCounts.get(s.id) ?? 0, today: at(s.id, today) ?? null, tomorrow: at(s.id, tomorrow) ?? null,
+        ...(timing.stations.get(s.id) ? { timing: timing.stations.get(s.id) } : {}), ...(going.get(s.id) ? { going: going.get(s.id) } : {}) })),
+      // How the team's doing: for managers (who's quicker or slower is theirs to see, not the line's).
+      ...(manager ? { insights: { days: timing.days, timed: timing.timed, exact: timing.exact, slowItems: timing.slowItems.map((x) => ({ ...x, station: stations.find((s) => s.id === x.stationId)?.name })), cooks: timing.cooks } } : {}),
     }), true;
   }
 
@@ -391,7 +474,7 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     return send(res, 200, { ok: true }), true;
   }
 
-  if ((m = path.match(new RegExp(`^/api/prep/(${UUID})/(${DATE})(?:/(count|make|approve|done|check))?$`)))) {
+  if ((m = path.match(new RegExp(`^/api/prep/(${UUID})/(${DATE})(?:/(count|make|approve|done|check|start))?$`)))) {
     const [, stationId, date, action] = m as unknown as [string, string, string, string | undefined];
     if (method === 'GET' && !action) return send(res, 200, await view(db, who, stationId, date)), true;
     if (method !== 'POST' || !action) return false;
@@ -415,11 +498,12 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     } else if (action === 'done') {
       if (list.status !== 'approved') throw new HttpError(409, 'This list hasn’t been approved yet.');
       const state = String(b.state);
-      const set = state === 'start' ? { started_at: new Date(), started_by: who.staffId }
-        : state === 'done' ? { done_at: new Date(), done_by: who.staffId }
-        : { done_at: null, done_by: null, started_at: null, started_by: null };
       const itemId = String(b.itemId);
       const before = (await view(db, who, stationId, date)).lines.find((l) => l.id === itemId);
+      // What was made is kept with the check-off, so its time can be compared with the same amount another day.
+      const set = state === 'start' ? { started_at: new Date(), started_by: who.staffId }
+        : state === 'done' ? { done_at: new Date(), done_by: who.staffId, made: before?.toMake ?? null }
+        : { done_at: null, done_by: null, started_at: null, started_by: null, made: null };
       await setLine(db, who, stationId, date, itemId, set);
       // Bulk moves: a batch made adds to it; a station fill takes out of it; an undo reverses.
       await db.query("DELETE FROM bulk_ledger WHERE list_id = $1 AND line_item_id = $2 AND kind IN ('made', 'filled')", [list.id, itemId]);
@@ -428,6 +512,11 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
         if (item.kind === 'batch' && item.batch_yield) await db.query("INSERT INTO bulk_ledger (restaurant_id, item_id, kind, change, list_id, line_item_id, by_staff) VALUES ($1, $2, 'made', $3, $4, $2, $5)", [who.restaurantId, itemId, before.toMake! * Number(item.batch_yield), list.id, who.staffId]);
         if (item.source_item_id && item.holds) await db.query("INSERT INTO bulk_ledger (restaurant_id, item_id, kind, change, list_id, line_item_id, by_staff) VALUES ($1, $2, 'filled', $3, $4, $5, $6)", [who.restaurantId, item.source_item_id, -before.toMake! * Number(item.holds), list.id, itemId, who.staffId]);
       }
+    } else if (action === 'start') {
+      // The list's own clock: "Start prep", tapped once when the station begins.
+      if (list.status !== 'approved') throw new HttpError(409, 'This list hasn’t been approved yet.');
+      if (b.undo === true) await db.query('UPDATE prep_lists SET work_started_at = NULL, work_started_by = NULL WHERE id = $1', [list.id]);
+      else await db.query('UPDATE prep_lists SET work_started_at = coalesce(work_started_at, now()), work_started_by = coalesce(work_started_by, $1) WHERE id = $2', [who.staffId, list.id]);
     } else if (action === 'check') {
       const c = (await db.query('SELECT 1 FROM station_checklist WHERE restaurant_id = $1 AND station_id = $2 AND id = $3', [who.restaurantId, stationId, String(b.checklistId)])).rows[0];
       if (!c) throw new HttpError(404, 'Not on this station’s checklist.');
