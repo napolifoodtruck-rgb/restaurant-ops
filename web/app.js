@@ -1270,6 +1270,22 @@ async function prepCount(me, stationId, date) {
   ]));
 }
 
+/** A small ? that opens a box with the reasoning (tap on the iPad, hover with a mouse). Chef's screens only. */
+function whyTip(text) {
+  if (!text) return null;
+  const wrap = h('span', { class: 'why-wrap' });
+  const btn = h('button', { class: 'why', type: 'button', text: '?', 'aria-label': 'Why this number', 'aria-expanded': 'false', onclick: (e) => {
+    e.stopPropagation();
+    const open = !wrap.classList.contains('open');
+    document.querySelectorAll('.why-wrap.open').forEach((w) => { w.classList.remove('open'); w.firstChild.setAttribute('aria-expanded', 'false'); });
+    wrap.classList.toggle('open', open);
+    btn.setAttribute('aria-expanded', String(open));
+  } });
+  wrap.append(btn, h('span', { class: 'why-pop', role: 'tooltip', text }));
+  return wrap;
+}
+document.addEventListener('click', (e) => { if (!e.target.closest?.('.why-wrap')) document.querySelectorAll('.why-wrap.open').forEach((w) => w.classList.remove('open')); });
+
 // The chef's review: suggestions with reasons, any number can change, then approve.
 async function prepReview(me, stationId, date) {
   const r = await api('GET', `/api/prep/${stationId}/${date}`);
@@ -1286,7 +1302,8 @@ async function prepReview(me, stationId, date) {
       : l.counted === undefined ? `Par ${qty(l.dayPar)} · not counted` : l.reason ?? '';
     const changed = l.chosen !== undefined && l.suggested !== undefined && l.chosen !== l.suggested;
     return h('div', { class: 'reviewrow' },
-      h('div', { class: 'grow' }, h('div', { class: 'name', text: l.name }), h('div', { class: 'small muted', text: [l.unit ?? '', eachWeight(l), l.note ?? ''].filter(Boolean).join(' · ') }), h('div', { class: `small${changed ? ' changed' : ' muted'}`, text: changed ? `${info} You changed it from ${qty(l.suggested)}.` : info })),
+      h('div', { class: 'grow' }, h('div', { class: 'name', text: l.name }), h('div', { class: 'small muted', text: [l.unit ?? '', eachWeight(l), l.note ?? ''].filter(Boolean).join(' · ') }), h('div', { class: `small${changed ? ' changed' : ' muted'}` }, changed ? `${info} You changed it from ${qty(l.suggested)}.` : info,
+        whyTip(l.parWhy ? `${l.parWhy}${l.counted !== undefined && l.suggested !== undefined ? ` ${qty(l.counted)} counted on hand, so make ${qty(l.suggested)}.` : ''}` : ''))),
       h('div', { class: 'small muted nowrap', text: 'Make' }),
       stepper(l.toMake, l.dayPar !== undefined && l.dayPar < 4 ? 0.5 : 1, async (val) => { total.textContent = weightOf(val, l).trim(); await make(l, val); }, `${l.name} to make`),
       total,
@@ -1297,7 +1314,7 @@ async function prepReview(me, stationId, date) {
       const res = await api('POST', `/api/prep/${stationId}/${date}/approve`, { approved: !approved });
       if (res.ok) again();
     } });
-  const share = v.share !== undefined && v.share < 1 ? `${WEEKDAY[new Date(`${date}T12:00:00`).getDay()]} usually runs at ${Math.round(v.share * 100)}% of a ${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][v.busiest]}, so pars are scaled to that. ` : '';
+  const share = v.share !== undefined && v.share < 1 ? `${WEEKDAY[new Date(`${date}T12:00:00`).getDay()]} usually runs at ${Math.round(v.share * 100)}% of a ${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][v.busiest]}, so pars are scaled to that. Items tied to a recipe follow their own dishes instead (the sauce follows the pizzas that use it). Tap ? on a line to see the math. ` : '';
   const toMake = v.lines.filter((l) => l.kind !== 'task' && (l.toMake ?? 0) > 0).length;
   show(shell(me, 'prep', [
     prepHeader(me, v, approved ? 'Approved' : 'Review and approve', approved ? 'The station sees this list tomorrow.' : 'Change any number, then approve.'),

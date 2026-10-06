@@ -19,6 +19,8 @@ export interface StationItem {
   /** On the list from / until these days (a new dish's preps, a retired dish's). */
   activeFrom?: string;
   activeUntil?: string;
+  /** The recipe it's made from, when tied: its par follows that recipe's dishes. */
+  recipeName?: string;
 }
 
 export interface DaySales {
@@ -55,6 +57,28 @@ export function dayShare(sales: readonly DaySales[], weekday: number, options: {
   return { share: Math.min(1, day / top), busiest };
 }
 
+/** One item's own scale for a weekday: from what the dishes it goes into sold that day. */
+export interface ItemScale { share: number; dishes: string[] }
+/** The day's scale: the restaurant's (how busy the day runs), and each item's own where its dishes tell. */
+export interface DayScale { share: number; busiest: number; items?: ReadonlyMap<string, ItemScale> }
+
+/**
+ * How much of an item a weekday uses compared with the busiest weekday, from how much of it the dishes
+ * sold each open day (a day with none sold counts as 0). Can be over 1: Saturday may use more burrata
+ * than Friday. Capped at 1.5. Undefined when there's too little to go on (fewer than minDays of either
+ * weekday, or used on fewer than 6 days in all), so the restaurant's scale is used instead.
+ */
+export function itemDayShare(useByDate: ReadonlyMap<string, number>, openDates: readonly string[], weekday: number, busiest: number, minDays = 3): number | undefined {
+  if ([...useByDate.values()].filter((v) => v > 0).length < 6) return undefined;
+  const avgOn = (w: number) => {
+    const days = openDates.filter((d) => weekdayOf(d) === w);
+    return days.length < minDays ? undefined : days.reduce((a, d) => a + (useByDate.get(d) ?? 0), 0) / days.length;
+  };
+  const top = avgOn(busiest), day = avgOn(weekday);
+  if (!top || day === undefined) return undefined;
+  return Math.min(1.5, day / top);
+}
+
 /** Pars are counted in halves when small (half a ninth pan), whole units otherwise. */
 export function stepFor(par: number): number {
   return par < 4 || !Number.isInteger(par) ? 0.5 : 1;
@@ -71,12 +95,14 @@ export interface DayLine {
   /** What the app suggests making, once counted. */
   suggested?: number;
   reason?: string;
+  /** Why the day's par is what it is, for the ? beside it. */
+  parWhy?: string;
 }
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 /** The items on a station's list for a date, with the day's par and, given counts, what to make. */
-export function dayLines(items: readonly StationItem[], date: string, share: { share: number; busiest: number } | undefined, counts: ReadonlyMap<string, number> = new Map()): DayLine[] {
+export function dayLines(items: readonly StationItem[], date: string, share: DayScale | undefined, counts: ReadonlyMap<string, number> = new Map()): DayLine[] {
   const weekday = weekdayOf(date);
   const out: DayLine[] = [];
   for (const item of items) {
@@ -87,14 +113,26 @@ export function dayLines(items: readonly StationItem[], date: string, share: { s
       continue;
     }
     const step = stepFor(item.par);
-    const scaled = share && weekday !== share.busiest ? Math.max(step, roundUp(item.par * share.share, step)) : item.par;
+    // The item's own scale (what its dishes sell that weekday) when there's enough to go on, else the day's.
+    const own = share?.items?.get(item.id);
+    const factor = own?.share ?? share?.share;
+    const scaled = share && factor !== undefined && weekday !== share.busiest ? Math.max(step, roundUp(item.par * factor, step)) : item.par;
     const counted = counts.get(item.id);
     const line: DayLine = { item, dayPar: scaled };
+    const big = share ? DAY_NAMES[share.busiest] : '';
+    const math = (f: number) => {
+      const raw = Math.round(item.par! * f * 100) / 100, pct = Math.round(f * 100);
+      return `so ${fmt(item.par!)} × ${pct}% = ${fmt(raw)}${raw === scaled ? '' : `, rounded up to ${fmt(scaled)}`}.`;
+    };
+    line.parWhy = !share ? `Par ${fmt(item.par)}, as set on the list. Once there are a few weeks of sales, slower days get a smaller par.`
+      : weekday === share.busiest ? `Par ${fmt(item.par)}: the list’s par is for a ${big}, the busiest day.`
+      : own ? `The list’s par is ${fmt(item.par)}, for a ${big}. Over the last 8 weeks ${DAY_NAMES[weekday]}s sold ${Math.round(own.share * 100)}% as much ${own.dishes.join(' and ')} as ${big}s, ${math(own.share)}`
+      : `The list’s par is ${fmt(item.par)}, for a ${big}. Over the last 8 weeks ${DAY_NAMES[weekday]}s ran at ${Math.round(share.share * 100)}% of a ${big}’s sales, ${math(share.share)}${item.recipeName ? ` (Its recipe isn’t in enough of the dishes sold to follow them on its own yet.)` : ''}`;
     if (counted !== undefined) {
       line.suggested = Math.max(0, roundUp(scaled - counted, step));
-      line.reason = scaled !== item.par && share
-        ? `${DAY_NAMES[weekday]} usually runs at ${Math.round(share.share * 100)}% of a ${DAY_NAMES[share.busiest]}: par ${fmt(scaled)} instead of ${fmt(item.par)}, ${fmt(counted)} on hand.`
-        : `Par ${fmt(scaled)}, ${fmt(counted)} on hand.`;
+      line.reason = scaled === item.par || !share ? `Par ${fmt(scaled)}, ${fmt(counted)} on hand.`
+        : own ? `${DAY_NAMES[weekday]}s sell ${Math.round(own.share * 100)}% of a ${DAY_NAMES[share.busiest]}’s ${own.dishes.join(' and ')}: par ${fmt(scaled)} instead of ${fmt(item.par)}, ${fmt(counted)} on hand.`
+        : `${DAY_NAMES[weekday]} usually runs at ${Math.round(share.share * 100)}% of a ${DAY_NAMES[share.busiest]}: par ${fmt(scaled)} instead of ${fmt(item.par)}, ${fmt(counted)} on hand.`;
     }
     out.push(line);
   }

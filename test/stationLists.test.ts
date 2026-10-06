@@ -43,6 +43,29 @@ test('par scaled to the day, rounded up in halves or wholes; to make is par minu
   assert.deepEqual(friday.map((l) => [l.item.id, l.dayPar, l.suggested]), [['dressing', 3, undefined], ['bresaola', 14, undefined], ['saba', 0.25, undefined], ['togo', 8, 8], ['ham', undefined, undefined]]);
 });
 
+test('an item follows its own dishes: a pizza that sells half as much on Tuesday gets half the par', async () => {
+  const { itemDayShare } = await import('../src/core/stationLists.ts');
+  // Spinach panna: 2 qt a Tuesday, 8 qt a Friday, 10 qt a Saturday (the pizza sells big on weekends).
+  const open = sales.filter((s) => s.netSales > 0).map((s) => s.date);
+  const use = new Map(open.map((d) => [d, weekdayOf(d) === 2 ? 2 : weekdayOf(d) === 5 ? 8 : 10]));
+  assert.equal(itemDayShare(use, open, 2, 5), 0.25);
+  assert.equal(itemDayShare(use, open, 6, 5), 1.25); // more than Friday's
+  assert.equal(itemDayShare(new Map(open.map((d) => [d, weekdayOf(d) === 6 ? 40 : 1])), open, 6, 5), 1.5); // capped
+  assert.equal(itemDayShare(new Map([[open[0]!, 3]]), open, 2, 5), undefined); // too little to go on
+  const items = [
+    { id: 'panna', name: 'Spinach Panna', unit: '1/6 pan', kind: 'count' as const, par: 4, recipeName: 'Spinach Panna' },
+    { id: 'dressing', name: 'House dressing', unit: 'bottle', kind: 'count' as const, par: 3 },
+  ];
+  const scale = { ...dayShare(sales, 2)!, items: new Map([['panna', { share: 0.25, dishes: ['Spinachi Pizza'] }]]) };
+  const tue = dayLines(items, '2026-10-06', scale, new Map([['panna', 0], ['dressing', 0]]));
+  assert.deepEqual(tue.map((l) => [l.item.id, l.dayPar, l.suggested]), [['panna', 1, 1], ['dressing', 2, 2]]); // 25% of 4; the dressing keeps the day's 60%
+  assert.match(tue[0]!.reason!, /Tuesdays sell 25% of a Friday’s Spinachi Pizza: par 1 instead of 4/);
+  assert.match(tue[0]!.parWhy!, /sold 25% as much Spinachi Pizza as Fridays, so 4 × 25% = 1\./);
+  assert.match(tue[1]!.parWhy!, /ran at 60% of a Friday’s sales, so 3 × 60% = 1.8, rounded up to 2\.$/);
+  const fri = dayLines(items, '2026-10-09', { ...dayShare(sales, 5)!, items: scale.items }, new Map());
+  assert.deepEqual([fri[0]!.dayPar, fri[0]!.parWhy], [4, 'Par 4: the list’s par is for a Friday, the busiest day.']);
+});
+
 test('bulk prep is inventory: fills draw it down, batches add, counts reset it', async () => {
   const { batchSuggestion, onHandFrom } = await import('../src/core/stationLists.ts');
   const ledger = [

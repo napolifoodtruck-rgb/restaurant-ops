@@ -26,7 +26,7 @@ import { loadContainers } from './units.ts';
 import { recipeWeight, unitWeight, type RecipeWeight, type WeightSource } from '../core/containers.ts';
 import { nameSimilarity } from '../core/menuLinks.ts';
 import { cookPace, itemTimes, itemUsuals, listSpan, median, minutesLeft, stationItemUsual, type ItemUsual, type Mark, type WorkedList } from '../core/prepTiming.ts';
-import { batchSuggestion, dayLines, dayShare, onHandFrom, weekdayOf, type BulkOnHand, type StationItem, type StationNeed } from '../core/stationLists.ts';
+import { batchSuggestion, dayLines, dayShare, itemDayShare, onHandFrom, weekdayOf, type BulkOnHand, type DayScale, type ItemScale, type StationItem, type StationNeed } from '../core/stationLists.ts';
 
 const UUID = '[0-9a-f-]{36}';
 const DATE = '\\d{4}-\\d{2}-\\d{2}';
@@ -83,8 +83,79 @@ async function recentSales(db: Db, restaurantId: string, before: string) {
     'SELECT day::text AS day, sum(net_sales) AS net FROM pos_item_sales_daily WHERE restaurant_id = $1 AND day < $2 AND day >= $3 GROUP BY day', [restaurantId, before, addDays(before, -56)])).rows.map((r) => ({ date: r.day, netSales: Number(r.net) }));
 }
 
+/**
+ * The day's scale: how busy the weekday runs against the busiest one, and for each item tied to a recipe,
+ * how much its dishes sell that weekday against the busiest one (last 8 weeks of sales, traced down the
+ * recipes to the prep). Worked out once per restaurant, date and sales update.
+ */
+const scaleCache = new Map<string, { model: object; scale: DayScale | undefined }>();
+async function dayScale(db: Db, restaurantId: string, date: string): Promise<DayScale | undefined> {
+  const base = dayShare(await recentSales(db, restaurantId, date), weekdayOf(date));
+  if (!base) return undefined;
+  const tied = (await db.query<{ id: string; recipe_name: string }>('SELECT id, recipe_name FROM station_items WHERE restaurant_id = $1 AND active AND recipe_name IS NOT NULL', [restaurantId])).rows;
+  if (!tied.length) return base;
+  const model = await getModel(db, restaurantId, new Date().toISOString().slice(0, 10));
+  const key = `${restaurantId}|${date}|${tied.map((t) => `${t.id}:${t.recipe_name}`).join(',')}`;
+  const hit = scaleCache.get(key);
+  if (hit && hit.model === model) return hit.scale;
+  const from = addDays(date, -56);
+  const byName = new Map(model.recipes.map((r) => [r.name.toLowerCase(), r.id]));
+  const wanted = new Set(tied.map((t) => byName.get(t.recipe_name.toLowerCase())).filter((x): x is string => Boolean(x)));
+  // Per portion of each dish sold: how much of each wanted prep recipe it takes.
+  const perPortion = new Map<string, Map<string, number>>();
+  const portionOf = (recipeId: string, portion?: { amount: number; unit: string }) => {
+    const k = `${recipeId}|${portion ? `${portion.amount}${portion.unit}` : ''}`;
+    let m = perPortion.get(k);
+    if (!m) {
+      const r = model.book.recipes.get(recipeId);
+      const q = portion ?? r?.yield ?? { amount: 1, unit: 'each' };
+      const u = model.book.explode({ kind: 'recipe', id: recipeId }, q);
+      m = new Map([...u.recipes].filter(([id]) => wanted.has(id) && id !== recipeId));
+      perPortion.set(k, m);
+    }
+    return m;
+  };
+  const open = new Set<string>();
+  const use = new Map<string, Map<string, number>>(); // prep recipe → date → amount
+  const fromDish = new Map<string, Map<string, number>>(); // prep recipe → dish → amount
+  for (const l of model.sales) {
+    if (!l.date || l.date < from || l.date >= date || !(l.quantity > 0)) continue;
+    open.add(l.date);
+    const link = model.lookup(l.catalogId, l.name, l.date);
+    if (!link) continue;
+    for (const [prepId, per] of portionOf(link.recipeId, link.portion)) {
+      const amt = per * l.quantity;
+      const d = use.get(prepId) ?? new Map<string, number>();
+      d.set(l.date, (d.get(l.date) ?? 0) + amt);
+      use.set(prepId, d);
+      const name = model.book.recipes.get(link.recipeId)?.name ?? l.name;
+      const f = fromDish.get(prepId) ?? new Map<string, number>();
+      f.set(name, (f.get(name) ?? 0) + amt);
+      fromDish.set(prepId, f);
+    }
+  }
+  const openDates = [...open];
+  const items = new Map<string, ItemScale>();
+  for (const t of tied) {
+    const id = byName.get(t.recipe_name.toLowerCase());
+    const byDate = id ? use.get(id) : undefined;
+    if (!id || !byDate) continue;
+    const share = itemDayShare(byDate, openDates, weekdayOf(date), base.busiest);
+    if (share === undefined) continue;
+    const dishes = [...(fromDish.get(id) ?? new Map<string, number>())].sort((a, b) => b[1] - a[1]);
+    const total = dishes.reduce((a, [, v]) => a + v, 0);
+    // The dishes that drive it: the top one, and a second when it's a real part.
+    const named = dishes.filter(([, v], i) => i === 0 || (i === 1 && v >= total * 0.25)).map(([n]) => n);
+    items.set(t.id, { share: Math.round(share * 1000) / 1000, dishes: dishes.length > 2 || (dishes.length === 2 && named.length === 1) ? [...named.slice(0, -1), `${named[named.length - 1]}${named.length === 1 ? ' and other dishes' : ''}`] : named });
+  }
+  const scale: DayScale = { ...base, items };
+  scaleCache.set(key, { model, scale });
+  if (scaleCache.size > 200) scaleCache.delete(scaleCache.keys().next().value!);
+  return scale;
+}
+
 /** What each item on a station will be made for a date: the chef's number, else the suggestion. */
-async function stationToMake(db: Db, restaurantId: string, stationId: string, date: string, share: ReturnType<typeof dayShare>) {
+async function stationToMake(db: Db, restaurantId: string, stationId: string, date: string, share: DayScale | undefined) {
   const list = (await db.query<{ id: string }>('SELECT id FROM prep_lists WHERE restaurant_id = $1 AND station_id = $2 AND for_date = $3', [restaurantId, stationId, date])).rows[0];
   const lines = list ? (await db.query<{ item_id: string; counted: string | null; to_make: string | null }>('SELECT item_id, counted, to_make FROM prep_list_lines WHERE list_id = $1', [list.id])).rows : [];
   const counts = new Map(lines.filter((l) => l.counted !== null).map((l) => [l.item_id, Number(l.counted)]));
@@ -109,7 +180,7 @@ async function bulkOnHand(db: Db, restaurantId: string, ids: string[]): Promise<
 }
 
 /** For each bulk item on a station: what the stations it fills will draw, as a batch suggestion. */
-async function bulkSuggestions(db: Db, restaurantId: string, batchItems: Item[], date: string, share: ReturnType<typeof dayShare>, onHand: Map<string, BulkOnHand>) {
+async function bulkSuggestions(db: Db, restaurantId: string, batchItems: Item[], date: string, share: DayScale | undefined, onHand: Map<string, BulkOnHand>) {
   const out = new Map<string, ReturnType<typeof batchSuggestion>>();
   if (!batchItems.length) return out;
   const linked = (await db.query<ItemRow & { station_id: string; station_name: string }>(
@@ -169,7 +240,7 @@ export async function view(db: Db, who: SignedIn, stationId: string, date: strin
        FROM prep_list_lines l LEFT JOIN staff d ON d.id = l.done_by LEFT JOIN staff s ON s.id = l.started_by WHERE l.list_id = $1`, [list.id])).rows;
   const byItem = new Map(lines.map((l) => [l.item_id, l]));
   const counts = new Map(lines.filter((l) => l.counted !== null).map((l) => [l.item_id, Number(l.counted)]));
-  const share = dayShare(await recentSales(db, who.restaurantId, date), weekdayOf(date));
+  const share = await dayScale(db, who.restaurantId, date);
   const day = dayLines(all, date, share, counts);
   const batchItems = all.filter((i) => i.kind === 'batch');
   const onHand = await bulkOnHand(db, who.restaurantId, batchItems.map((b) => b.id));
@@ -217,6 +288,7 @@ export async function view(db: Db, who: SignedIn, stationId: string, date: strin
         ...(d.reason && d.suggested === undefined ? { reason: d.reason } : {}),
         ...d.item,
         ...(d.dayPar !== undefined ? { dayPar: d.dayPar } : {}),
+        ...(d.parWhy && !b ? { parWhy: d.parWhy } : {}),
         ...(l?.counted !== null && l?.counted !== undefined ? { counted: Number(l.counted) } : {}),
         ...(d.suggested !== undefined ? { suggested: d.suggested, reason: d.reason } : {}),
         ...(chosen !== undefined ? { chosen } : {}),

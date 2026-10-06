@@ -814,3 +814,11 @@ button.donut-row { display: flex; min-width: 0; }
 .unit-row input.amount { width: 70px; }
 @container main (max-width: 700px) { .unit-row { grid-template-columns: 1fr 1fr; } }
 .review-weight { min-width: 64px; text-align: right; }
+
+/* The chef's ? : the reasoning behind a number. */
+.why-wrap { position: relative; display: inline-block; margin-left: 6px; vertical-align: middle; }
+.why { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--muted); background: transparent; font-size: 12px; font-weight: 700; line-height: 20px; padding: 0; color: inherit; cursor: pointer; }
+.why-wrap.open .why { background: var(--ink); color: var(--card); border-color: var(--ink); }
+.why-pop { display: none; position: absolute; left: -8px; top: 30px; z-index: 30; width: min(320px, 70vw); padding: 10px 12px; background: var(--card); color: var(--ink); border: 1px solid var(--line); box-shadow: 0 6px 18px rgba(0,0,0,.12); font-size: 13px; line-height: 1.4; font-weight: 400; text-align: left; white-space: normal; }
+.why-wrap.open .why-pop { display: block; }
+@media (hover: hover) { .why-wrap:hover .why-pop { display: block; } }
