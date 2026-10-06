@@ -355,26 +355,19 @@ function presetRanges() {
  */
 function perfToolbar(me, state, m, current, again, mode) {
   const same = (a, b) => (!a && !b) || (a && b && a.from === b.from && a.to === b.to);
-  const fromInput = h('input', { type: 'date', value: m.from, min: m.dataFrom, max: iso(new Date()), 'aria-label': 'From' });
-  const toInput = h('input', { type: 'date', value: m.to, min: m.dataFrom, max: iso(new Date()), 'aria-label': 'To' });
   const names = [...m.categories.map((c) => c.name), ...(m.salesOnly ?? []).map((c) => c.name)];
-  const chip = (text, on, go) => h('button', { class: `chip${on ? ' on' : ''}`, 'aria-pressed': String(on), text, onclick: go });
-  return h('section', { class: 'card toolbar' },
-    h('div', { class: 'tool-row' }, h('span', { class: 'tool-label', text: 'Category' }),
-      h('div', { class: 'chips', role: 'group', 'aria-label': 'Category' }, names.map((n) => chip(n, n === current, () => again({ category: n })))),
-      mode ? h('div', { class: 'seg tool-end', role: 'group', 'aria-label': 'Table or charts' },
-        [['Table', mode !== 'charts', 'table'], ['Charts', mode === 'charts', 'charts']].map(([t, on, k]) => h('button', { class: on ? 'on' : '', 'aria-pressed': String(on), text: t, onclick: () => again({ mode: k }) }))) : null),
-    (() => {
-      // Custom dates open in place of the chips' last slot; a period that isn't a preset shows them open.
-      const custom = Boolean(state.range) && !presetRanges().some(([, r]) => same(r, state.range));
-      const dates = h('div', { class: 'row tight dates-inline' }, fromInput, h('span', { class: 'small muted', text: 'to' }), toInput,
-        h('button', { class: 'btn small-btn', text: 'Show', onclick: () => fromInput.value && toInput.value && marginsScreen(me, { ...state, range: { from: fromInput.value, to: toInput.value } }) }));
-      dates.hidden = !custom;
-      const open = chip('Custom dates', custom, () => { dates.hidden = !dates.hidden; open.classList.toggle('on', !dates.hidden); if (!dates.hidden) fromInput.focus(); });
-      return h('div', { class: 'tool-row' }, h('span', { class: 'tool-label', text: 'Period' }),
-        h('div', { class: 'chips', role: 'group', 'aria-label': 'Period' }, presetRanges().map(([label, r]) => chip(label, same(r, state.range), () => marginsScreen(me, { ...state, range: r }))), open),
-        dates);
-    })());
+  const seg = (label, options, cls = '') => h('div', { class: `seg ${cls}`, role: 'group', 'aria-label': label },
+    options.map(([text, on, go]) => h('button', { class: on ? 'on' : '', 'aria-pressed': String(on), text, onclick: go })));
+  // The presets as the period dropdown wants them: a key, a label, and the dates (90 days is the default, no dates).
+  const presets = presetRanges().map(([label, r]) => [label, label, r ?? { from: m.from, to: m.to }]);
+  const chosen = presetRanges().find(([, r]) => same(r, state.range));
+  return h('section', { class: 'card toolbar one-row' },
+    names.length > 1 ? seg('Category', names.map((n) => [n, n === current, () => again({ category: n })]), 'wrap-seg') : null,
+    periodPicker(presets, chosen ? chosen[0] : 'custom', { from: m.from, to: m.to }, (key, r) => {
+      const preset = presetRanges().find(([label]) => label === key);
+      marginsScreen(me, { ...state, range: key === 'custom' ? r : preset?.[1] ?? null });
+    }),
+    mode ? h('div', { class: 'tool-end' }, seg('Table or charts', [['Table', mode !== 'charts', () => again({ mode: 'table' })], ['Charts', mode === 'charts', () => again({ mode: 'charts' })]])) : null);
 }
 
 /**
@@ -2056,23 +2049,28 @@ const pct0 = (v) => (v === undefined || v === null ? '–' : `${(v * 100).toFixe
 
 async function reportsScreen(me, state = {}) {
   const presets = reportPresets();
-  state = { report: 'sales', preset: 'two', compare: 'previous', ...state };
+  state = { report: 'sales', preset: 'two', compare: 'previous', sorts: {}, ...state };
   const range = state.range ?? presets.find(([k]) => k === state.preset)?.[2] ?? presets[1][2];
   loadingScreen(me, 'reports', 'Reports');
-  const side = sideOf(me);
-  const path = state.report === 'menu' ? `/api/reports/menu?area=${side}&` : '/api/reports/sales?';
+  const path = state.report === 'menu' ? `/api/reports/menu?area=${sideOf(me)}&` : '/api/reports/sales?';
   const r = await api('GET', `${path}from=${range.from}&to=${range.to}`);
+  if (!r.ok) return show(shell(me, 'reports', [h('header', {}, h('h1', { text: 'Reports' })), reportToolbar(me, state, range, presets, (c) => reportsScreen(me, { ...state, ...c })), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  renderReports(me, state, r.data, presets, range);
+}
+
+/** Draws a report already loaded: sorting a column redraws it without asking the server again. */
+function renderReports(me, state, d, presets, range) {
   const again = (changes) => reportsScreen(me, { ...state, ...changes });
-  if (!r.ok) return show(shell(me, 'reports', [h('header', {}, h('h1', { text: 'Reports' })), reportToolbar(me, state, range, presets, again), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
-  const d = r.data;
+  const sortBy = (table) => ({ sort: state.sorts[table], onSort: (sort) => renderReports(me, { ...state, sorts: { ...state.sorts, [table]: sort } }, d, presets, range) });
+  const side = sideOf(me);
   const lastYear = state.compare === 'lastYear';
   const base = lastYear ? d.lastYear : d.previous;
   const has = lastYear ? d.hasLastYear : d.hasPrevious;
   const header = h('header', { class: 'row wrap' },
     h('div', { class: 'grow' },
-      h('div', { class: 'kicker', text: `${shortDate(d.from)} – ${shortDate(d.to)} · ${has ? `against ${lastYear ? 'last year' : 'the period before'}, ${shortDate(base.from)} – ${shortDate(base.to)}` : `nothing to set it against yet`}` }),
+      h('div', { class: 'kicker', text: `${shortDate(d.from)} – ${shortDate(d.to)} · ${has ? `against ${lastYear ? 'last year' : 'the period before'}, ${shortDate(base.from)} – ${shortDate(base.to)}` : 'nothing to set it against yet'}` }),
       h('h1', { text: state.report === 'menu' ? `Menu items · ${AREA_NAMES[side]}` : 'Team and sales' }),
-      h('div', { class: 'sub', text: state.report === 'menu' ? 'Every item, ranked within its category, by how it was ordered. Specials are judged by what they sold a day while they were on.' : 'How the money came in, each server on table orders, and every table. Automatic gratuity counts as tips, not sales.' })),
+      h('div', { class: 'sub', text: state.report === 'menu' ? 'Every item, ranked within its category, by how it was ordered. Specials are judged by what they sold a day while they were on. Click a column title to sort.' : 'How the money came in, each server on table orders, and every table. Automatic gratuity counts as tips, not sales. Click a column title to sort.' })),
     h('button', { class: 'btn', text: 'Print', onclick: () => window.print() }));
   const toolbar = reportToolbar(me, state, range, presets, again);
   if (!d.dataFrom) {
@@ -2081,75 +2079,113 @@ async function reportsScreen(me, state = {}) {
       h('div', {}, h('button', { class: 'btn', text: 'Settings', onclick: () => home(me) }))), null)]));
   }
   const early = d.from < d.dataFrom ? h('div', { class: 'note', text: `Orders are kept from ${shortDate(d.dataFrom)}, so this period starts there.` }) : null;
-  if (state.report === 'menu') return show(shell(me, 'reports', [header, toolbar, menuReportView(me, d, lastYear, has, early)]));
-  show(shell(me, 'reports', [header, toolbar, salesReportView(d, lastYear ? d.lastYearReport : d.before, lastYear, early)]));
+  const view = state.report === 'menu' ? menuReportView(d, lastYear, has, early, sortBy) : salesReportView(d, lastYear ? d.lastYearReport : d.before, lastYear, early, sortBy);
+  show(shell(me, 'reports', [header, toolbar, view]));
 }
 
+/**
+ * A table whose column titles sort it. columns: { key, label, num?, value?(row), cell(row, i), first? };
+ * a column with no value doesn't sort. Rows with nothing to sort by stay at the bottom either way.
+ */
+function sortableRows(cls, columns, rows, { sort, onSort }, fallback) {
+  const current = sort ?? fallback;
+  const col = columns.find((c) => c.key === current.key && c.value) ?? columns.find((c) => c.key === fallback.key);
+  const dir = current.dir === 'asc' ? 1 : -1;
+  const sorted = [...rows].sort((a, b) => {
+    const x = col.value(a), y = col.value(b);
+    const nx = x === undefined || x === null || Number.isNaN(x), ny = y === undefined || y === null || Number.isNaN(y);
+    if (nx || ny) return nx && ny ? 0 : nx ? 1 : -1;
+    return (typeof x === 'string' ? x.localeCompare(y, undefined, { numeric: true }) : x - y) * dir;
+  });
+  const head = h('div', { class: `rrow head ${cls}`, role: 'row' }, columns.map((c) => {
+    if (!c.value) return h('div', { class: c.num ? 'num' : '', text: c.label });
+    const on = c.key === col.key;
+    return h('button', { class: `sort${on ? ' on' : ''}${c.num ? ' num' : ''}`, 'aria-sort': on ? (dir === 1 ? 'ascending' : 'descending') : 'none',
+      onclick: () => onSort({ key: c.key, dir: on ? (dir === 1 ? 'desc' : 'asc') : c.first ?? (c.num ? 'desc' : 'asc') }) }, c.label, h('span', { class: 'arrow', text: on ? (dir === 1 ? ' ▲' : ' ▼') : '' }));
+  }));
+  return [head, sorted.map((r, i) => h('div', { class: `rrow ${cls}` }, columns.map((c) => c.cell(r, i))))];
+}
+
+/** One row of filters: which report, which period (custom dates open in place), against what. */
 function reportToolbar(me, state, range, presets, again) {
-  const chip = (text, on, go) => h('button', { class: `chip${on ? ' on' : ''}`, 'aria-pressed': String(on), text, onclick: go });
+  const seg = (label, options) => h('div', { class: 'seg', role: 'group', 'aria-label': label },
+    options.map(([text, on, go]) => h('button', { class: on ? 'on' : '', 'aria-pressed': String(on), text, onclick: go })));
   const custom = Boolean(state.range);
+  return h('section', { class: 'card toolbar one-row' },
+    seg('Report', [['Team and sales', state.report === 'sales', () => again({ report: 'sales' })], ['Menu items', state.report === 'menu', () => again({ report: 'menu' })]]),
+    periodPicker(presets, custom ? 'custom' : state.preset, range, (key, r) => again(key === 'custom' ? { range: r, preset: undefined } : { preset: key, range: undefined })),
+    h('div', { class: 'tool-field' }, h('span', { class: 'tool-label', text: 'Against' }),
+      seg('Against', [['Period before', !lastYearOf(state), () => again({ compare: 'previous' })], ['Last year', lastYearOf(state), () => again({ compare: 'lastYear' })]])),
+    state.report === 'menu' ? h('div', { class: 'tool-end' }, sideSwitch(me, () => again({}))) : null);
+}
+const lastYearOf = (state) => state.compare === 'lastYear';
+
+/** A period dropdown: the presets with their dates, and custom dates that open beside it. */
+function periodPicker(presets, current, range, pick) {
   const fromInput = h('input', { type: 'date', value: range.from, max: iso(new Date()), 'aria-label': 'From' });
   const toInput = h('input', { type: 'date', value: range.to, max: iso(new Date()), 'aria-label': 'To' });
   const dates = h('div', { class: 'row tight dates-inline' }, fromInput, h('span', { class: 'small muted', text: 'to' }), toInput,
-    h('button', { class: 'btn small-btn', text: 'Show', onclick: () => fromInput.value && toInput.value && fromInput.value <= toInput.value && again({ range: { from: fromInput.value, to: toInput.value }, preset: undefined }) }));
-  dates.hidden = !custom;
-  const open = chip('Custom dates', custom, () => { dates.hidden = !dates.hidden; open.classList.toggle('on', !dates.hidden); });
-  const seg = (label, options) => h('div', { class: 'seg tool-end', role: 'group', 'aria-label': label },
-    options.map(([text, on, go]) => h('button', { class: on ? 'on' : '', 'aria-pressed': String(on), text, onclick: go })));
-  return h('section', { class: 'card toolbar' },
-    h('div', { class: 'tool-row' }, h('span', { class: 'tool-label', text: 'Report' }),
-      h('div', { class: 'chips' }, chip('Team and sales', state.report === 'sales', () => again({ report: 'sales' })), chip('Menu items', state.report === 'menu', () => again({ report: 'menu' }))),
-      state.report === 'menu' ? h('div', { class: 'tool-end' }, sideSwitch(me, () => again({}))) : null),
-    h('div', { class: 'tool-row' }, h('span', { class: 'tool-label', text: 'Period' }),
-      h('div', { class: 'chips' }, presets.map(([k, label]) => chip(label, !custom && state.preset === k, () => again({ preset: k, range: undefined }))), open), dates),
-    h('div', { class: 'tool-row' }, h('span', { class: 'tool-label', text: 'Against' }),
-      h('div', { class: 'chips' }, chip('The period before', state.compare !== 'lastYear', () => again({ compare: 'previous' })), chip('Same weeks last year', state.compare === 'lastYear', () => again({ compare: 'lastYear' })))));
+    h('button', { class: 'btn small-btn', text: 'Show', onclick: () => fromInput.value && toInput.value && fromInput.value <= toInput.value && pick('custom', { from: fromInput.value, to: toInput.value }) }));
+  dates.hidden = current !== 'custom';
+  const span = (r) => (r ? ` · ${shortDate(r.from)} – ${shortDate(r.to)}` : '');
+  const select = h('select', { class: 'tool-select', 'aria-label': 'Period' },
+    presets.map(([k, label, r]) => h('option', { value: k, text: `${label}${span(r)}`, selected: k === current ? true : undefined })),
+    h('option', { value: 'custom', text: current === 'custom' ? `Custom${span(range)}` : 'Custom dates…', selected: current === 'custom' ? true : undefined }));
+  select.addEventListener('change', () => {
+    if (select.value === 'custom') { dates.hidden = false; fromInput.focus(); return; }
+    pick(select.value);
+  });
+  return h('div', { class: 'tool-field' }, h('span', { class: 'tool-label', text: 'Period' }), select, dates);
 }
 
 const WEEKDAYS_LONG = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
+/** The change against the comparison, as a number to sort by (undefined when there's nothing to compare). */
+const changeOf = (now, then, points) => (now === undefined || now === null || then === undefined || then === null || (!points && !then) ? undefined : points ? now - then : now / then - 1);
 
-function salesReportView(d, then, lastYear, early) {
+function salesReportView(d, then, lastYear, early, sortBy) {
   const c = d.current;
   const word = lastYear ? 'last year' : 'the period before';
+  const vsLabel = lastYear ? 'vs last year' : 'vs before';
+  const bar = (v, max) => { const b = h('span', { class: 'hbar-track' }, h('span', { class: 'hbar-fill' })); b.firstChild.style.width = `${(v / max) * 100}%`; return b; };
   // How the money came in.
   const maxType = Math.max(...c.byType.map((t) => t.sales), 1);
+  const wasType = (t) => then?.byType.find((x) => x.type === t.type);
   const types = h('section', { class: 'card' }, h('h2', { text: 'How the money came in' }),
-    h('div', { class: 'rtable' },
-      h('div', { class: 'rrow head types' }, h('div', { text: 'Order type' }), h('div', { class: 'num', text: 'Sales' }), h('div', { text: 'Share' }), h('div', { class: 'num', text: 'Orders' }), h('div', { class: 'num', text: 'Average' }), h('div', { class: 'num', text: `vs ${word}` })),
-      c.byType.map((t) => {
-        const was = then?.byType.find((x) => x.type === t.type);
-        const bar = h('span', { class: 'hbar-track' }, h('span', { class: 'hbar-fill' })); bar.firstChild.style.width = `${(t.sales / maxType) * 100}%`;
-        return h('div', { class: 'rrow types' }, h('div', { class: 'strong', text: t.name }), h('div', { class: 'num', text: dollars(t.sales, { exact: true }) }),
-          h('div', { class: 'row tight' }, bar, h('span', { class: 'small muted', text: `${Math.round(t.share * 100)}%` })),
-          h('div', { class: 'num', text: t.orders.toLocaleString() }), h('div', { class: 'num', text: dollars(t.average ?? 0, { cents: true }) }), h('div', { class: 'num' }, versusCell(t.sales, was?.sales)));
-      })),
+    h('div', { class: 'rtable' }, sortableRows('types', [
+      { key: 'name', label: 'Order type', value: (t) => t.name, cell: (t) => h('div', { class: 'strong', text: t.name }) },
+      { key: 'sales', label: 'Sales', num: true, value: (t) => t.sales, cell: (t) => h('div', { class: 'num', text: dollars(t.sales, { exact: true }) }) },
+      { key: 'share', label: 'Share', value: (t) => t.share, first: 'desc', cell: (t) => h('div', { class: 'row tight' }, bar(t.sales, maxType), h('span', { class: 'small muted', text: `${Math.round(t.share * 100)}%` })) },
+      { key: 'orders', label: 'Orders', num: true, value: (t) => t.orders, cell: (t) => h('div', { class: 'num', text: t.orders.toLocaleString() }) },
+      { key: 'average', label: 'Average', num: true, value: (t) => t.average, cell: (t) => h('div', { class: 'num', text: dollars(t.average ?? 0, { cents: true }) }) },
+      { key: 'vs', label: vsLabel, num: true, value: (t) => changeOf(t.sales, wasType(t)?.sales), cell: (t) => h('div', { class: 'num' }, versusCell(t.sales, wasType(t)?.sales)) },
+    ], c.byType, sortBy('types'), { key: 'sales', dir: 'desc' })),
     h('div', { class: 'small muted', text: 'Table orders have a table; register orders without one are to go, however they were rung; online is Square Online.' }));
   // Servers: table orders only.
+  const wasServer = (sv) => then?.servers.find((x) => x.name === sv.name);
   const servers = h('section', { class: 'card' }, h('h2', { text: 'Servers' }),
-    h('div', { class: 'small muted', text: `Table orders only. Tip rate includes automatic gratuity. Wine is set against covers${c.wineDaysLeftOut.length ? `, leaving out ${c.wineDaysLeftOut.map((w) => WEEKDAYS_LONG[w]).join(' and ')} (wine is discounted)` : ''}.` }),
-    h('div', { class: 'rtable' },
-      h('div', { class: 'rrow head servers' }, h('div', { text: 'Server' }), h('div', { class: 'num', text: 'Covers' }), h('div', { class: 'num', text: 'Sales' }), h('div', { class: 'num', text: 'Cover rate' }), h('div', { class: 'num', text: 'Tip rate' }), h('div', { class: 'num', text: 'Wine: glass | bottle' }), h('div', { class: 'num', text: 'Wine per cover' })),
-      c.servers.map((sv) => {
-        const was = then?.servers.find((x) => x.name === sv.name);
-        return h('div', { class: 'rrow servers' }, h('div', { class: 'strong', text: sv.name }),
-          h('div', { class: 'num', text: sv.covers.toLocaleString() }), h('div', { class: 'num', text: dollars(sv.sales, { exact: true }) }),
-          h('div', { class: 'num' }, h('div', { text: dollars(sv.coverRate ?? 0, { cents: true }) }), versusCell(sv.coverRate, was?.coverRate)),
-          h('div', { class: 'num' }, h('div', { text: pct0(sv.tipRate) }), versusCell(sv.tipRate, was?.tipRate, { points: true })),
-          h('div', { class: 'num small', text: `${dollars(sv.wineGlass, { exact: true })} | ${dollars(sv.wineBottle, { exact: true })}` }),
-          h('div', { class: 'num' }, h('div', { text: sv.winePerCover !== undefined ? dollars(sv.winePerCover, { cents: true }) : '–' }), versusCell(sv.winePerCover, was?.winePerCover)));
-      })));
+    h('div', { class: 'small muted', text: `Table orders only. Tip rate includes automatic gratuity. Wine is set against covers${c.wineDaysLeftOut.length ? `, leaving out ${c.wineDaysLeftOut.map((w) => WEEKDAYS_LONG[w]).join(' and ')} (wine is discounted)` : ''}. The small line under a rate is its change ${vsLabel.replace('vs ', 'against ')}.` }),
+    h('div', { class: 'rtable' }, sortableRows('servers', [
+      { key: 'name', label: 'Server', value: (sv) => sv.name, cell: (sv) => h('div', { class: 'strong', text: sv.name }) },
+      { key: 'covers', label: 'Covers', num: true, value: (sv) => sv.covers, cell: (sv) => h('div', { class: 'num', text: sv.covers.toLocaleString() }) },
+      { key: 'sales', label: 'Sales', num: true, value: (sv) => sv.sales, cell: (sv) => h('div', { class: 'num', text: dollars(sv.sales, { exact: true }) }) },
+      { key: 'coverRate', label: 'Cover rate', num: true, value: (sv) => sv.coverRate, cell: (sv) => h('div', { class: 'num' }, h('div', { text: dollars(sv.coverRate ?? 0, { cents: true }) }), versusCell(sv.coverRate, wasServer(sv)?.coverRate)) },
+      { key: 'tipRate', label: 'Tip rate', num: true, value: (sv) => sv.tipRate, cell: (sv) => h('div', { class: 'num' }, h('div', { text: pct0(sv.tipRate) }), versusCell(sv.tipRate, wasServer(sv)?.tipRate, { points: true })) },
+      { key: 'wine', label: 'Wine: glass | bottle', num: true, value: (sv) => sv.wine, cell: (sv) => h('div', { class: 'num small', text: `${dollars(sv.wineGlass, { exact: true })} | ${dollars(sv.wineBottle, { exact: true })}` }) },
+      { key: 'winePerCover', label: 'Wine per cover', num: true, value: (sv) => sv.winePerCover, cell: (sv) => h('div', { class: 'num' }, h('div', { text: sv.winePerCover !== undefined ? dollars(sv.winePerCover, { cents: true }) : '–' }), versusCell(sv.winePerCover, wasServer(sv)?.winePerCover)) },
+    ], c.servers, sortBy('servers'), { key: 'sales', dir: 'desc' })));
   // Tables.
   const maxTable = Math.max(...c.tables.map((t) => t.sales), 1);
+  const wasTable = (t) => then?.tables.find((x) => x.table === t.table);
   const tables = h('section', { class: 'card' }, h('h2', { text: 'Tables' }),
-    h('div', { class: 'rtable' },
-      h('div', { class: 'rrow head tables' }, h('div', { text: 'Table' }), h('div', { class: 'num', text: 'Turns' }), h('div', { class: 'num', text: 'Covers' }), h('div', { class: 'num', text: 'Per turn' }), h('div', { text: 'Sales' }), h('div', { class: 'num', text: 'Cover rate' }), h('div', { class: 'num', text: `vs ${word}` })),
-      c.tables.map((t) => {
-        const was = then?.tables.find((x) => x.table === t.table);
-        const bar = h('span', { class: 'hbar-track' }, h('span', { class: 'hbar-fill' })); bar.firstChild.style.width = `${(t.sales / maxTable) * 100}%`;
-        return h('div', { class: 'rrow tables' }, h('div', { class: 'strong', text: t.table }), h('div', { class: 'num', text: String(t.turns) }), h('div', { class: 'num', text: String(t.covers) }),
-          h('div', { class: 'num', text: t.coversPerTurn ?? '–' }), h('div', { class: 'row tight' }, bar, h('span', { class: 'small', text: dollars(t.sales, { exact: true }) })),
-          h('div', { class: 'num', text: t.coverRate !== undefined ? dollars(t.coverRate, { cents: true }) : '–' }), h('div', { class: 'num' }, versusCell(t.sales, was?.sales)));
-      })),
+    h('div', { class: 'rtable' }, sortableRows('tables', [
+      { key: 'table', label: 'Table', value: (t) => t.table, cell: (t) => h('div', { class: 'strong', text: t.table }) },
+      { key: 'turns', label: 'Turns', num: true, value: (t) => t.turns, cell: (t) => h('div', { class: 'num', text: String(t.turns) }) },
+      { key: 'covers', label: 'Covers', num: true, value: (t) => t.covers, cell: (t) => h('div', { class: 'num', text: String(t.covers) }) },
+      { key: 'perTurn', label: 'Per turn', num: true, value: (t) => t.coversPerTurn, cell: (t) => h('div', { class: 'num', text: t.coversPerTurn ?? '–' }) },
+      { key: 'sales', label: 'Sales', value: (t) => t.sales, first: 'desc', cell: (t) => h('div', { class: 'row tight' }, bar(t.sales, maxTable), h('span', { class: 'small', text: dollars(t.sales, { exact: true }) })) },
+      { key: 'coverRate', label: 'Cover rate', num: true, value: (t) => t.coverRate, cell: (t) => h('div', { class: 'num', text: t.coverRate !== undefined ? dollars(t.coverRate, { cents: true }) : '–' }) },
+      { key: 'vs', label: vsLabel, num: true, value: (t) => changeOf(t.sales, wasTable(t)?.sales), cell: (t) => h('div', { class: 'num' }, versusCell(t.sales, wasTable(t)?.sales)) },
+    ], c.tables, sortBy('tables'), { key: 'table', dir: 'asc' })),
     h('div', { class: 'small muted', text: 'A turn is one order at the table. Tables pushed together are rung under one of them.' }));
   // The right column: the headline numbers, and how the money came in as a share.
   const stat = (title, value, now, thenV, opts) => statBox(title, value, h('div', { class: 'row tight' }, versusCell(now, thenV, opts), h('span', { class: 'small muted', text: then ? `vs ${word}` : '' })));
@@ -2164,31 +2200,32 @@ function salesReportView(d, then, lastYear, early) {
   return h('div', { class: 'report-print' }, page([early, types, servers, tables], side, { label: 'Summary' }));
 }
 
-function menuReportView(me, d, lastYear, has, early) {
+function menuReportView(d, lastYear, has, early, sortBy) {
   const word = lastYear ? 'last year' : 'the period before';
+  const ch = (i) => (lastYear ? i.lastYearChange : i.change);
   const cards = d.categories.map((cat) => {
     const maxQ = Math.max(...cat.items.map((i) => i.quantity), 1);
+    const rank = new Map(cat.items.map((it, n) => [it, n + 1])); // by sales, whatever the sort
     return h('section', { class: 'card' },
       h('div', { class: 'row' }, h('h2', { class: 'grow', text: cat.name }), h('span', { class: 'small muted', text: `${dollars(cat.sales, { exact: true })} · ${cat.items.length} items` })),
-      h('div', { class: 'rtable' },
-        h('div', { class: 'rrow head items' }, h('div', { text: '#' }), h('div', { text: 'Item' }), h('div', { text: 'Sold: table | to go | online' }), h('div', { class: 'num', text: 'Per day on' }), h('div', { class: 'num', text: 'Sales' }), h('div', { class: 'num', text: `vs ${word}` })),
-        cat.items.map((it, n) => {
+      h('div', { class: 'rtable' }, sortableRows('items', [
+        { key: 'rank', label: '#', value: (it) => rank.get(it), first: 'asc', cell: (it) => h('div', { class: 'muted', text: String(rank.get(it)) }) },
+        { key: 'name', label: 'Item', value: (it) => it.name, cell: (it) => h('div', {}, h('div', { class: 'strong', text: it.name }), it.daysOn < d.openDays ? h('div', { class: 'small muted', text: `on ${it.daysOn} of ${d.openDays} days` }) : null) },
+        { key: 'sold', label: 'Sold: table | to go | online', value: (it) => it.quantity, first: 'desc', cell: (it) => {
           const mix = h('span', { class: 'mix', title: `Table ${qty(it.byType.table)} · to go ${qty(it.byType.register)} · online ${qty(it.byType.online)}` });
           for (const [k, cls] of [['table', 'mix-table'], ['register', 'mix-togo'], ['online', 'mix-online']]) { const seg = h('span', { class: cls }); seg.style.width = `${(it.byType[k] / maxQ) * 100}%`; mix.append(seg); }
-          const change = lastYear ? it.lastYearChange : it.change;
-          return h('div', { class: 'rrow items' }, h('div', { class: 'muted', text: String(n + 1) }),
-            h('div', {}, h('div', { class: 'strong', text: it.name }), it.daysOn < d.openDays ? h('div', { class: 'small muted', text: `on ${it.daysOn} of ${d.openDays} days` }) : null),
-            h('div', {}, mix, h('div', { class: 'small muted', text: `${qty(it.quantity)} · ${qty(it.byType.table)} | ${qty(it.byType.register)} | ${qty(it.byType.online)}` })),
-            h('div', { class: 'num', text: qty(it.perDay) }), h('div', { class: 'num', text: dollars(it.sales, { exact: true }) }),
-            h('div', { class: 'num' }, change === undefined ? h('span', { class: 'small muted', text: has ? 'new' : '–' }) : versusCell(1 + change, 1, { title: 'Sold per day on, against the comparison' })));
-        })));
+          return h('div', {}, mix, h('div', { class: 'small muted', text: `${qty(it.quantity)} · ${qty(it.byType.table)} | ${qty(it.byType.register)} | ${qty(it.byType.online)}` }));
+        } },
+        { key: 'perDay', label: 'Per day on', num: true, value: (it) => it.perDay, cell: (it) => h('div', { class: 'num', text: qty(it.perDay) }) },
+        { key: 'sales', label: 'Sales', num: true, value: (it) => it.sales, cell: (it) => h('div', { class: 'num', text: dollars(it.sales, { exact: true }) }) },
+        { key: 'vs', label: lastYear ? 'vs last year' : 'vs before', num: true, value: (it) => ch(it), cell: (it) => h('div', { class: 'num' }, ch(it) === undefined ? h('span', { class: 'small muted', text: has ? 'new' : '–' }) : versusCell(1 + ch(it), 1, { title: 'Sold per day on, against the comparison' })) },
+      ], cat.items, sortBy('items'), { key: 'rank', dir: 'asc' })));
   });
   // Right column: categories as a share, the order-type mix, and the biggest movers.
   const all = d.categories.flatMap((c) => c.items);
   const sum = (k) => all.reduce((a, i) => a + i.byType[k], 0);
   const total = sum('table') + sum('register') + sum('online');
-  const movers = all.filter((i) => (lastYear ? i.lastYearChange : i.change) !== undefined && i.perDay >= 1);
-  const ch = (i) => (lastYear ? i.lastYearChange : i.change);
+  const movers = all.filter((i) => ch(i) !== undefined && i.perDay >= 1);
   const up = [...movers].sort((a, b) => ch(b) - ch(a)).filter((i) => ch(i) > 0.05).slice(0, 4);
   const down = [...movers].sort((a, b) => ch(a) - ch(b)).filter((i) => ch(i) < -0.05).slice(0, 4);
   const side = [

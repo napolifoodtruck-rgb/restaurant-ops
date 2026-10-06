@@ -589,3 +589,14 @@ svg.donut .slice:focus { outline: none; stroke: #000; }
   .report-print .page-side { display: grid !important; grid-template-columns: repeat(3, 1fr); }
   .card { break-inside: avoid; }
 }
+
+/* Filters on one row: toggles and a period dropdown */
+.toolbar.one-row { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 10px 20px; padding: 12px 18px; }
+.tool-field { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.one-row .tool-label { width: auto; }
+select.tool-select { height: 40px; max-width: 300px; font-size: 14px; }
+.seg.wrap-seg { flex-wrap: wrap; }
+.rrow.head .sort { background: none; border: 0; padding: 6px 0; text-align: left; font: inherit; font-size: 12px; font-weight: 600; color: var(--muted); cursor: pointer; min-height: 36px; }
+.rrow.head .sort.num { text-align: right; }
+.rrow.head .sort:hover, .rrow.head .sort.on { color: var(--ink); }
+@media (max-width: 700px) { .toolbar.one-row .tool-end { margin-left: 0; } }
