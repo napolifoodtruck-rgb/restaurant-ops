@@ -232,18 +232,21 @@ export function menuView(model: Model, view: AreaView = ALL) {
   const recipeCategory = new Map<string, string>();
   for (const d of model.margins.dishes) recipeCategory.set(d.recipeId, d.category);
   // Show dishes by the name they sell under on the POS, not the recipe card's name.
-  const posNameOf = new Map<string, { name: string; quantity: number }>();
+  const posNameOf = new Map<string, { name: string; quantity: number; catalogId: string }>();
   for (const sp of model.spans) {
     const link = model.lookup(sp.catalogId, sp.name, sp.last);
     if (!link) continue;
     const seen = posNameOf.get(link.recipeId);
-    if (!seen || sp.quantity > seen.quantity) posNameOf.set(link.recipeId, { name: sp.name, quantity: sp.quantity });
+    if (!seen || sp.quantity > seen.quantity) posNameOf.set(link.recipeId, { name: sp.name, quantity: sp.quantity, catalogId: sp.catalogId });
   }
   const shownName = (e: { name: string; recipeId?: string }) => (e.recipeId && posNameOf.get(e.recipeId)?.name) || e.name;
   // "Add a side (…)" buttons are add-ons, listed apart from the dishes.
   const sectionFor = (name: string, section: string) => (/^add\b/i.test(name) ? `${section} add-ons` : section);
 
+  // Square's photo of the dish, when it has one.
+  const imageFor = (e: { recipeId?: string }) => { const c = e.recipeId ? posNameOf.get(e.recipeId)?.catalogId : undefined; const url = c ? model.imageOf(c) : undefined; return url ? { image: url } : {}; };
   const currentAll = onMenu(model.entries, today).map((e) => ({
+    ...imageFor(e),
     name: shownName(e),
     section: sectionFor(shownName(e), (e.recipeId && recipeCategory.get(e.recipeId)) || 'Other'),
     since: e.startsOn,
@@ -251,7 +254,7 @@ export function menuView(model: Model, view: AreaView = ALL) {
   }));
   const baseOf = (section: string) => section.replace(/ add-ons$/, '');
   const current = currentAll.filter((x) => inArea(view, baseOf(x.section)));
-  const cameOff = model.entries.filter((e) => e.endsOn).map((e) => ({ name: shownName(e), section: sectionFor(shownName(e), (e.recipeId && recipeCategory.get(e.recipeId)) || 'Other'), from: e.startsOn, to: e.endsOn!, hasCard: true }))
+  const cameOff = model.entries.filter((e) => e.endsOn).map((e) => ({ ...imageFor(e), name: shownName(e), section: sectionFor(shownName(e), (e.recipeId && recipeCategory.get(e.recipeId)) || 'Other'), from: e.startsOn, to: e.endsOn!, hasCard: true }))
     .filter((x) => inArea(view, baseOf(x.section)));
 
   // Selling with no card: on the menu by name until a card is linked. Recipe-card questions are
@@ -261,7 +264,7 @@ export function menuView(model: Model, view: AreaView = ALL) {
     if (model.lookup(s.catalogId, s.name, s.last)) continue;
     const section = categoryOf.get(s.catalogId) ?? 'Other';
     if (!inArea(view, section) || s.quantity <= 0) continue;
-    const item = { name: s.name, section: sectionFor(s.name, section), hasCard: false, pos: posItem(s.catalogId, s.name) };
+    const item = { name: s.name, section: sectionFor(s.name, section), hasCard: false, pos: posItem(s.catalogId, s.name), ...(model.imageOf(s.catalogId) ? { image: model.imageOf(s.catalogId)! } : {}) };
     if (s.last >= recent) current.push({ ...item, since: s.first });
     else cameOff.push({ ...item, from: s.first, to: s.last });
   }

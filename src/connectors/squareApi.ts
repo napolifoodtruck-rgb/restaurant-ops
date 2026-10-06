@@ -75,7 +75,7 @@ export class SquareApi {
     const out: SquareCatalogObject[] = [];
     let cursor: string | undefined;
     do {
-      const q = new URLSearchParams({ types: 'ITEM,CATEGORY,MODIFIER_LIST' });
+      const q = new URLSearchParams({ types: 'ITEM,CATEGORY,MODIFIER_LIST,IMAGE' });
       if (cursor) q.set('cursor', cursor);
       const data = await this.#request('GET', `/v2/catalog/list?${q}`);
       out.push(...(data.objects ?? []));

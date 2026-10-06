@@ -171,6 +171,8 @@ export interface Model {
   spans: SellingSpan[];
   entries: MenuEntry[];
   checks: MenuCheck[];
+  /** Square's photo for a sold button (item variation id), from the item it belongs to. */
+  imageOf: (catalogId: string) => string | undefined;
 }
 
 const cache = new Map<string, { stamp: string; model: Promise<Model> }>();
@@ -249,6 +251,19 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
   const catalog: SquareCatalogObject[] = catalogRows.map((r) => (typeof r.data === 'string' ? JSON.parse(r.data) : r.data));
   const categoryNames = Object.fromEntries(catalog.filter((o: any) => o.type === 'CATEGORY').map((o: any) => [o.id, o.category_data?.name ?? o.id]));
   const menuItems = squareMenuItems(catalog, categoryNames);
+  // Photos: an item's first image, for the item and each of its variations (a variation's own image first).
+  const imageUrls = new Map(catalog.filter((o: any) => o.type === 'IMAGE' && o.image_data?.url).map((o: any) => [o.id, o.image_data.url as string]));
+  const images = new Map<string, string>();
+  for (const o of catalog as any[]) {
+    if (o.type !== 'ITEM') continue;
+    const itemImage = (o.item_data?.image_ids ?? []).map((id: string) => imageUrls.get(id)).find(Boolean);
+    if (itemImage) images.set(o.id, itemImage);
+    for (const v of o.item_data?.variations ?? []) {
+      const own = (v.item_variation_data?.image_ids ?? []).map((id: string) => imageUrls.get(id)).find(Boolean);
+      if (own ?? itemImage) images.set(v.id, own ?? itemImage);
+    }
+  }
+  const imageOf = (catalogId: string) => images.get(catalogId);
   const itemRows = await storedItemSales(db, restaurantId, from, today);
   const dataFrom = (await db.query<{ day: string | null }>('SELECT min(day)::text AS day FROM pos_item_sales_daily WHERE restaurant_id = $1', [restaurantId])).rows[0]?.day ?? undefined;
   if (!itemRows.length) missing.push('square');
@@ -309,5 +324,5 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     // A dish change already answered: a version on that button starts within a week of the suggested day.
     .filter((c) => !(c.kind === 'dishChanged' && c.catalogId && c.suggestedDate && [...linkAnswers.confirm, ...linkAnswers.newDish].some((v) => v.catalogId === c.catalogId && v.from && Math.abs(Date.parse(v.from) - Date.parse(c.suggestedDate!)) <= 7 * 86_400_000)));
 
-  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks };
+  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf };
 }

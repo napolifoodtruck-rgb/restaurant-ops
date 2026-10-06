@@ -297,9 +297,18 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   const logo = await fetch(base + '/brand/logo');
   assert.deepEqual([logo.status, logo.headers.get('content-type'), Buffer.from(await logo.arrayBuffer()).toString('base64')], [200, 'image/png', png]);
 
+  // Square's photo of a dish shows in the recipe book, from the item its button belongs to.
+  await db!.query(`INSERT INTO pos_catalog (restaurant_id, object_id, type, data) VALUES
+    ($1, 'I-SODA', 'ITEM', '{"type":"ITEM","id":"I-SODA","item_data":{"name":"House Soda","image_ids":["IMG-1"],"variations":[{"type":"ITEM_VARIATION","id":"V-SODA","item_variation_data":{"name":"Regular"}}]}}'),
+    ($1, 'IMG-1', 'IMAGE', '{"type":"IMAGE","id":"IMG-1","image_data":{"url":"https://items-images-production.s3.us-west-2.amazonaws.com/files/x/original.jpeg"}}')`, [restaurantId]);
+  await db!.query("INSERT INTO pos_item_sales_daily (restaurant_id, day, catalog_id, item_name, category, quantity, net_sales) VALUES ($1, current_date - 1, 'V-SODA', 'House Soda', 'Non-Alcoholic Drinks', 3, 12)", [restaurantId]);
+  await db!.query("INSERT INTO sync_runs (restaurant_id, source, status, finished_at) VALUES ($1, 'square', 'ok', now())", [restaurantId]);
+  const sodaPhoto = (await call('GET', '/api/recipes', { cookies: ownerSession })).json.bar.flatMap((s: any) => s.cards).find((c: any) => c.name === 'House Soda');
+  assert.equal(sodaPhoto.image, 'https://items-images-production.s3.us-west-2.amazonaws.com/files/x/original.jpeg');
+
   // The recipe book: anyone can read it, by side and section; costs are for managers.
   const bookForCook = (await call('GET', '/api/recipes', { cookies: marcoOnExpo })).json;
-  assert.deepEqual(bookForCook.bar.map((s: any) => [s.section, s.cards.map((c: any) => c.name)]), [['Drinks', ['House Soda', 'Lemonade']], ['Bar preps', ['Lemon Juice', 'Simple Syrup 1:1']]]);
+  assert.deepEqual(bookForCook.bar.map((s: any) => [s.section, s.cards.map((c: any) => c.name)]), [['Non-Alcoholic Drinks', ['House Soda']], ['Drinks', ['Lemonade']], ['Bar preps', ['Lemon Juice', 'Simple Syrup 1:1']]]);
   const sodaForCook = (await call('GET', '/api/recipes/House%20Soda', { cookies: marcoOnExpo })).json;
   assert.deepEqual([sodaForCook.ingredients[0].card, sodaForCook.cost, sodaForCook.canEdit], ['Simple Syrup 1:1', undefined, false]);
   const syrupScaled = (await call('GET', '/api/recipes/Simple%20Syrup%201%3A1?amount=2&unit=qt', { cookies: marcoOnExpo })).json;

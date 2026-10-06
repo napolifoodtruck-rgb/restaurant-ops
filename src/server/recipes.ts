@@ -53,13 +53,15 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
   };
 
   if (path === '/api/recipes') {
-    const sides: Record<'kitchen' | 'bar', Map<string, { name: string; kind: string; sellsAs?: string }[]>> = { kitchen: new Map(), bar: new Map() };
+    const sides: Record<'kitchen' | 'bar', Map<string, { name: string; kind: string; sellsAs?: string; image?: string }[]>> = { kitchen: new Map(), bar: new Map() };
     for (const c of cards) {
       const side = sideOf(c), section = sectionOf(c);
       const list = sides[side].get(section) ?? [];
       // Shown by the name it sells under when that differs ("Spinachi" for the "Spinachi Pizza" card).
-      const sellsAs = c.view.linked.sort((a, b) => b.sold - a.sold)[0]?.itemName;
-      list.push({ name: c.card.name, kind: c.view.kind, ...(sellsAs && cardKey(sellsAs) !== cardKey(c.card.name) ? { sellsAs } : {}) });
+      const top = c.view.linked.sort((a, b) => b.sold - a.sold)[0];
+      const sellsAs = top?.itemName;
+      const image = c.view.linked.map((l) => model.imageOf(l.catalogId)).find(Boolean);
+      list.push({ name: c.card.name, kind: c.view.kind, ...(sellsAs && cardKey(sellsAs) !== cardKey(c.card.name) ? { sellsAs } : {}), ...(image ? { image } : {}) });
       sides[side].set(section, list);
     }
     // Sections that sell most first, preps last.
@@ -94,6 +96,7 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
       ...(c.card.shelfLifeDays ? { shelfLifeDays: c.card.shelfLifeDays } : {}),
       usedBy: c.view.usedBy,
       sellsAs: [...new Set(c.view.linked.map((l) => l.itemName))],
+      ...(c.view.linked.map((l) => model.imageOf(l.catalogId)).find(Boolean) ? { image: c.view.linked.map((l) => model.imageOf(l.catalogId)).find(Boolean) } : {}),
       ...(manager && c.view.cost !== undefined ? { cost: c.view.cost, complete: c.view.complete } : {}),
       canEdit: manager,
     }), true;

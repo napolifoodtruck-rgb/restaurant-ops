@@ -84,7 +84,7 @@ const WEB_FILES: Record<string, { file: string; type: string }> = {
   '/app.css': { file: 'app.css', type: 'text/css; charset=utf-8' },
 };
 const WEB_DIR = new URL('../../web/', import.meta.url);
-const CSP = "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+const CSP = "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://*.s3.amazonaws.com https://*.s3.us-west-2.amazonaws.com https://*.squarecdn.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 function sameSecret(a: string, b: string): boolean {
   const x = Buffer.from(a), y = Buffer.from(b);

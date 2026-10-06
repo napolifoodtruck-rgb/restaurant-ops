@@ -86,6 +86,14 @@ function stage(...children) {
   return h('div', { class: 'center' }, h('div', { class: 'stage' }, brandMark('stage'), ...children));
 }
 
+/** Square's photo of a dish, square-cropped; nothing when there isn't one. */
+function photo(url, cls = 'thumb') {
+  if (!url) return null;
+  const img = h('img', { class: cls, src: url, alt: '', loading: 'lazy', decoding: 'async' });
+  img.addEventListener('error', () => img.remove());
+  return img;
+}
+
 async function start() {
   if (!BRAND.name) await loadBrand();
   const invite = location.hash.match(/^#invite=([A-Za-z0-9_-]+)$/);
@@ -988,7 +996,7 @@ async function prepImportCard() {
       if (!res.ok) return (err.textContent = res.data.error ?? 'Import failed.');
       box.append(h('div', { class: 'tag ok', text: `Loaded ${res.data.stations} stations, ${res.data.items} items` }));
     } });
-  box.append(h('h2', { text: 'Prep lists' }),
+  fill(box, h('h2', { text: 'Prep lists' }),
     h('div', { class: 'small muted', text: 'Load station prep lists from a prep-lists file. Importing a station again replaces its list (past days stay as they were).' }),
     h('div', { class: 'row' }, h('div', { class: 'grow' }, input), button), err);
   return box;
@@ -1008,7 +1016,7 @@ async function menuScreen(me) {
     const d = (await api('GET', `/api/cards?area=${sideOf(me)}`)).data;
     cardEditor(me, d, null, { name: x.pos?.itemName ?? x.name, kind: sideOf(me) === 'bar' ? 'drink' : 'dish', link: x.pos ? [{ ...x.pos, name: x.name }] : [] });
   };
-  const dishRow = (x, right, flagCard = m.cards) => h('div', {}, h('span', { class: 'grow', text: x.name }),
+  const dishRow = (x, right, flagCard = m.cards) => h('div', {}, photo(x.image, 'thumb small'), h('span', { class: 'grow', text: x.name }),
     x.hasCard || !flagCard ? null : h('button', { class: 'tag warn tag-button', text: 'needs card', title: `Write the card for ${x.name}`, onclick: () => writeCard(x) }),
     h('span', { class: 'small muted nowrap', text: right }));
   const columns = sections.map((s) => h('section', { class: 'card' },
@@ -1123,7 +1131,7 @@ async function comingUpCard(me) {
       h('div', { class: 'small muted', text: `New preps go on the lists from ${shortDate(new Date(Date.parse(plan.startsOn) - 86400000).toISOString().slice(0, 10))}, the day before it starts.` })].filter(Boolean));
     return row;
   });
-  box.append(h('h2', { text: 'Coming up' }),
+  fill(box, h('h2', { text: 'Coming up' }),
     h('div', { class: 'small muted', text: 'Plan a dish before it sells: its preps join the station lists the day before it starts, and the old dish’s own preps come off.' }),
     form, err, planRows.length ? h('div', { class: 'asks' }, planRows) : null);
   return box;
@@ -1149,8 +1157,8 @@ async function recipesScreen(me, state = {}) {
       h('div', { class: 'row wrap' }, search, q ? null : sideSwitch(me, () => recipesScreen(me)))),
     sections.length ? h('div', { class: 'book' }, sections.map((s) => h('section', { class: 'card' },
       h('div', { class: 'row' }, h('h2', { class: 'grow', text: s.section }), h('span', { class: 'small muted', text: String(s.cards.length) })),
-      h('div', { class: 'book-list' }, s.cards.map((c) => h('button', { class: 'book-item', onclick: () => recipePage(me, c.name) },
-        h('span', { text: c.name }))))))
+      h('div', { class: 'book-list' }, s.cards.map((c) => h('button', { class: `book-item${c.image ? ' with-photo' : ''}`, onclick: () => recipePage(me, c.name) },
+        photo(c.image), h('span', { text: c.name }))))))
     ) : h('div', { class: 'card small muted', text: q ? 'No recipe by that name.' : `No ${side === 'bar' ? 'drink' : ''} recipe cards yet.` }),
   ]));
 }
@@ -1204,6 +1212,7 @@ function recipeView(me, r, opts) {
           h('div', { class: 'sub', text: [makes, r.sellsAs.filter((n) => n.toLowerCase() !== r.name.toLowerCase()).length ? `sells as ${r.sellsAs.join(', ')}` : '', r.shelfLifeDays ? `keeps ${r.shelfLifeDays} days` : ''].filter(Boolean).join(' · ') })),
         opts.back ?? null,
         r.canEdit && !opts.sheet ? h('button', { class: 'btn', text: 'Edit card', onclick: async () => { const d = (await api('GET', '/api/cards')).data; const c = d.cards.find((x) => x.name === r.name); if (c) cardEditor(me, d, c); } }) : null),
+      r.image ? photo(r.image, 'hero') : null,
       scaler,
       r.asked && !r.scaledTo && prep ? h('div', { class: 'note', text: `The list says make ${nice(r.asked.amount)} ${UNIT_LABEL(r.asked.unit)}. This card is written in ${UNIT_LABEL(y.unit)}, so it shows one batch.` }) : null,
       h('table', { class: 'ingredients' }, h('tbody', {}, r.ingredients.map((i) => h('tr', {},
