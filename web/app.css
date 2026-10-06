@@ -736,3 +736,34 @@ button.donut-row { display: flex; min-width: 0; }
   .mhead .mright, .mcell.c-last { display: none; }
 }
 .mhead .sort { white-space: nowrap; }
+
+/* Who's signed in: bottom of the left bar, always in view */
+@media (min-width: 701px) { .rail { position: sticky; top: 0; height: 100vh; overflow-y: auto; box-sizing: border-box; } }
+.me { position: relative; width: 100%; display: flex; justify-content: center; }
+.rail .me-chip { width: 92px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0; border: 1px solid #555; background: none; color: #fff; cursor: pointer; font: inherit; }
+.rail .me-chip:hover, .rail .me-chip[aria-expanded="true"] { border-color: #fff; }
+.me-dot { width: 34px; height: 34px; border-radius: 50%; background: #fff; color: #000; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; font-size: 13px; letter-spacing: .04em; flex: none; }
+.me-level { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: #BDBDB8; }
+.me-panel { position: absolute; left: calc(100% + 8px); bottom: 0; width: 250px; background: var(--card); color: var(--ink); border: 1px solid #000; padding: 14px; display: grid; gap: 10px; z-index: 50; box-shadow: 0 6px 24px rgba(0,0,0,.18); }
+.me-panel .me-big { display: flex; gap: 10px; align-items: center; }
+.me-panel .me-dot { background: #000; color: #fff; }
+@media (max-width: 700px) {
+  .rail .spacer { display: none; }
+  .me { width: auto; margin-left: auto; }
+  .rail .me-chip { width: auto; flex-direction: row; padding: 6px 10px; }
+  .me-panel { left: auto; right: 0; bottom: auto; top: calc(100% + 8px); }
+}
+@media (min-width: 701px) { .me-panel { position: fixed; left: 116px; bottom: 16px; } }
+.rail > * { flex: none; }
+.rail > .spacer { flex: 1 1 auto; }
+.rail > .logo { height: auto; }
+.rail .logo img, .rail img.brand-logo { height: auto; max-height: 96px; object-fit: contain; }
+/* Phones: the bar runs across the top and scrolls sideways, so who's signed in sits in the bottom-right corner instead */
+@media (max-width: 700px) {
+  .me { position: fixed; right: 12px; bottom: 12px; z-index: 60; margin: 0; }
+  .rail .me-chip { background: #000; border-color: #000; padding: 6px; border-radius: 999px; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+  .rail .me-chip .me-level { display: none; }
+  .me-panel { position: absolute; right: 0; left: auto; top: auto; bottom: calc(100% + 8px); }
+  main { padding-bottom: 84px; }
+}
+@media (max-width: 700px) { .rail .me-chip { padding: 4px; gap: 0; } }

@@ -337,9 +337,41 @@ function shell(me, active, content) {
       h('div', { class: 'logo' }, brandMark('rail')),
       nav.map(([key, label, go]) => h('button', { class: active === key ? 'on' : '', 'data-key': key, disabled: !go, title: go ? label : 'Coming next', onclick: go ? () => go(me) : undefined }, icon(key), label)),
       h('button', { class: active === 'settings' ? 'on' : '', 'data-key': 'settings', onclick: () => home(me) }, icon('settings'), 'Settings'),
+      h('div', { class: 'spacer' }),
+      whoAmI(me),
     ),
     h('main', {}, content),
   );
+}
+
+const LEVEL_NAMES = { line: 'Line', lead: 'Lead', sous: 'Sous chef', chef: 'Chef', manager: 'Manager', owner: 'Owner' };
+const initialsOf = (name) => (name ?? '?').trim().split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
+/**
+ * Who's signed in, always at the bottom of the left bar: initials and level. Tapping it shows the
+ * rest and Sign out (on a station's iPad, "Switch person": the iPad stays set up for the next cook).
+ */
+function whoAmI(me) {
+  const level = LEVEL_NAMES[me.roleLevel] ?? me.roleLevel;
+  const shared = Boolean(me.device);
+  const panel = h('div', { class: 'me-panel', role: 'dialog', 'aria-label': 'Signed in' });
+  panel.hidden = true;
+  const close = () => { panel.hidden = true; chip.setAttribute('aria-expanded', 'false'); document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', esc); };
+  const outside = (e) => { if (!wrap.contains(e.target)) close(); };
+  const esc = (e) => { if (e.key === 'Escape') { close(); chip.focus(); } };
+  const signOut = h('button', { class: 'btn dark', text: shared ? 'Switch person' : 'Sign out', onclick: async () => { busy(signOut, true); await api('POST', '/api/logout'); start(); } });
+  fill(panel,
+    h('div', { class: 'me-big' }, h('span', { class: 'me-dot', text: initialsOf(me.name) }), h('div', {}, h('div', { class: 'strong', text: me.name }), h('div', { class: 'small muted', text: [me.jobTitle, me.restaurantName].filter(Boolean).join(' · ') }))),
+    h('div', { class: 'small' }, h('span', { class: 'muted', text: 'Access: ' }), `${level}${me.area ? ` · ${AREA_NAMES[me.area] ?? me.area}` : ''}`),
+    shared ? h('div', { class: 'small' }, h('span', { class: 'muted', text: 'This iPad: ' }), me.device.name ?? 'shared') : null,
+    signOut);
+  const chip = h('button', { class: 'me-chip', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', title: `${me.name} · ${level}`, onclick: () => {
+    if (!panel.hidden) return close();
+    panel.hidden = false; chip.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', outside, true); document.addEventListener('keydown', esc);
+    signOut.focus();
+  } }, h('span', { class: 'me-dot', text: initialsOf(me.name) }), h('span', { class: 'me-level', text: level }));
+  const wrap = h('div', { class: 'me' }, panel, chip);
+  return wrap;
 }
 
 /**
