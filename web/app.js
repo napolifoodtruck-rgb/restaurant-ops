@@ -505,9 +505,15 @@ function drillDonut(root) {
     const format = node.format ?? stack[0].format;
     const sorted = node.items.filter((x) => x.value > 0).sort((p, q) => q.value - p.value);
     if (!sorted.length) return null;
-    const top = sorted.length > 6 ? sorted.slice(0, 5) : sorted;
-    const rest = sorted.slice(top.length);
-    const parts = [...top.map((x, i) => ({ ...x, color: x.color ?? SERIES[i] })),
+    // Fill the ring: slices until 90% is shown (up to twelve), so Other is only the small tail;
+    // a tail of one is just shown, and Other opens into the rest.
+    const whole = sorted.reduce((a, x) => a + x.value, 0);
+    let n = 0, shownSoFar = 0;
+    while (n < sorted.length && n < 12 && (n < 5 || shownSoFar / whole < 0.9)) shownSoFar += sorted[n++].value;
+    if (sorted.length - n === 1) n++;
+    const top = sorted.slice(0, n);
+    const rest = sorted.slice(n);
+    const parts = [...top.map((x, i) => ({ ...x, color: x.color ?? PIE_COLORS[i] })),
       ...(rest.length ? [{ name: `Other (${rest.length})`, value: rest.reduce((a, x) => a + x.value, 0), color: OTHER, open: () => ({ title: node.title, crumb: 'Other', format, items: rest }) }] : [])];
     const total = parts.reduce((a, x) => a + x.value, 0);
     const R = 74, r = 48, C = 80;
@@ -794,6 +800,8 @@ function gapsCard(me, gaps, onSaved) {
 
 const SERIES = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300']; // validated categorical order
 const OTHER = '#b9b4aa';
+// Pies can have up to twelve slices: the six series colors, then six more that stay apart from them and from Other.
+const PIE_COLORS = [...SERIES, '#7c5cff', '#0097a7', '#a16207', '#be185d', '#4d7c0f', '#1e3a8a'];
 const SVGNS = 'http://www.w3.org/2000/svg';
 function s(tag, attrs = {}, ...children) {
   const el = document.createElementNS(SVGNS, tag);
