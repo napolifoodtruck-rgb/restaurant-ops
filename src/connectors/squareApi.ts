@@ -142,6 +142,30 @@ export class SquareApi {
     });
   }
 
+  /**
+   * Closed orders, one row each: table, covers, the server it's attributed to, how and where it
+   * was placed, sales (less automatic gratuity), tips and automatic gratuity.
+   */
+  ordersByDay(locationId: string, from: string, to: string): Promise<SquareItemSalesRow[]> {
+    return this.report({
+      measures: ['Orders.net_sales_minus_auto_gratuity', 'Orders.cover_count', 'Orders.tips_amount', 'Orders.auto_gratuity_amount'],
+      dimensions: ['Orders.order_id', 'Orders.table_name', 'Orders.fulfillment_method', 'Orders.order_source', 'Orders.team_member_attributed_to_id', 'Orders.team_member_attributed_to_name'],
+      timeDimensions: [{ dimension: 'Orders.reporting_day', dateRange: [from, to], granularity: 'day' }],
+      segments: ['Orders.closed_checks'],
+      filters: [{ member: 'Orders.location_id', operator: 'equals', values: [locationId] }],
+    });
+  }
+
+  /** What was on each order: item, variation, category, quantity and net sales. */
+  orderLinesByDay(locationId: string, from: string, to: string): Promise<SquareItemSalesRow[]> {
+    return this.report({
+      measures: ['ItemSales.items_sold_count', 'ItemSales.item_net_sales'],
+      dimensions: ['ItemSales.order_id', 'ItemSales.item_variation_id', 'ItemSales.item_name', 'ItemSales.item_variation_name', 'ItemSales.category_name'],
+      timeDimensions: [{ dimension: 'ItemSales.reporting_day', dateRange: [from, to], granularity: 'day' }],
+      filters: [{ member: 'ItemSales.location_id', operator: 'equals', values: [locationId] }],
+    });
+  }
+
   /** Modifier sales by item and day: what squareModifierSales() reads. */
   modifierSalesByDay(locationId: string, from: string, to: string): Promise<SquareItemSalesRow[]> {
     return this.report({

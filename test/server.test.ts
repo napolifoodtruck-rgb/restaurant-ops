@@ -242,6 +242,20 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.deepEqual(cookToday.prep.map((p: any) => p.station), ['Expo']);
   assert.ok(cookToday.items.every((i: any) => i.group === 'prep'));
 
+  // Reports: managers only; waiting for orders until the sync brings them; then by period, set against the one before.
+  const thisWeek = { from: '2026-09-28', to: '2026-10-04' };
+  assert.equal((await call('GET', `/api/reports/sales?from=${thisWeek.from}&to=${thisWeek.to}`, { cookies: marcoOnExpo })).status, 403);
+  assert.equal((await call('GET', '/api/reports/sales?from=2026-10-04&to=2026-09-28', { cookies: ownerSession })).status, 400);
+  assert.equal((await call('GET', `/api/reports/sales?from=${thisWeek.from}&to=${thisWeek.to}`, { cookies: ownerSession })).json.dataFrom, undefined);
+  await db!.query(`INSERT INTO pos_orders (restaurant_id, order_id, day, table_name, source, server_name, covers, net_sales, tips, auto_gratuity) VALUES
+    ($1, 'A', '2026-10-03', 'T6', 'Point of Sale', 'Ava', 4, 120, 24, 0), ($1, 'B', '2026-10-03', NULL, 'Square Online', NULL, 0, 40, 4, 0), ($1, 'C', '2026-09-21', 'T6', 'Point of Sale', 'Ava', 2, 50, 10, 0)`, [restaurantId]);
+  await db!.query(`INSERT INTO pos_order_lines (restaurant_id, order_id, day, item_name, category, quantity, net_sales) VALUES ($1, 'A', '2026-10-03', 'Margherita', 'Pizza', 4, 60), ($1, 'C', '2026-09-21', 'Margherita', 'Pizza', 2, 30)`, [restaurantId]);
+  const report = (await call('GET', `/api/reports/sales?from=${thisWeek.from}&to=${thisWeek.to}`, { cookies: ownerSession })).json;
+  assert.deepEqual([report.current.totals.sales, report.current.totals.covers, report.hasPrevious, report.before.totals.sales, report.hasLastYear], [160, 4, true, 50, false]);
+  assert.deepEqual(report.current.byType.map((t: any) => t.type), ['table', 'online']);
+  const menuReport = (await call('GET', `/api/reports/menu?from=${thisWeek.from}&to=${thisWeek.to}&area=kitchen`, { cookies: ownerSession })).json;
+  assert.deepEqual(menuReport.categories.map((c: any) => [c.name, c.items[0].name, c.items[0].byType.table]), [['Pizza', 'Margherita', 4]]);
+
   // Snoozing a line: set aside for whoever snoozed it, never past its day; deadlines today can't be.
   const waits = ownerToday.items.find((i: any) => i.snooze?.length && !i.due);
   const dueToday = ownerToday.items.find((i: any) => i.due && i.due <= ownerToday.today);

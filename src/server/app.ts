@@ -53,6 +53,7 @@ import { planRoutes } from './plans.ts';
 import { SNOOZE_MORNING, todayView } from './today.ts';
 import { cardRoutes } from './cards.ts';
 import { orderRoutes } from './orders.ts';
+import { reportRoutes } from './reports.ts';
 import { recipeRoutes } from './recipes.ts';
 import { areaFor, areaRoutes, loadAreas } from './areas.ts';
 
@@ -480,6 +481,12 @@ export function createApp(config: AppConfig) {
       const who = await signedIn(req);
       const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
       if (await recipeRoutes(db, res, url, who, localDateHour(tz).date)) return;
+    }
+
+    if (path.startsWith('/api/reports') && method === 'GET') {
+      const who = await signedIn(req);
+      const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+      if (await reportRoutes(db, res, url, who, localDateHour(tz).date)) return;
     }
 
     if (path.startsWith('/api/orders')) {

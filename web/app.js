@@ -23,6 +23,7 @@ const ICONS = {
   recipes: 'M4 5.5C6.5 4.5 9.5 4.5 12 6c2.5-1.5 5.5-1.5 8-.5V19c-2.5-1-5.5-1-8 .5-2.5-1.5-5.5-1.5-8-.5z M12 6v13.5',
   margins: 'M4 20V4 M4 20h16 M8 16v-4 M12 16V8 M16 16v-6',
   orders: 'M3 7h11v9H3z M14 10h4l3 3v3h-7',
+  reports: 'M6 3h9l4 4v14H6z M14 3v5h5 M9 12h7 M9 16h5',
   settings: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M19 12h2 M3 12h2 M12 3v2 M12 19v2 M17 7l1.5-1.5 M5.5 18.5L7 17 M17 17l1.5 1.5 M5.5 5.5L7 7',
 };
 function icon(name) {
@@ -264,7 +265,7 @@ function pinPad(person, device) {
 function shell(me, active, content) {
   const manager = atLeast(me.roleLevel, 'manager');
   const nav = [
-    ['today', 'Today', todayScreen], ['prep', 'Prep', prepHome], ['recipes', 'Recipes', recipesScreen], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['orders', 'Orders', manager && ordersScreen],
+    ['today', 'Today', todayScreen], ['prep', 'Prep', prepHome], ['recipes', 'Recipes', recipesScreen], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['reports', 'Reports', manager && reportsScreen], ['orders', 'Orders', manager && ordersScreen],
   ];
   return h('div', { class: 'shell' },
     h('nav', { class: 'rail', 'aria-label': 'Main' },
@@ -2018,6 +2019,190 @@ function glanceCards(me, t, side) {
   return cards;
 }
 
+// ------------------------------------------------------------------ reports
+// The weekly reports, for any period: how the money came in, tables and servers (team and
+// sales), and every menu item by how it was ordered. Each set against the period before or the
+// same weeks last year. Weeks run Monday to Sunday.
+
+function reportPresets() {
+  const today = new Date(); today.setHours(12, 0, 0, 0);
+  const day = (d) => iso(d);
+  const back = (n) => { const d = new Date(today); d.setDate(d.getDate() - n); return d; };
+  const monday = back((today.getDay() + 6) % 7); // this week's Monday
+  const lastMon = new Date(monday); lastMon.setDate(lastMon.getDate() - 7);
+  const lastSun = new Date(monday); lastSun.setDate(lastSun.getDate() - 1);
+  const twoMon = new Date(monday); twoMon.setDate(twoMon.getDate() - 14);
+  const first = new Date(today.getFullYear(), today.getMonth(), 1);
+  const lmEnd = new Date(first); lmEnd.setDate(0);
+  const lmStart = new Date(lmEnd.getFullYear(), lmEnd.getMonth(), 1);
+  return [
+    ['week', 'Last week', { from: day(lastMon), to: day(lastSun) }],
+    ['two', 'Last 2 weeks', { from: day(twoMon), to: day(lastSun) }],
+    ['month', lmStart.toLocaleDateString(undefined, { month: 'long' }), { from: day(lmStart), to: day(lmEnd) }],
+    ['this', 'This month', { from: day(first), to: day(today) }],
+    ['90', 'Last 90 days', { from: day(back(89)), to: day(today) }],
+  ];
+}
+
+/** "▲ 12%" against the comparison; for rates, the difference in points. */
+function versusCell(now, then, opts = {}) {
+  if (then === undefined || then === null || now === undefined || now === null || (!opts.points && !then)) return h('span', { class: 'small muted vs', text: '–' });
+  const d = opts.points ? (now - then) * 100 : (now / then - 1) * 100;
+  const flat = Math.abs(d) < (opts.points ? 0.5 : 2);
+  const cls = flat ? 'muted' : (d > 0) !== Boolean(opts.lowerIsBetter) ? 'trend-up' : 'trend-down';
+  return h('span', { class: `small vs ${cls}`, title: opts.title ?? '', text: flat ? 'even' : `${d > 0 ? '▲' : '▼'} ${Math.abs(d).toFixed(opts.points ? 1 : 0)}${opts.points ? ' pts' : '%'}` });
+}
+const pct0 = (v) => (v === undefined || v === null ? '–' : `${(v * 100).toFixed(1)}%`);
+
+async function reportsScreen(me, state = {}) {
+  const presets = reportPresets();
+  state = { report: 'sales', preset: 'two', compare: 'previous', ...state };
+  const range = state.range ?? presets.find(([k]) => k === state.preset)?.[2] ?? presets[1][2];
+  loadingScreen(me, 'reports', 'Reports');
+  const side = sideOf(me);
+  const path = state.report === 'menu' ? `/api/reports/menu?area=${side}&` : '/api/reports/sales?';
+  const r = await api('GET', `${path}from=${range.from}&to=${range.to}`);
+  const again = (changes) => reportsScreen(me, { ...state, ...changes });
+  if (!r.ok) return show(shell(me, 'reports', [h('header', {}, h('h1', { text: 'Reports' })), reportToolbar(me, state, range, presets, again), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const d = r.data;
+  const lastYear = state.compare === 'lastYear';
+  const base = lastYear ? d.lastYear : d.previous;
+  const has = lastYear ? d.hasLastYear : d.hasPrevious;
+  const header = h('header', { class: 'row wrap' },
+    h('div', { class: 'grow' },
+      h('div', { class: 'kicker', text: `${shortDate(d.from)} – ${shortDate(d.to)} · ${has ? `against ${lastYear ? 'last year' : 'the period before'}, ${shortDate(base.from)} – ${shortDate(base.to)}` : `nothing to set it against yet`}` }),
+      h('h1', { text: state.report === 'menu' ? `Menu items · ${AREA_NAMES[side]}` : 'Team and sales' }),
+      h('div', { class: 'sub', text: state.report === 'menu' ? 'Every item, ranked within its category, by how it was ordered. Specials are judged by what they sold a day while they were on.' : 'How the money came in, each server on table orders, and every table. Automatic gratuity counts as tips, not sales.' })),
+    h('button', { class: 'btn', text: 'Print', onclick: () => window.print() }));
+  const toolbar = reportToolbar(me, state, range, presets, again);
+  if (!d.dataFrom) {
+    return show(shell(me, 'reports', [header, toolbar, page(h('div', { class: 'card' }, h('h2', { text: 'Waiting for orders from Square' }),
+      h('div', { class: 'small muted', text: 'Reports are built from each order: its table, covers, server and how it was placed. They come with the nightly Square sync, about a year back the first time, so a period can be set against last year. Sync now from Settings to start sooner.' }),
+      h('div', {}, h('button', { class: 'btn', text: 'Settings', onclick: () => home(me) }))), null)]));
+  }
+  const early = d.from < d.dataFrom ? h('div', { class: 'note', text: `Orders are kept from ${shortDate(d.dataFrom)}, so this period starts there.` }) : null;
+  if (state.report === 'menu') return show(shell(me, 'reports', [header, toolbar, menuReportView(me, d, lastYear, has, early)]));
+  show(shell(me, 'reports', [header, toolbar, salesReportView(d, lastYear ? d.lastYearReport : d.before, lastYear, early)]));
+}
+
+function reportToolbar(me, state, range, presets, again) {
+  const chip = (text, on, go) => h('button', { class: `chip${on ? ' on' : ''}`, 'aria-pressed': String(on), text, onclick: go });
+  const custom = Boolean(state.range);
+  const fromInput = h('input', { type: 'date', value: range.from, max: iso(new Date()), 'aria-label': 'From' });
+  const toInput = h('input', { type: 'date', value: range.to, max: iso(new Date()), 'aria-label': 'To' });
+  const dates = h('div', { class: 'row tight dates-inline' }, fromInput, h('span', { class: 'small muted', text: 'to' }), toInput,
+    h('button', { class: 'btn small-btn', text: 'Show', onclick: () => fromInput.value && toInput.value && fromInput.value <= toInput.value && again({ range: { from: fromInput.value, to: toInput.value }, preset: undefined }) }));
+  dates.hidden = !custom;
+  const open = chip('Custom dates', custom, () => { dates.hidden = !dates.hidden; open.classList.toggle('on', !dates.hidden); });
+  const seg = (label, options) => h('div', { class: 'seg tool-end', role: 'group', 'aria-label': label },
+    options.map(([text, on, go]) => h('button', { class: on ? 'on' : '', 'aria-pressed': String(on), text, onclick: go })));
+  return h('section', { class: 'card toolbar' },
+    h('div', { class: 'tool-row' }, h('span', { class: 'tool-label', text: 'Report' }),
+      h('div', { class: 'chips' }, chip('Team and sales', state.report === 'sales', () => again({ report: 'sales' })), chip('Menu items', state.report === 'menu', () => again({ report: 'menu' }))),
+      state.report === 'menu' ? h('div', { class: 'tool-end' }, sideSwitch(me, () => again({}))) : null),
+    h('div', { class: 'tool-row' }, h('span', { class: 'tool-label', text: 'Period' }),
+      h('div', { class: 'chips' }, presets.map(([k, label]) => chip(label, !custom && state.preset === k, () => again({ preset: k, range: undefined }))), open), dates),
+    h('div', { class: 'tool-row' }, h('span', { class: 'tool-label', text: 'Against' }),
+      h('div', { class: 'chips' }, chip('The period before', state.compare !== 'lastYear', () => again({ compare: 'previous' })), chip('Same weeks last year', state.compare === 'lastYear', () => again({ compare: 'lastYear' })))));
+}
+
+const WEEKDAYS_LONG = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
+
+function salesReportView(d, then, lastYear, early) {
+  const c = d.current;
+  const word = lastYear ? 'last year' : 'the period before';
+  // How the money came in.
+  const maxType = Math.max(...c.byType.map((t) => t.sales), 1);
+  const types = h('section', { class: 'card' }, h('h2', { text: 'How the money came in' }),
+    h('div', { class: 'rtable' },
+      h('div', { class: 'rrow head types' }, h('div', { text: 'Order type' }), h('div', { class: 'num', text: 'Sales' }), h('div', { text: 'Share' }), h('div', { class: 'num', text: 'Orders' }), h('div', { class: 'num', text: 'Average' }), h('div', { class: 'num', text: `vs ${word}` })),
+      c.byType.map((t) => {
+        const was = then?.byType.find((x) => x.type === t.type);
+        const bar = h('span', { class: 'hbar-track' }, h('span', { class: 'hbar-fill' })); bar.firstChild.style.width = `${(t.sales / maxType) * 100}%`;
+        return h('div', { class: 'rrow types' }, h('div', { class: 'strong', text: t.name }), h('div', { class: 'num', text: dollars(t.sales, { exact: true }) }),
+          h('div', { class: 'row tight' }, bar, h('span', { class: 'small muted', text: `${Math.round(t.share * 100)}%` })),
+          h('div', { class: 'num', text: t.orders.toLocaleString() }), h('div', { class: 'num', text: dollars(t.average ?? 0, { cents: true }) }), h('div', { class: 'num' }, versusCell(t.sales, was?.sales)));
+      })),
+    h('div', { class: 'small muted', text: 'Table orders have a table; register orders without one are to go, however they were rung; online is Square Online.' }));
+  // Servers: table orders only.
+  const servers = h('section', { class: 'card' }, h('h2', { text: 'Servers' }),
+    h('div', { class: 'small muted', text: `Table orders only. Tip rate includes automatic gratuity. Wine is set against covers${c.wineDaysLeftOut.length ? `, leaving out ${c.wineDaysLeftOut.map((w) => WEEKDAYS_LONG[w]).join(' and ')} (wine is discounted)` : ''}.` }),
+    h('div', { class: 'rtable' },
+      h('div', { class: 'rrow head servers' }, h('div', { text: 'Server' }), h('div', { class: 'num', text: 'Covers' }), h('div', { class: 'num', text: 'Sales' }), h('div', { class: 'num', text: 'Cover rate' }), h('div', { class: 'num', text: 'Tip rate' }), h('div', { class: 'num', text: 'Wine: glass | bottle' }), h('div', { class: 'num', text: 'Wine per cover' })),
+      c.servers.map((sv) => {
+        const was = then?.servers.find((x) => x.name === sv.name);
+        return h('div', { class: 'rrow servers' }, h('div', { class: 'strong', text: sv.name }),
+          h('div', { class: 'num', text: sv.covers.toLocaleString() }), h('div', { class: 'num', text: dollars(sv.sales, { exact: true }) }),
+          h('div', { class: 'num' }, h('div', { text: dollars(sv.coverRate ?? 0, { cents: true }) }), versusCell(sv.coverRate, was?.coverRate)),
+          h('div', { class: 'num' }, h('div', { text: pct0(sv.tipRate) }), versusCell(sv.tipRate, was?.tipRate, { points: true })),
+          h('div', { class: 'num small', text: `${dollars(sv.wineGlass, { exact: true })} | ${dollars(sv.wineBottle, { exact: true })}` }),
+          h('div', { class: 'num' }, h('div', { text: sv.winePerCover !== undefined ? dollars(sv.winePerCover, { cents: true }) : '–' }), versusCell(sv.winePerCover, was?.winePerCover)));
+      })));
+  // Tables.
+  const maxTable = Math.max(...c.tables.map((t) => t.sales), 1);
+  const tables = h('section', { class: 'card' }, h('h2', { text: 'Tables' }),
+    h('div', { class: 'rtable' },
+      h('div', { class: 'rrow head tables' }, h('div', { text: 'Table' }), h('div', { class: 'num', text: 'Turns' }), h('div', { class: 'num', text: 'Covers' }), h('div', { class: 'num', text: 'Per turn' }), h('div', { text: 'Sales' }), h('div', { class: 'num', text: 'Cover rate' }), h('div', { class: 'num', text: `vs ${word}` })),
+      c.tables.map((t) => {
+        const was = then?.tables.find((x) => x.table === t.table);
+        const bar = h('span', { class: 'hbar-track' }, h('span', { class: 'hbar-fill' })); bar.firstChild.style.width = `${(t.sales / maxTable) * 100}%`;
+        return h('div', { class: 'rrow tables' }, h('div', { class: 'strong', text: t.table }), h('div', { class: 'num', text: String(t.turns) }), h('div', { class: 'num', text: String(t.covers) }),
+          h('div', { class: 'num', text: t.coversPerTurn ?? '–' }), h('div', { class: 'row tight' }, bar, h('span', { class: 'small', text: dollars(t.sales, { exact: true }) })),
+          h('div', { class: 'num', text: t.coverRate !== undefined ? dollars(t.coverRate, { cents: true }) : '–' }), h('div', { class: 'num' }, versusCell(t.sales, was?.sales)));
+      })),
+    h('div', { class: 'small muted', text: 'A turn is one order at the table. Tables pushed together are rung under one of them.' }));
+  // The right column: the headline numbers, and how the money came in as a share.
+  const stat = (title, value, now, thenV, opts) => statBox(title, value, h('div', { class: 'row tight' }, versusCell(now, thenV, opts), h('span', { class: 'small muted', text: then ? `vs ${word}` : '' })));
+  const side = [
+    stat('Net sales', dollars(c.totals.sales, { exact: true }), c.totals.sales, then?.totals.sales),
+    stat('Covers · table orders', c.totals.covers.toLocaleString(), c.totals.covers, then?.totals.covers),
+    stat('Cover rate', dollars(c.totals.coverRate ?? 0, { cents: true }), c.totals.coverRate, then?.totals.coverRate),
+    stat('Tip rate · table orders', pct0(c.totals.tipRate), c.totals.tipRate, then?.totals.tipRate, { points: true }),
+    (() => { const dn = shareDonut(c.byType.map((t) => ({ name: t.name, value: t.sales })), { format: dollars, total: 'net sales' }); return dn ? sideBox('Sales by order type', dn) : null; })(),
+    sideBox(null, h('div', { class: 'small muted', text: `${c.totals.orders.toLocaleString()} orders over ${c.days} open days. Cover rate is sales per cover on table orders.` })),
+  ];
+  return h('div', { class: 'report-print' }, page([early, types, servers, tables], side, { label: 'Summary' }));
+}
+
+function menuReportView(me, d, lastYear, has, early) {
+  const word = lastYear ? 'last year' : 'the period before';
+  const cards = d.categories.map((cat) => {
+    const maxQ = Math.max(...cat.items.map((i) => i.quantity), 1);
+    return h('section', { class: 'card' },
+      h('div', { class: 'row' }, h('h2', { class: 'grow', text: cat.name }), h('span', { class: 'small muted', text: `${dollars(cat.sales, { exact: true })} · ${cat.items.length} items` })),
+      h('div', { class: 'rtable' },
+        h('div', { class: 'rrow head items' }, h('div', { text: '#' }), h('div', { text: 'Item' }), h('div', { text: 'Sold: table | to go | online' }), h('div', { class: 'num', text: 'Per day on' }), h('div', { class: 'num', text: 'Sales' }), h('div', { class: 'num', text: `vs ${word}` })),
+        cat.items.map((it, n) => {
+          const mix = h('span', { class: 'mix', title: `Table ${qty(it.byType.table)} · to go ${qty(it.byType.register)} · online ${qty(it.byType.online)}` });
+          for (const [k, cls] of [['table', 'mix-table'], ['register', 'mix-togo'], ['online', 'mix-online']]) { const seg = h('span', { class: cls }); seg.style.width = `${(it.byType[k] / maxQ) * 100}%`; mix.append(seg); }
+          const change = lastYear ? it.lastYearChange : it.change;
+          return h('div', { class: 'rrow items' }, h('div', { class: 'muted', text: String(n + 1) }),
+            h('div', {}, h('div', { class: 'strong', text: it.name }), it.daysOn < d.openDays ? h('div', { class: 'small muted', text: `on ${it.daysOn} of ${d.openDays} days` }) : null),
+            h('div', {}, mix, h('div', { class: 'small muted', text: `${qty(it.quantity)} · ${qty(it.byType.table)} | ${qty(it.byType.register)} | ${qty(it.byType.online)}` })),
+            h('div', { class: 'num', text: qty(it.perDay) }), h('div', { class: 'num', text: dollars(it.sales, { exact: true }) }),
+            h('div', { class: 'num' }, change === undefined ? h('span', { class: 'small muted', text: has ? 'new' : '–' }) : versusCell(1 + change, 1, { title: 'Sold per day on, against the comparison' })));
+        })));
+  });
+  // Right column: categories as a share, the order-type mix, and the biggest movers.
+  const all = d.categories.flatMap((c) => c.items);
+  const sum = (k) => all.reduce((a, i) => a + i.byType[k], 0);
+  const total = sum('table') + sum('register') + sum('online');
+  const movers = all.filter((i) => (lastYear ? i.lastYearChange : i.change) !== undefined && i.perDay >= 1);
+  const ch = (i) => (lastYear ? i.lastYearChange : i.change);
+  const up = [...movers].sort((a, b) => ch(b) - ch(a)).filter((i) => ch(i) > 0.05).slice(0, 4);
+  const down = [...movers].sort((a, b) => ch(a) - ch(b)).filter((i) => ch(i) < -0.05).slice(0, 4);
+  const side = [
+    (() => { const dn = shareDonut(d.categories.map((c) => ({ name: c.name, value: c.sales })), { format: dollars, total: 'sales' }); return dn ? sideBox('Sales by category', dn) : null; })(),
+    total ? sideBox('How items were ordered', h('div', { class: 'list compact' },
+      [['Table orders', 'table', 'mix-table'], ['To go at the register', 'register', 'mix-togo'], ['Online', 'online', 'mix-online']].map(([label, k, cls]) => h('div', {}, h('span', { class: `cov-key ${cls}` }), h('span', { class: 'grow', text: label }), h('b', { text: `${Math.round((sum(k) / total) * 100)}%` }), h('span', { class: 'small muted', text: qty(Math.round(sum(k))) }))))) : null,
+    up.length || down.length ? sideBox(`Moving, against ${word}`, h('div', { class: 'list compact' },
+      up.map((i) => h('div', {}, h('span', { class: 'grow', text: i.name }), h('b', { class: 'trend-up', text: `▲ ${Math.round(ch(i) * 100)}%` }))),
+      down.map((i) => h('div', {}, h('span', { class: 'grow', text: i.name }), h('b', { class: 'trend-down', text: `▼ ${Math.abs(Math.round(ch(i) * 100))}%` })))),
+      h('div', { class: 'small muted', text: 'Sold per day on the menu, for items selling at least one a day.' })) : null,
+  ];
+  return h('div', { class: 'report-print' }, page([early, ...cards], side, { label: 'Summary' }));
+}
+
 // ------------------------------------------------------------------ orders
 
 const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -2254,7 +2439,7 @@ async function home(me) {
 }
 
 const SOURCES = {
-  square: { name: 'Square', secret: 'SQUARE_ACCESS_TOKEN', what: 'sales, menu and team', summary: (d) => `sales ${shortDate(d.from)} – ${shortDate(d.to)}, ${d.itemRows} item rows, ${d.modifierRows} modifier rows, ${d.catalogObjects} catalog entries. Team: ${d.team?.added ?? 0} added, ${d.team?.updated ?? 0} updated, ${d.team?.deactivated ?? 0} no longer active.` },
+  square: { name: 'Square', secret: 'SQUARE_ACCESS_TOKEN', what: 'sales, menu and team', summary: (d) => `sales ${shortDate(d.from)} – ${shortDate(d.to)}, ${d.itemRows} item rows, ${d.modifierRows} modifier rows, ${d.catalogObjects} catalog entries${d.orders !== undefined ? `, ${d.orders} orders from ${shortDate(d.ordersFrom)}` : ''}. Team: ${d.team?.added ?? 0} added, ${d.team?.updated ?? 0} updated, ${d.team?.deactivated ?? 0} no longer active.` },
   marginedge: { name: 'MarginEdge', secret: 'MARGINEDGE_API_KEY', what: 'invoices, products and pack sizes', summary: (d) => `${d.invoices} invoices since ${shortDate(d.from)}, ${d.products} products, ${d.vendorItems} vendor items.` },
 };
 

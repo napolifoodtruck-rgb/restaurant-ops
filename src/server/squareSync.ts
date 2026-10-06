@@ -14,6 +14,8 @@ export interface SquareSyncOptions {
   firstDays?: number;
   /** Days to fetch again on later syncs. Default 4. */
   refreshDays?: number;
+  /** Days of orders to fetch the first time, for reports against last year. Default 400. */
+  orderDays?: number;
   /** Which location, when the account has several. Default: the only active one. */
   locationId?: string;
   today?: string;
@@ -27,6 +29,8 @@ export interface SquareSyncResult {
   team: { added: number; updated: number; deactivated: number };
   itemRows: number;
   modifierRows: number;
+  orders?: number;
+  ordersFrom?: string;
 }
 
 /** A first guess at what a Square job title can see; a manager can change it. */
@@ -152,6 +156,8 @@ async function sync(db: Db, api: SquareApi, restaurantId: string, options: Squar
   await insertMany(db, 'pos_item_sales_daily', ['restaurant_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'category', 'quantity', 'net_sales'], items.map((r) => [...r.cols, r.values.quantity, Math.round(r.values.sales * 100) / 100]));
   await insertMany(db, 'pos_modifier_sales_daily', ['restaurant_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'modifier_list', 'modifier_name', 'quantity', 'gross_sales'], modifiers.map((r) => [...r.cols, r.values.quantity, Math.round(r.values.sales * 100) / 100]));
 
+  const orders = await syncOrders(db, api, restaurantId, location.id, today, options);
+
   return {
     locationName: location.name,
     from,
@@ -160,7 +166,47 @@ async function sync(db: Db, api: SquareApi, restaurantId: string, options: Squar
     team: { added, updated, deactivated: gone.rows.length },
     itemRows: items.length,
     modifierRows: modifiers.length,
+    orders: orders.count,
+    ordersFrom: orders.from,
   };
+}
+
+const orderDay = (r: SquareItemSalesRow, cube: string) => text(r[`${cube}.reporting_day.day`] ?? r[`${cube}.reporting_day`]).slice(0, 10);
+
+/**
+ * Orders and what was on them, for reports. The first sync goes back about a year (so a period
+ * can be set against the same one last year), a month at a time; later syncs redo the last few days.
+ */
+async function syncOrders(db: Db, api: SquareApi, restaurantId: string, locationId: string, today: string, options: SquareSyncOptions): Promise<{ count: number; from: string }> {
+  const last = (await db.query<{ day: string | null }>('SELECT max(day)::text AS day FROM pos_orders WHERE restaurant_id = $1', [restaurantId])).rows[0]?.day;
+  const start = last ? minusDays(last < today ? last : today, (options.refreshDays ?? 4) - 1) : minusDays(today, (options.orderDays ?? 400) - 1);
+  let count = 0;
+  for (let from = start; from <= today; from = minusDays(from, -31)) {
+    const to = minusDays(from, -30) < today ? minusDays(from, -30) : today;
+    const orders = (await api.ordersByDay(locationId, from, to)).filter((r) => text(r['Orders.order_id']) && orderDay(r, 'Orders'));
+    const lines = (await api.orderLinesByDay(locationId, from, to)).filter((r) => text(r['ItemSales.order_id']) && orderDay(r, 'ItemSales'));
+    await db.query('DELETE FROM pos_orders WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3', [restaurantId, from, to]);
+    await db.query('DELETE FROM pos_order_lines WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3', [restaurantId, from, to]);
+    // One row per order (Square can split one across rows).
+    type Row = { cols: (string | null)[]; covers: number; sales: number; tips: number; grat: number };
+    const byId = new Map<string, Row>();
+    for (const r of orders) {
+      const id = text(r['Orders.order_id']);
+      const row = byId.get(id) ?? { cols: [id, orderDay(r, 'Orders'), text(r['Orders.table_name']) || null, text(r['Orders.fulfillment_method']) || null, text(r['Orders.order_source']) || null,
+        text(r['Orders.team_member_attributed_to_id']) || null, text(r['Orders.team_member_attributed_to_name']) || null], covers: 0, sales: 0, tips: 0, grat: 0 };
+      row.covers += number(r['Orders.cover_count']); row.sales += number(r['Orders.net_sales_minus_auto_gratuity']);
+      row.tips += number(r['Orders.tips_amount']); row.grat += number(r['Orders.auto_gratuity_amount']);
+      byId.set(id, row);
+    }
+    const cents = (x: number) => Math.round(x * 100) / 100;
+    await insertMany(db, 'pos_orders', ['restaurant_id', 'order_id', 'day', 'table_name', 'fulfillment', 'source', 'server_id', 'server_name', 'covers', 'net_sales', 'tips', 'auto_gratuity'],
+      [...byId.values()].map((o) => [restaurantId, ...o.cols, Math.round(o.covers), cents(o.sales), cents(o.tips), cents(o.grat)]));
+    await insertMany(db, 'pos_order_lines', ['restaurant_id', 'order_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'category', 'quantity', 'net_sales'],
+      lines.map((r) => [restaurantId, text(r['ItemSales.order_id']), orderDay(r, 'ItemSales'), text(r['ItemSales.item_variation_id']) || null, text(r['ItemSales.item_name']), text(r['ItemSales.item_variation_name']) || null,
+        text(r['ItemSales.category_name']) || null, number(r['ItemSales.items_sold_count']), Math.round(number(r['ItemSales.item_net_sales']) * 100) / 100]));
+    count += byId.size;
+  }
+  return { count, from: start };
 }
 
 /** Sales rows back out of the database in the Reporting API's shape, for square.ts to read. */

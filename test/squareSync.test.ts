@@ -9,7 +9,7 @@ import { migrate } from '../src/server/db.ts';
 import { startTestDb } from './support/psqlDb.ts';
 
 /** A pretend Square account. Records every call. */
-function fakeSquare(state: { team: any[]; items: any[]; modifiers: any[] }) {
+function fakeSquare(state: { team: any[]; items: any[]; modifiers: any[]; orders?: any[]; orderLines?: any[] }) {
   const calls: { method: string; path: string; body?: any }[] = [];
   let waited = false;
   const json = (status: number, data: unknown) => ({ ok: status < 400, status, json: async () => data, text: async () => JSON.stringify(data) });
@@ -31,7 +31,12 @@ function fakeSquare(state: { team: any[]; items: any[]; modifiers: any[] }) {
     if (path === '/reporting/v1/load') {
       if (!waited) { waited = true; return json(200, { error: 'Continue wait' }); }
       const isModifiers = body.query.measures.includes('ItemSales.modifier_net_quantity');
-      const all = isModifiers ? state.modifiers : state.items;
+      // Orders and order lines answer for the dates asked, like Square does.
+      const [from, to] = body.query.timeDimensions?.[0]?.dateRange ?? [];
+      const inRange = (rows: any[], cube: string) => rows.filter((x) => { const d = String(x[`${cube}.reporting_day.day`]).slice(0, 10); return (!from || d >= from) && (!to || d <= to); });
+      const all = body.query.measures.includes('Orders.cover_count') ? inRange(state.orders ?? [], 'Orders')
+        : body.query.dimensions?.includes('ItemSales.order_id') ? inRange(state.orderLines ?? [], 'ItemSales')
+        : isModifiers ? state.modifiers : state.items;
       return json(200, { data: all.slice(body.query.offset, body.query.offset + body.query.limit) });
     }
     return json(404, {});
@@ -94,6 +99,13 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
     ],
     items: [row('2026-10-03', 'V1', 'Margherita', 20, 300), row('2026-10-03', 'V1', 'Margherita', 2, 30), row('2026-10-04', 'V1', 'Margherita', 25, 375)],
     modifiers: [{ 'ItemSales.reporting_day.day': '2026-10-04T00:00:00.000', 'ItemSales.item_variation_id': 'V1', 'ItemSales.item_name': 'Margherita', 'ItemSales.item_variation_name': 'Regular', 'ItemSales.modifier_list_name': 'Extras', 'ItemSales.modifier_name': '++ Extra Mozzarella', 'ItemSales.modifier_net_quantity': 4.0000001, 'ItemSales.gross_sales': 12 }],
+    // Orders: a table of four (split across two rows by Square), and an online order last year.
+    orders: [
+      { 'Orders.reporting_day.day': '2026-10-04T00:00:00.000', 'Orders.order_id': 'O1', 'Orders.table_name': 'T6', 'Orders.fulfillment_method': 'For Here', 'Orders.order_source': 'Point of Sale', 'Orders.team_member_attributed_to_id': 'T-MARCO', 'Orders.team_member_attributed_to_name': 'Marco Rossi', 'Orders.cover_count': 4, 'Orders.net_sales_minus_auto_gratuity': 80, 'Orders.tips_amount': 16, 'Orders.auto_gratuity_amount': 0 },
+      { 'Orders.reporting_day.day': '2026-10-04T00:00:00.000', 'Orders.order_id': 'O1', 'Orders.cover_count': 0, 'Orders.net_sales_minus_auto_gratuity': 10, 'Orders.tips_amount': 2, 'Orders.auto_gratuity_amount': 0 },
+      { 'Orders.reporting_day.day': '2025-10-10T00:00:00.000', 'Orders.order_id': 'O0', 'Orders.order_source': 'Square Online', 'Orders.cover_count': 0, 'Orders.net_sales_minus_auto_gratuity': 30, 'Orders.tips_amount': 3, 'Orders.auto_gratuity_amount': 0 },
+    ],
+    orderLines: [{ 'ItemSales.reporting_day.day': '2026-10-04T00:00:00.000', 'ItemSales.order_id': 'O1', 'ItemSales.item_variation_id': 'V1', 'ItemSales.item_name': 'Margherita', 'ItemSales.item_variation_name': 'Regular', 'ItemSales.category_name': 'Pizza', 'ItemSales.items_sold_count': 2, 'ItemSales.item_net_sales': 30 }],
   };
   const square = fakeSquare(state);
   const api = new SquareApi('token', { fetch: square.fetch, sleep: noSleep });
@@ -104,6 +116,11 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
   assert.equal(first.catalogObjects, 2);
   assert.deepEqual(first.team, { added: 3, updated: 1, deactivated: 0 });
   assert.equal(first.itemRows, 2); // the two Oct 3 rows merge
+  // Orders go back about a year the first time, a month at a time; one row per order.
+  assert.deepEqual([first.orders, first.ordersFrom], [2, '2025-09-01']);
+  const stored = (await db!.query<{ order_id: string; table_name: string | null; covers: number; net_sales: string; tips: string }>('SELECT order_id, table_name, covers, net_sales, tips FROM pos_orders WHERE restaurant_id = $1 ORDER BY day', [restaurantId])).rows;
+  assert.deepEqual(stored.map((o) => [o.order_id, o.table_name, o.covers, Number(o.net_sales), Number(o.tips)]), [['O0', null, 0, 30, 3], ['O1', 'T6', 4, 90, 18]]);
+  assert.equal((await db!.query('SELECT 1 FROM pos_order_lines WHERE restaurant_id = $1', [restaurantId])).rows.length, 1);
 
   const staff = (await db!.query<{ display_name: string; job_title: string | null; pos_team_member_id: string; email: string | null }>('SELECT display_name, job_title, pos_team_member_id, email FROM staff WHERE restaurant_id = $1 ORDER BY display_name', [restaurantId])).rows;
   assert.deepEqual(staff.map((s) => [s.display_name, s.job_title, s.pos_team_member_id]), [['Jess L.', 'Sous Chef', 'T-JESS'], ['Marco R.', 'Line Cook', 'T-MARCO'], ['Owner', 'Owner', 'T-OWNER'], ['Sam', null, 'T-NEW']]);
@@ -123,6 +140,8 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
   state.team = state.team.filter((m) => m.id !== 'T-NEW');
   const second = await runSquareSync(db!, api, restaurantId, { today: '2026-10-05' });
   assert.equal(second.from, '2026-10-01');
+  assert.equal(second.ordersFrom, '2026-10-01'); // orders too: just the last few days again
+  assert.equal((await db!.query('SELECT 1 FROM pos_orders WHERE restaurant_id = $1', [restaurantId])).rows.length, 2);
   assert.deepEqual(second.team, { added: 0, updated: 3, deactivated: 1 });
   const after = squareItemSales(await storedItemSales(db!, restaurantId, '2026-10-01', '2026-10-05'));
   assert.deepEqual(after.map((l) => [l.date, l.quantity]), [['2026-10-03', 22], ['2026-10-04', 26], ['2026-10-05', 18]]);
