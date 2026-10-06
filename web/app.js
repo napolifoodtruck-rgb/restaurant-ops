@@ -2108,7 +2108,8 @@ async function todayScreen(me, filter = 'all') {
   // A line folded up in place: what was done, and Undo. Saving happens behind it.
   const foldUp = (row, i, said, undo) => {
     const index = [...row.parentNode.children].indexOf(row);
-    done.set(i.key, { item: i, said, undo, index });
+    const indexIn = [...row.parentNode.children].filter((x) => x.matches('.todo')).indexOf(row);
+    done.set(i.key, { item: i, said, undo, index, indexIn });
     row.replaceWith(doneRow(i.key));
   };
   const doneRow = (key) => {
@@ -2169,8 +2170,10 @@ async function todayScreen(me, filter = 'all') {
       actions.querySelector('.btn')?.focus();
     }
     normal();
+    const tab = TODO_TABS[todoTab(i)];
+    row.style.setProperty('--tab', tab.color);
     fill(row,
-      h('div', { class: 'todo-label', text: i.label }),
+      h('div', { class: 'todo-label' }, h('span', { class: 'tab-tag', text: tab.name }), i.label.toLowerCase() === tab.name.toLowerCase() ? null : h('span', { text: i.label })),
       h('div', { class: 'todo-body' }, h('div', { class: 'todo-title', text: i.title }), i.detail ? h('div', { class: 'small muted', text: i.detail }) : null,
         errorFor?.key === i.key ? h('div', { class: 'error small', text: errorFor.text }) : null),
       actions);
@@ -2212,26 +2215,108 @@ async function todayScreen(me, filter = 'all') {
       need ? `${need} thing${need === 1 ? '' : 's'} need${need === 1 ? 's' : ''} someone: deadlines first, then by dollars.` : 'Nothing needs anyone right now.',
       asleep.length ? `${asleep.length} snoozed.` : null,
     ].filter(Boolean).join(' ');
-    // Folded-up lines go back where they were.
-    const rows = shown.map(itemRow);
-    for (const [key, d] of [...done].sort((a, b) => a[1].index - b[1].index)) {
+    // The list, in groups: by when it's needed, or by tab. Folded-up lines stay in their group.
+    const grouping = recall('todayGroup') === 'tab' ? 'tab' : 'time';
+    const groupsOf = groupTodos(shown, t.today, grouping);
+    const doneByGroup = new Map();
+    for (const [key, d] of done) {
       if (side !== 'all' && d.item.side && d.item.side !== side) continue;
-      rows.splice(Math.min(d.index, rows.length), 0, doneRow(key));
+      const g = todoGroupKey(d.item, t.today, grouping);
+      doneByGroup.set(g, [...(doneByGroup.get(g) ?? []), key]);
     }
+    const sections = groupsOf.map((g) => {
+      const rows = g.items.map(itemRow);
+      for (const key of doneByGroup.get(g.key) ?? []) rows.splice(Math.min(done.get(key).indexIn ?? rows.length, rows.length), 0, doneRow(key));
+      return todoSection(g, rows);
+    });
+    for (const [gk, keys] of doneByGroup) if (!groupsOf.some((g) => g.key === gk)) sections.push(todoSection(todoGroupInfo(gk, grouping), keys.map(doneRow)));
+    const groupSwitch = h('div', { class: 'seg', role: 'group', 'aria-label': 'Group the list' },
+      [['time', 'By when'], ['tab', 'By tab']].map(([k, label]) => h('button', { class: grouping === k ? 'on' : '', 'aria-pressed': String(grouping === k), text: label, onclick: () => { remember('todayGroup', k); draw(); } })));
 
     show(shell(me, 'today', [
       h('header', { class: 'row wrap' },
         h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${longDay(t.today)} · ${me.restaurantName}` }), h('h1', { text: 'Today' }), h('div', { class: 'sub', text: sub })),
-        h('div', { class: 'row wrap' }, sides, chips)),
-      page(h('section', { class: 'todos', 'aria-label': 'To do' }, rows.length ? rows : h('div', { class: 'card small muted', text: asleep.length ? 'All clear, apart from what’s snoozed.' : 'All clear.' }), asleepBox),
-        [quiet, glanceCards(me, t, side)]),
+        h('div', { class: 'row wrap' }, sides)),
+      t.glance ? homeTiles(me, t, side, onSide) : null,
+      page([h('div', { class: 'row wrap todo-head' }, h('h2', { class: 'grow', text: 'To do' }), groupSwitch),
+        h('section', { class: 'todos', 'aria-label': 'To do' }, sections.length ? sections : h('div', { class: 'card small muted', text: asleep.length ? 'All clear, apart from what’s snoozed.' : 'All clear.' }), asleepBox)],
+        [quiet, glanceCards(me, t, side, { home: Boolean(t.glance) })]),
     ]));
     errorFor = null;
   }
   draw();
 }
 
-function glanceCards(me, t, side) {
+/** Each tab's color: the edge of its tile on Today, its tag on a to-do, its icon in the rail. */
+const TODO_TABS = {
+  prep: { name: 'Prep', color: '#2E7D4F', go: (me) => prepHome(me) },
+  orders: { name: 'Orders', color: '#A85400', go: (me) => ordersScreen(me) },
+  menu: { name: 'Menu', color: '#1F5FA8', go: (me) => menuScreen(me) },
+  recipes: { name: 'Recipes', color: '#0E7470', go: (me) => recipesScreen(me) },
+  performance: { name: 'Performance', color: '#7A3E9D', go: (me) => marginsScreen(me) },
+  reports: { name: 'Reports', color: '#3D3D3D', go: (me) => reportsScreen(me) },
+  setup: { name: 'Settings', color: '#6B6B6B', go: (me) => home(me) },
+};
+const todoTab = (i) => ({ count: 'prep', review: 'prep', work: 'prep', order: 'orders', orders: 'orders', menu: 'menu', cards: 'recipes', drafts: 'recipes', performance: 'performance', settings: 'setup' })[i.go?.to] ?? (i.group === 'costs' ? 'performance' : i.group === 'setup' ? 'setup' : i.group);
+const TIME_GROUPS = [['now', 'Today', 'Due today, or late'], ['soon', 'This week', 'Due in the next few days'], ['later', 'Whenever you can', 'No deadline']];
+const plusDays = (d, n) => { const x = new Date(`${d}T12:00:00`); x.setDate(x.getDate() + n); return iso(x); };
+function todoGroupKey(i, today, grouping) {
+  if (grouping === 'tab') return todoTab(i);
+  return i.due && i.due <= today ? 'now' : i.due && i.due <= plusDays(today, 7) ? 'soon' : 'later';
+}
+function todoGroupInfo(key, grouping) {
+  if (grouping === 'tab') { const tb = TODO_TABS[key] ?? TODO_TABS.setup; return { key, title: tb.name, color: tb.color, items: [] }; }
+  const [, title, note] = TIME_GROUPS.find(([k]) => k === key) ?? TIME_GROUPS[2];
+  return { key, title, note, items: [] };
+}
+/** The to-dos in groups, in order: by when (today, this week, whenever) or by tab (in the rail's order). */
+function groupTodos(items, today, grouping) {
+  const order = grouping === 'tab' ? Object.keys(TODO_TABS) : TIME_GROUPS.map(([k]) => k);
+  const by = new Map();
+  for (const i of items) { const k = todoGroupKey(i, today, grouping); by.set(k, [...(by.get(k) ?? []), i]); }
+  return order.filter((k) => by.has(k)).map((k) => ({ ...todoGroupInfo(k, grouping), items: by.get(k) }));
+}
+/** A group: its heading and count, the first few lines, and the rest behind "Show N more". */
+function todoSection(g, rows) {
+  const SHOW = 4;
+  const head = h('div', { class: 'todo-group-head' }, h('h3', { text: g.title }), h('span', { class: 'small muted', text: `${rows.length}${g.note ? ` · ${g.note}` : ''}` }));
+  if (g.color) head.style.setProperty('--tab', g.color);
+  const box = h('div', { class: `todo-group${g.color ? ' tabbed' : ''}` }, head, rows.slice(0, SHOW));
+  if (rows.length > SHOW) {
+    const more = h('button', { class: 'link more-link', text: `Show ${rows.length - SHOW} more` });
+    more.addEventListener('click', () => { more.replaceWith(...rows.slice(SHOW)); });
+    box.append(more);
+  }
+  return box;
+}
+
+/** The home page's top row: one tile per tab, its color down the edge, one headline and a line under it. Each opens its tab. */
+function homeTiles(me, t, side, items) {
+  const g = t.glance?.[side];
+  const count = (tab) => items.filter((i) => todoTab(i) === tab).length;
+  const prep = t.prep.filter((s) => side === 'all' || s.side === side);
+  const lists = prep.filter((s) => s.today?.total);
+  const doneLists = lists.filter((s) => s.today.approved && !s.today.left).length;
+  const tiles = [
+    ['prep', lists.length ? `${doneLists} of ${lists.length} done` : t.openToday ? 'No prep today' : 'Closed today',
+      lists.length ? lists.filter((s) => s.today.left).map((s) => `${s.station}: ${s.today.left} left`).slice(0, 2).join(' · ') || 'All lists finished' : prep.map((s) => `${s.station}: ${s.next.counted ?? 0}/${s.next.toCount ?? 0} counted`).slice(0, 2).join(' · ')],
+    ['orders', count('orders') ? `${count('orders')} to look at` : 'Nothing due', items.filter((i) => todoTab(i) === 'orders').map((i) => i.title).slice(0, 1)[0] ?? 'Orders are on track'],
+    ['menu', count('menu') ? `${count('menu')} question${count('menu') === 1 ? '' : 's'}` : 'Up to date', count('menu') ? 'Answer them here or on Menu' : 'No questions waiting'],
+    ['performance', g?.lastDay ? dollars(g.lastDay.netSales, { exact: true }) : '–', g?.lastDay ? `Last service, ${weekdayName(g.lastDay.date)}${g.lastDay.usual ? ` · ${g.lastDay.netSales >= g.lastDay.usual ? '+' : '−'}${Math.abs(Math.round((g.lastDay.netSales / g.lastDay.usual - 1) * 100))}% vs usual` : ''}` : 'No sales yet'],
+    ['recipes', g?.coverage ? `${Math.round((g.coverage.complete / Math.max(g.coverage.complete + g.coverage.gaps + g.coverage.noCard, 1e-9)) * 100)}% costed` : `${count('recipes')} to do`, g?.coverage ? `${g.coverage.noCardCount ?? 0} items without a recipe` : 'Recipes and costs'],
+    ['reports', g?.weekToDate ? dollars(g.weekToDate.netSales, { exact: true }) : g?.lastWeek ? dollars(g.lastWeek.netSales, { exact: true }) : '–', g?.weekToDate ? `This week, through ${weekdayName(g.weekToDate.to)}` : 'Last week'],
+  ];
+  return h('nav', { class: 'home-tiles', 'aria-label': 'Each tab at a glance' }, tiles.map(([key, big, line]) => {
+    const tab = TODO_TABS[key];
+    const tile = h('button', { class: 'home-tile', onclick: () => tab.go(me) },
+      h('span', { class: 'tile-name' }, icon(key === 'performance' ? 'margins' : key), tab.name),
+      h('span', { class: 'tile-big', text: big }), h('span', { class: 'tile-line small muted', text: line }));
+    tile.style.setProperty('--tab', tab.color);
+    return tile;
+  }));
+}
+
+function glanceCards(me, t, side, opts = {}) {
   const g = t.glance?.[side];
   const of = side === 'all' ? '' : `${AREA_NAMES[side]} · `;
   const cards = [];
@@ -2241,11 +2326,11 @@ function glanceCards(me, t, side) {
     return h('div', { class: `small ${c >= 0.03 ? 'trend-up' : c <= -0.03 ? 'trend-down' : 'trend-flat'}`, text: `${c >= 0 ? '+' : '−'}${Math.abs(Math.round(c * 100))}% ${words}` });
   };
   if (g?.coverage) cards.push(coverageCard(me, g.coverage, side));
-  if (g?.lastDay) cards.push(h('div', { class: 'card tight' },
+  if (g?.lastDay && !opts.home) cards.push(h('div', { class: 'card tight' },
     h('div', { class: 'small muted strong', text: `${of}Last service · ${weekdayName(g.lastDay.date)} ${shortDate(g.lastDay.date)}` }),
     h('div', { class: 'big', text: dollars(g.lastDay.netSales, { exact: true }) }),
     versus(g.lastDay.netSales, g.lastDay.usual, `vs a usual ${weekdayName(g.lastDay.date)} (${dollars(g.lastDay.usual, { exact: true })})`)));
-  if (g?.weekToDate) cards.push(h('div', { class: 'card tight' },
+  if (opts.home) { /* the tiles show sales */ } else if (g?.weekToDate) cards.push(h('div', { class: 'card tight' },
     h('div', { class: 'small muted strong', text: `${of}This week, through ${weekdayName(g.weekToDate.to)}` }),
     h('div', { class: 'big', text: dollars(g.weekToDate.netSales, { exact: true }) }),
     versus(g.weekToDate.netSales, g.weekToDate.lastWeek, 'vs the same days last week')));
