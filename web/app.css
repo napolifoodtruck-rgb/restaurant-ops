@@ -528,3 +528,13 @@ svg.time-bars line.usual { stroke: var(--orange); stroke-width: 1; stroke-dashar
 .block { display: block; }
 .check, .check.small, .check.on { border-radius: 0; }
 .station-time .big-ish { white-space: nowrap; }
+
+/* Live prep */
+.live-strip { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: #F7F7F5; border-left: 3px solid #000; }
+.live-strip.done { flex-direction: row; align-items: center; gap: 10px; border-left-color: var(--green); }
+.tag.live { background: #000; color: #fff; }
+.tag.live::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #fff; margin-right: 6px; vertical-align: 1px; animation: livepulse 1.6s ease-in-out infinite; }
+@keyframes livepulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .tag.live::before { animation: none; } }
+.ink { color: var(--ink); font-weight: 600; }
+.live-row .right { white-space: pre-line; text-align: right; font-weight: 600; }

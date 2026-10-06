@@ -54,3 +54,14 @@ test('cooks are compared on the same items, in the same amounts', () => {
   // Too few timed items: not shown at all.
   assert.deepEqual(cookPace(times.filter((t) => t.by !== 'marco' || t.date === 'm1'), usuals).map((p) => p.name), ['Ana', 'Luis']);
 });
+
+test('a list in progress: what’s left at the usual times, less what’s already gone on started items', async () => {
+  const { minutesLeft, itemUsuals: usualsOf } = await import('../src/core/prepTiming.ts');
+  const t = (itemId: string, minutes: number) => ({ itemId, name: itemId, minutes, exact: true, stationId: 's', date: 'd' });
+  const usuals = usualsOf([t('dough', 40), t('dough', 40), t('dough', 40), t('basil', 6), t('basil', 6), t('basil', 6)]);
+  const now = at(10, 0);
+  // Dough started 30 minutes ago (10 left), basil not started (6), something never timed (8), two cleaning tasks (4 each).
+  assert.equal(minutesLeft([{ itemId: 'dough', startedAt: at(9, 30) }, { itemId: 'basil' }, { itemId: 'new' }], 2, usuals, now), 32);
+  // Dough running long: still a minute to go, not negative.
+  assert.equal(minutesLeft([{ itemId: 'dough', startedAt: at(8, 0) }], 0, usuals, now), 1);
+});

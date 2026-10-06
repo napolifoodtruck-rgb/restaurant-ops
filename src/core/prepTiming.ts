@@ -169,3 +169,34 @@ export function cookPace(times: ItemTime[], usuals: Map<string, ItemUsual>, min 
     .map(([id, p]) => ({ by: id, name: p.name, items: p.ratios.length, ratio: Math.round(median(p.ratios) * 100) / 100, hours: Math.round((p.minutes / 60) * 10) / 10 }))
     .sort((a, b) => a.ratio - b.ratio);
 }
+
+export interface LeftToDo {
+  itemId: string;
+  amount?: number;
+  /** Already under way. */
+  startedAt?: number;
+}
+
+/**
+ * Minutes of work left on a list in progress: each item still to make at its usual time for
+ * that amount (less what's already gone on one that's been started), a usual item time for
+ * anything never timed, and a few minutes per cleaning task.
+ */
+export function minutesLeft(left: LeftToDo[], cleaningLeft: number, usuals: Map<string, ItemUsual>, now: number, opts: { fallback?: number; perCleaning?: number } = {}): number {
+  const fallback = opts.fallback ?? 8, perCleaning = opts.perCleaning ?? 4;
+  let total = 0;
+  for (const l of left) {
+    const u = usuals.get(l.itemId);
+    const usual = u ? expected(l, u) : fallback;
+    const gone = l.startedAt !== undefined ? Math.max(0, (now - l.startedAt) / MIN) : 0;
+    // A started item that's running long still has a minute or two left.
+    total += Math.max(usual - gone, l.startedAt !== undefined ? 1 : usual);
+  }
+  return Math.round(total + cleaningLeft * perCleaning);
+}
+
+/** A usual item time for a station: the middle of its timed items. */
+export function stationItemUsual(usuals: Map<string, ItemUsual>, itemIds: string[]): number | undefined {
+  const xs = itemIds.map((id) => usuals.get(id)?.minutes).filter((x): x is number => x !== undefined);
+  return xs.length ? median(xs) : undefined;
+}

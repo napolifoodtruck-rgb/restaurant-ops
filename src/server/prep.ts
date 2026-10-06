@@ -23,7 +23,7 @@ import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { getModel } from './model.ts';
 import { nameSimilarity } from '../core/menuLinks.ts';
-import { cookPace, itemTimes, itemUsuals, listSpan, median, type Mark, type WorkedList } from '../core/prepTiming.ts';
+import { cookPace, itemTimes, itemUsuals, listSpan, median, minutesLeft, stationItemUsual, type ItemUsual, type Mark, type WorkedList } from '../core/prepTiming.ts';
 import { batchSuggestion, dayLines, dayShare, onHandFrom, weekdayOf, type BulkOnHand, type StationItem, type StationNeed } from '../core/stationLists.ts';
 
 const UUID = '[0-9a-f-]{36}';
@@ -354,15 +354,47 @@ export async function prepTiming(db: Db, restaurantId: string, today: string, tz
   }
   const times = itemTimes(past);
   const usuals = itemUsuals(times);
+  // A cleaning task's usual time: the gap between one cook's cleaning check-offs, one after another.
+  const cleaningGaps: number[] = [];
+  for (const l of past) {
+    const byCook = new Map<string, number[]>();
+    for (const m of l.marks.filter((x) => !x.itemId)) byCook.set(m.by ?? '', [...(byCook.get(m.by ?? '') ?? []), m.doneAt]);
+    for (const ts of byCook.values()) { ts.sort((a, b) => a - b); for (let i = 1; i < ts.length; i++) { const g = (ts[i]! - ts[i - 1]!) / 60000; if (g > 0 && g <= 20) cleaningGaps.push(g); } }
+  }
   const stationOfItem = new Map(times.map((t) => [t.itemId, t.stationId]));
   return {
     days,
     stations,
+    usuals,
+    perCleaning: cleaningGaps.length >= 5 ? median(cleaningGaps) : 1.5,
     timed: times.length,
     exact: times.filter((t) => t.exact).length,
     slowItems: [...usuals.values()].sort((a, b) => b.minutes - a.minutes).slice(0, 6)
       .map((u) => ({ name: u.name, stationId: stationOfItem.get(u.itemId), minutes: Math.round(u.minutes), times: u.times, ...(u.amount ? { amount: u.amount } : {}), ...(u.unit ? { unit: u.unit } : {}) })),
     cooks: cookPace(times, usuals).map((c) => ({ name: c.name, items: c.items, ratio: c.ratio, hours: c.hours })),
+  };
+}
+
+/** A list in progress, for the live view: done so far, what's on now, and the finish it's heading for. */
+function liveOf(v: Awaited<ReturnType<typeof view>>, startedAt: number, usuals: Map<string, ItemUsual>, usualMinutes: number | undefined, tz: string, perCleaning: number, now = Date.now()) {
+  const work = v.lines.filter((l) => l.kind === 'task' || (l.toMake ?? 0) > 0);
+  const left = work.filter((l) => !l.doneAt);
+  const cleaningLeft = v.checklist.filter((c) => !c.doneAt).length;
+  const done = work.length - left.length;
+  const minutesIn = Math.max(0, Math.round((now - startedAt) / 60000));
+  const lastDone = [...work.map((l) => l.doneAt), ...v.checklist.map((c) => c.doneAt)].filter(Boolean).map((x) => Date.parse(String(x))).sort((a, b) => a - b).pop();
+  if (!left.length && !cleaningLeft) {
+    return { finished: true, done, total: work.length, doneAt: lastDone ? clockOf(lastDone, tz).text : undefined, took: lastDone ? Math.round((lastDone - startedAt) / 60000) : minutesIn, ...(usualMinutes ? { usualMinutes } : {}) };
+  }
+  const fallback = stationItemUsual(usuals, work.map((l) => l.id));
+  const leftMinutes = minutesLeft(left.map((l) => ({ itemId: l.id, ...(l.toMake ? { amount: l.toMake } : {}), ...(l.startedAt ? { startedAt: Date.parse(String(l.startedAt)) } : {}) })), cleaningLeft, usuals, now, { perCleaning, ...(fallback ? { fallback } : {}) });
+  return {
+    finished: false, done, total: work.length, cleaningLeft, minutesIn, leftMinutes,
+    finishAt: clockOf(now + leftMinutes * 60000, tz).text,
+    ...(usualMinutes ? { usualMinutes, behind: minutesIn + leftMinutes - usualMinutes } : {}),
+    // What's being made right now: started and not checked off.
+    now: left.filter((l) => l.startedAt).map((l) => ({ name: l.name, ...(l.startedBy ? { by: l.startedBy } : {}), minutes: Math.round((now - Date.parse(String(l.startedAt))) / 60000) })),
+    next: left.filter((l) => !l.startedAt).slice(0, 3).map((l) => l.name),
   };
 }
 
@@ -390,11 +422,18 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
               (SELECT max(l.done_at) FROM prep_list_lines l WHERE l.list_id = p.id) AS last, s.display_name AS by_name
          FROM prep_lists p LEFT JOIN staff s ON s.id = p.work_started_by WHERE p.restaurant_id = $1 AND p.for_date = $2`, [who.restaurantId, today])).rows
       .filter((r) => r.started).map((r) => [r.station_id, { startedAt: r.started!, start: clockOf(Date.parse(r.started!), tz).text, ...(r.by_name ? { by: r.by_name } : {}), ...(r.last ? { lastDoneAt: r.last } : {}) }]));
+    // Live: each list under way today, how far along, what's being made, and when it should finish.
+    const live = new Map<string, unknown>();
+    for (const [stationId, g] of going) {
+      const v = await view(db, who, stationId, today);
+      if (v.status !== 'approved') continue;
+      live.set(stationId, liveOf(v, Date.parse(g.startedAt), timing.usuals, timing.stations.get(stationId)?.usualMinutes, tz, timing.perCleaning));
+    }
     const manager = atLeast(who.roleLevel, 'manager');
     return send(res, 200, {
       today, tomorrow, canApprove: atLeast(who.roleLevel, 'chef'), canEdit: atLeast(who.roleLevel, 'chef'),
       stations: stations.map((s) => ({ id: s.id, name: s.name, toCount: itemCounts.get(s.id) ?? 0, today: at(s.id, today) ?? null, tomorrow: at(s.id, tomorrow) ?? null,
-        ...(timing.stations.get(s.id) ? { timing: timing.stations.get(s.id) } : {}), ...(going.get(s.id) ? { going: going.get(s.id) } : {}) })),
+        ...(timing.stations.get(s.id) ? { timing: timing.stations.get(s.id) } : {}), ...(going.get(s.id) ? { going: going.get(s.id) } : {}), ...(live.get(s.id) ? { live: live.get(s.id) } : {}) })),
       // How the team's doing: for managers (who's quicker or slower is theirs to see, not the line's).
       ...(manager ? { insights: { days: timing.days, timed: timing.timed, exact: timing.exact, slowItems: timing.slowItems.map((x) => ({ ...x, station: stations.find((s) => s.id === x.stationId)?.name })), cooks: timing.cooks } } : {}),
     }), true;

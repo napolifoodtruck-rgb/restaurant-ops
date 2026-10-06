@@ -777,8 +777,10 @@ const timeOf = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: 'num
 const remember = (k, v) => { try { v === undefined ? localStorage.getItem(k) : localStorage.setItem(k, v); } catch {} };
 const recall = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 
-async function prepHome(me, allStations = false) {
-  loadingScreen(me, 'prep', 'Prep');
+let prepRefresh;
+async function prepHome(me, allStations = false, quiet = false) {
+  clearTimeout(prepRefresh);
+  if (!quiet) loadingScreen(me, 'prep', 'Prep');
   const r = await api('GET', '/api/prep');
   if (!r.ok) return show(shell(me, 'prep', [h('h1', { text: 'Prep' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const p = r.data;
@@ -815,6 +817,7 @@ async function prepHome(me, allStations = false) {
   // One station per row, full width: today and tonight on the left, how long its prep takes on the right.
   const cards = shown.map((s) => h('section', { class: 'card station-card' },
     h('div', { class: 'row' }, h('h2', { class: 'grow', text: s.name }), p.canEdit ? h('button', { class: 'link', text: 'Edit list', onclick: () => prepEdit(me, s.id) }) : null),
+    liveStrip(s),
     h('div', { class: 'station-body' },
       h('div', { class: 'station-days' },
         h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'small muted', text: `Today · ${dayName(p.today)}` }), h('div', { class: 'row tight wrap' }, status(s.today, 'today'), goingText(s))),
@@ -838,7 +841,47 @@ async function prepHome(me, allStations = false) {
       mine ? h('div', { class: 'row' }, h('div', { class: 'grow small muted', text: allStations ? `This iPad is the ${mine.name} station’s.` : `This iPad is the ${mine.name} station’s. Other stations are a tap away.` }),
         h('button', { class: 'link', text: allStations ? `Just ${mine.name}` : 'All stations', onclick: () => prepHome(me, !allStations) })) : null,
       h('div', { class: 'stack' }, cards), addStation ? h('div', {}, addStation) : null,
-    ], [tonight, p.insights ? prepInsights(p) : null, coming, how, book])]));
+    ], [liveNow(p), tonight, p.insights ? prepInsights(p) : null, coming, how, book])]));
+  // While prep is under way, the page keeps itself current (only while it's still the one showing).
+  if (p.stations.some((x) => x.live && !x.live.finished)) {
+    prepRefresh = setTimeout(() => { if (document.querySelector('.station-card')) prepHome(me, allStations, true); }, 30000);
+  }
+}
+
+/** How a list in progress is doing against its usual time: on track within 10 minutes either way. */
+function paceWords(l) {
+  if (l.behind === undefined) return { cls: '', text: `Heading for ${l.finishAt}` };
+  if (l.behind > 10) return { cls: 'warn-text', text: `Heading for ${l.finishAt} · ~${duration(l.behind)} behind` };
+  if (l.behind < -10) return { cls: 'trend-up', text: `Heading for ${l.finishAt} · ~${duration(-l.behind)} ahead` };
+  return { cls: '', text: `On track for ${l.finishAt}` };
+}
+
+/** Live, across the top of a station's box while its list is under way (or just finished). */
+function liveStrip(s) {
+  const l = s.live;
+  if (!l) return null;
+  if (l.finished) return h('div', { class: 'live-strip done' }, h('span', { class: 'tag ok', text: 'Done' }),
+    h('span', { class: 'small', text: `${l.doneAt ? `Finished ${l.doneAt} · ` : ''}took ${duration(l.took)}${l.usualMinutes ? ` (usually ${duration(l.usualMinutes)})` : ''}` }));
+  const pace = paceWords(l);
+  return h('div', { class: 'live-strip' },
+    h('div', { class: 'row tight wrap' }, h('span', { class: 'tag live', text: 'Live' }),
+      h('span', { class: 'strong', text: `${l.done} of ${l.total} done · ${duration(l.minutesIn)} in` }),
+      h('span', { class: 'grow' }), h('span', { class: `small strong ${pace.cls}`, text: pace.text })),
+    progress(l.done, l.total),
+    h('div', { class: 'small muted' }, l.now.length ? [h('span', { class: 'ink', text: 'Now: ' }), l.now.map((x) => `${x.name}${x.by ? ` (${x.by}, ${duration(x.minutes)})` : ''}`).join(' · ')] : null,
+      l.now.length && l.next.length ? ' · ' : null, l.next.length ? `Next: ${l.next.join(', ')}` : null,
+      l.cleaningLeft ? `${l.now.length || l.next.length ? ' · ' : ''}${l.cleaningLeft} cleaning task${l.cleaningLeft === 1 ? '' : 's'} left` : null));
+}
+
+/** Every station under way, at the top of the right column. */
+function liveNow(p) {
+  const going = p.stations.filter((s) => s.live && !s.live.finished);
+  if (!going.length) return null;
+  return sideBox('Live now', h('div', { class: 'list compact' }, going.map((s) => {
+    const pace = paceWords(s.live);
+    return h('div', { class: 'live-row' }, h('span', { class: 'grow' }, h('span', { class: 'strong', text: s.name }), h('span', { class: 'small muted block', text: `${s.live.done} of ${s.live.total} · ${duration(s.live.minutesIn)} in` })),
+      h('span', { class: `small right ${pace.cls}`, text: s.live.behind !== undefined && Math.abs(s.live.behind) > 10 ? `${s.live.finishAt}\n${s.live.behind > 0 ? '+' : '−'}${shortDuration(Math.abs(s.live.behind))}` : s.live.finishAt }));
+  })), h('div', { class: 'small muted', text: 'Expected finish, from the usual time for what’s left. Updates every 30 seconds.' }));
 }
 
 /** "1 h 35 min", "45 min". */
@@ -847,7 +890,7 @@ const shortDuration = (min) => (min < 60 ? `${Math.round(min)}m` : `${Math.floor
 
 /** Today's list under way: when it started and how long it's been going. */
 function goingText(s) {
-  if (!s.going) return null;
+  if (!s.going || s.live) return null; // the live strip says it already
   const mins = Math.max(0, (Date.now() - Date.parse(s.going.startedAt)) / 60000);
   return h('span', { class: 'small muted', text: `Started ${s.going.start}${s.going.by ? ` by ${s.going.by}` : ''} · ${duration(mins)} ago` });
 }
