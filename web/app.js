@@ -361,9 +361,9 @@ function rangePicker(me, state, m) {
 // Sortable columns: what each sorts by, and which way a first click goes.
 const MARGIN_COLUMNS = [
   { key: 'name', label: 'Dish', value: (d) => d.name.toLowerCase(), first: 'asc' },
-  { key: 'plate', label: 'One plate: food | left over', value: (d) => d.leftPerPlate, first: 'desc' },
+  { key: 'plate', label: 'One plate: food | gross profit', value: (d) => d.leftPerPlate, first: 'desc' },
   { key: 'sold', label: 'Sold', value: (d, view) => (view === 'day' ? d.soldPerDay ?? 0 : d.sold), first: 'desc', num: true },
-  { key: 'left', label: (view) => (view === 'day' ? 'Left over per day on the menu' : 'Left over, all of them'), value: (d, view) => (view === 'day' ? d.leftPerDay ?? 0 : d.leftTotal), first: 'desc' },
+  { key: 'left', label: (view) => (view === 'day' ? 'Est. gross profit per day on the menu' : 'Est. gross profit, all of them'), value: (d, view) => (view === 'day' ? d.leftPerDay ?? 0 : d.leftTotal), first: 'desc' },
   { key: 'trend', label: 'Trend, plates a day', value: (d) => (d.trend?.change ?? null), first: 'desc' },
 ];
 
@@ -387,7 +387,7 @@ function renderMargins(me, state, m) {
   const header = performanceHeader(me, state, `${cat ? cat.name + ' · ' : ''}${shortDate(m.from)} – ${shortDate(m.to)}`, `Prices from Square, costs from MarginEdge, priced as of ${shortDate(m.to)}.`);
   const picker = rangePicker(me, { ...state, category: cat?.name }, m);
   const categories = categoryBox(me, state, m, cat?.name, again);
-  const whole = statBox(`${AREA_NAMES[sideOf(me)]} · left after ${bar ? 'pour' : 'food'} cost`, dollars(m.totals.leftOver),
+  const whole = statBox(`${AREA_NAMES[sideOf(me)]} · estimated gross profit`, dollars(m.totals.leftOver),
     h('div', { class: 'small muted', text: `${days} days · ${bar ? 'pour' : 'food'} cost ${pct(m.totals.foodCostShare)} on ${bar ? 'drinks' : 'dishes'} with recipes` }));
   if (!cat) return show(shell(me, 'margins', [header, page([missingNote(m.missing), h('div', { class: 'card small muted', text: 'No dishes with recipes sold in this period.' })], [whole, categories, picker], { sideFirst: true })]));
 
@@ -419,7 +419,7 @@ function renderMargins(me, state, m) {
     const row = h('div', { class: `mrow${d.offSince ? ' off' : ''}` },
       h('div', { class: 'name-cell' }, h('button', { class: 'name linkish', 'aria-expanded': opened ? 'true' : 'false', title: 'Show the plate, ingredient by ingredient', onclick: () => again({ open: opened ? state.open.filter((n) => n !== d.name) : [...(state.open ?? []), d.name] }) }, d.name, h('span', { class: 'muted', text: opened ? ' ▾' : ' ▸' })), note ? h('div', { class: 'small muted', text: note }) : null, role),
       h('div', { class: 'plate-cell' }, h('div', { class: 'row tight' }, plate, h('span', { class: 'small muted', text: `${dollars(d.averagePrice, { cents: true })}` })),
-        h('div', { class: 'small', text: `${dollars(d.plateCost, { cents: true })}${d.estimated ? '*' : ''} food · ${dollars(d.leftPerPlate, { cents: true })} left` })),
+        h('div', { class: 'small', text: `${dollars(d.plateCost, { cents: true })}${d.estimated ? '*' : ''} food · ${dollars(d.leftPerPlate, { cents: true })} profit` })),
       h('div', { class: 'num' }, h('div', { text: d.sold.toLocaleString() }), d.soldPerDay !== undefined ? h('div', { class: 'small muted', text: `${d.soldPerDay}/day` }) : null),
       h('div', {}, h('div', { class: 'row tight' }, (() => { const t = h('div', { class: 'total' }); t.style.width = `calc((100% - 64px) * ${(Math.max(0, value) / maxValue).toFixed(4)})`; return t; })(), h('b', { text: dollars(value) })), other ? h('div', { class: 'small muted', text: other }) : null),
       trendCell(d.trend),
@@ -440,12 +440,13 @@ function renderMargins(me, state, m) {
   const charts = state.mode === 'charts';
   const view = sideBox('View',
     seg('Table or charts', [['Table', !charts, () => again({ mode: 'table' })], ['Charts', charts, () => again({ mode: 'charts' })]]),
-    charts ? null : seg('Left over', [['All of it', !perDay, () => again({ view: 'total' })], ['Per day on', perDay, () => again({ view: 'day' })]]),
+    charts ? null : seg('Estimated gross profit', [['All of it', !perDay, () => again({ view: 'total' })], ['Per day on', perDay, () => again({ view: 'day' })]]),
     charts ? null : h('div', { class: 'small muted', text: perDay ? 'Per open day each dish was on the menu: fair to new dishes and specials.' : 'Across every plate sold in the period.' }));
   const catLeft = cat.dishes.reduce((a, d) => a + d.leftTotal, 0);
-  const summary = statBox(`${cat.name} · left after ${bar ? 'pour' : 'food'} cost`, dollars(catLeft),
+  const summary = statBox(`${cat.name} · estimated gross profit`, dollars(catLeft),
     h('div', { class: 'small muted', text: `${bar ? 'Pour' : 'Food'} cost ${pct(cat.foodCostShare)} · ${cat.dishes.length} ${bar ? 'drinks' : 'dishes'} · ${days} days` }),
-    h('div', { class: 'small muted', text: `Whole ${sideOf(me)} menu: ${dollars(m.totals.leftOver)} left, ${pct(m.totals.foodCostShare)} ${bar ? 'pour' : 'food'} cost.` }));
+    h('div', { class: 'small muted', text: `Whole ${sideOf(me)} menu: ${dollars(m.totals.leftOver)} estimated gross profit, ${pct(m.totals.foodCostShare)} ${bar ? 'pour' : 'food'} cost.` }),
+    h('div', { class: 'small muted', text: `Sales minus each recipe’s ${bar ? 'pour' : 'food'} cost at today’s invoice prices. Waste, comps and labor aren’t in it.` }));
   const noCard = cat.noCard.length ? sideBox(`Selling with no recipe · ${dollars(cat.noCardSales)} not counted`,
     h('div', { class: 'list compact' }, cat.noCard.slice(0, 6).map((x) => h('div', {}, h('span', { class: 'grow', text: x.name }), h('span', { class: 'small muted', text: dollars(x.netSales) })))),
     h('button', { class: 'btn small-btn', text: 'See what’s missing', onclick: () => coverageScreen(me) })) : null;
@@ -469,7 +470,7 @@ function performanceHeader(me, state, kicker, sub) {
 /** The categories down the side: what's left after food in each (or sales, with no costs yet). */
 function categoryBox(me, state, m, current, again) {
   const rows = [
-    ...m.categories.map((c) => ({ name: c.name, text: `${dollars(c.dishes.reduce((a, d) => a + d.leftTotal, 0))} left` })),
+    ...m.categories.map((c) => ({ name: c.name, text: `${dollars(c.dishes.reduce((a, d) => a + d.leftTotal, 0))} gross profit` })),
     ...(m.salesOnly ?? []).map((c) => ({ name: c.name, text: `${dollars(c.netSales)} sales` })),
   ];
   if (!rows.length) return null;
@@ -679,7 +680,7 @@ function stackedBars({ weeks, series, format }) {
   const band = (W - L - R) / weeks.length;
   const bw = Math.min(42, band * 0.7);
   const y = (v) => T + (1 - v / top) * (H - T - B);
-  const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart-svg', role: 'img', 'aria-label': 'Money left after food, by week' });
+  const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart-svg', role: 'img', 'aria-label': 'Estimated gross profit, by week' });
   for (let k = 0; k <= 4; k++) {
     const v = (top / 4) * k;
     svg.append(s('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: k ? 'grid' : 'axis' }), s('text', { x: L - 8, y: y(v) + 4, class: 'tick', 'text-anchor': 'end' }, document.createTextNode(format(v))));
@@ -750,7 +751,7 @@ function chartsView(state, cat, m, again) {
   const others = live.filter((d) => !chosen.includes(d.name));
   const stack = [...picked.map((d) => ({ name: d.name, color: colors[d.name], values: d.weeklyLeft })), ...(others.length ? [{ name: `Other ${cat.name.toLowerCase()} (${others.length})`, color: OTHER, values: m.weeks.map((_, i) => others.reduce((a, d) => a + (d.weeklyLeft?.[i] ?? 0), 0)) }] : [])];
   const leftBars = h('section', { class: 'card' },
-    h('h2', { text: 'Money left after food, week by week' }),
+    h('h2', { text: 'Estimated gross profit, week by week' }),
     h('div', { class: 'small muted', text: `Every ${cat.name.toLowerCase()} with a recipe, stacked; the dishes picked above get their own color. Hover a block for its number.` }),
     legend(stack.map((x) => ({ name: x.name, color: x.color, on: true, fixed: true }))),
     stackedBars({ weeks: m.weeks, series: stack, format: money }));
@@ -1933,7 +1934,7 @@ function glanceCards(me, t, side) {
   if (g?.earners?.length) cards.push(h('div', { class: 'card tight' },
     h('div', { class: 'small muted strong', text: 'Earning most, last 7 days' }),
     h('div', { class: 'list compact' }, g.earners.map((d) => h('div', {}, h('span', { class: 'grow', text: d.name }), h('span', { class: 'small muted', text: `${d.sold} sold` }), h('b', { text: dollars(d.left, { exact: true }) })))),
-    h('div', { class: 'small muted', text: 'What’s left after food cost.' + (g.foodCost !== undefined ? ` Food cost over 90 days: ${pct(g.foodCost)}.` : '') })));
+    h('div', { class: 'small muted', text: 'Estimated gross profit: sales minus the recipe’s food cost.' + (g.foodCost !== undefined ? ` Food cost over 90 days: ${pct(g.foodCost)}.` : '') })));
   else if (g?.sellers?.length) cards.push(h('div', { class: 'card tight' },
     h('div', { class: 'small muted strong', text: 'Selling most, last 7 days' }),
     h('div', { class: 'list compact' }, g.sellers.map((d) => h('div', {}, h('span', { class: 'grow', text: d.name }), h('span', { class: 'small muted', text: `${d.sold} sold` }), h('b', { text: dollars(d.netSales, { exact: true }) })))),
