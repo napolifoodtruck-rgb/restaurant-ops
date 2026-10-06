@@ -276,7 +276,7 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   // Kitchen and bar: categories guessed by name, changed by an admin; people work one side or both.
   assert.equal((await call('POST', '/api/areas', { body: { category: 'Gelato', area: 'bar' }, cookies: marcoOnExpo })).status, 403);
   assert.equal((await call('POST', '/api/areas', { body: { category: 'Gelato', area: 'bar' }, cookies: ownerSession })).status, 200);
-  assert.equal((await call('GET', '/api/menu?area=bar', { cookies: ownerSession })).json.cards, false);
+  assert.equal((await call('GET', '/api/menu?area=bar', { cookies: ownerSession })).json.cards, true); // drinks get recipes too
   assert.equal((await call('POST', `/api/staff/${cookId}/area`, { body: { area: 'bar' }, cookies: ownerSession })).status, 200);
   assert.equal((await call('GET', '/api/me', { cookies: marcoOnExpo })).json.me.area, 'bar');
   assert.equal((await call('POST', `/api/staff/${ownerId}/area`, { body: { area: 'kitchen' }, cookies: marcoOnExpo })).status, 403);
