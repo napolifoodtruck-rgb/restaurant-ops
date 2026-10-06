@@ -424,6 +424,12 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.equal((await call('POST', '/api/answers/undo', { body: { target: offAnswer.target }, cookies: ownerSession })).status, 200);
   assert.ok(Array.isArray((await call('GET', '/api/menu?area=kitchen', { cookies: ownerSession })).json.addable));
 
+  // A layer down in the clickable charts: a drink's discount days; what was spent by vendor.
+  const sodaLayer = (await call('GET', '/api/costs/breakdown?name=House%20Soda', { cookies: ownerSession })).json;
+  assert.deepEqual([sodaLayer.name, sodaLayer.plates, sodaLayer.versions.map((v: any) => v.name)], ['House Soda', 5, ['Full price', 'Tuesday Special']]);
+  assert.equal((await call('GET', '/api/costs/breakdown', { cookies: ownerSession })).status, 400);
+  assert.ok(Array.isArray((await call('GET', '/api/costs/spend?area=bar', { cookies: ownerSession })).json.vendors));
+
   // Nothing secret is stored in the clear.
   const stored = await db!.query<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = $1', [cookId]);
   assert.match(stored.rows[0]!.pin_hash, /^scrypt\$/);

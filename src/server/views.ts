@@ -151,6 +151,7 @@ export function marginsView(model: Model, view: AreaView = ALL) {
       foodCostShare: share(netSales > 0 ? food / netSales : 0),
       gaps: gapsOf(model, dishes),
       dishes: dishes.map((d) => ({
+        recipeId: d.recipeId,
         name: d.name,
         sold: Math.round(d.quantity),
         averagePrice: money(d.averagePrice),

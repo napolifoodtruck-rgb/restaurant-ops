@@ -74,7 +74,25 @@ async function api(method, path, body) {
 
 /** Replace an element's children, skipping empty slots (null, false, nested arrays flattened). */
 function fill(el, ...kids) { el.replaceChildren(...kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false)); }
-function show(...nodes) { fill(app, ...nodes); }
+// A screen redrawn after something done on it (an answer, a check-off) stays where you were:
+// no fading, no bar, the same scroll position.
+let inPlace = false;
+function show(...nodes) {
+  const y = window.scrollY, keep = inPlace;
+  inPlace = false;
+  fill(app, ...nodes);
+  if (keep) window.scrollTo(0, y);
+}
+/** Redraws a screen in place: call it after an action on that screen succeeds. */
+function refreshInPlace(draw) { inPlace = true; return draw(); }
+/** The line someone just answered folds away; the rest of the page stays put. */
+function foldAway(row) {
+  if (!row) return Promise.resolve();
+  row.style.height = `${row.offsetHeight}px`;
+  row.classList.add('leaving');
+  requestAnimationFrame(() => { row.style.height = '0px'; });
+  return new Promise((done) => setTimeout(() => { row.remove(); done(); }, 220));
+}
 
 /**
  * The page formula, on every screen: the work in the middle, things to glance at in boxes
@@ -310,6 +328,7 @@ function shell(me, active, content) {
  * along the top, until the new one replaces it. Only the very first screen starts from a blank page.
  */
 function loadingScreen(me, active, title) {
+  if (inPlace) return;
   const current = app.querySelector('.shell');
   if (current) {
     current.querySelector('main')?.classList.add('stale');
@@ -418,41 +437,101 @@ function perfToolbar(me, state, m, current, again, mode) {
  * Who brings in the money, as a share: a donut of the five biggest and everyone else, with the
  * numbers beside it (a donut alone is for a glance; the list is for reading).
  */
-function shareDonut(items, { format, total: totalLabel }) {
-  const sorted = items.filter((x) => x.value > 0).sort((a, b) => b.value - a.value);
-  if (!sorted.length) return null;
-  const top = sorted.slice(0, 5);
-  const rest = sorted.slice(5);
-  const parts = [...top.map((x, i) => ({ ...x, color: SERIES[i] })), ...(rest.length ? [{ name: `Other (${rest.length})`, value: rest.reduce((a, x) => a + x.value, 0), color: OTHER }] : [])];
-  const total = parts.reduce((a, x) => a + x.value, 0);
-  const R = 74, r = 48, C = 80;
-  const svg = s('svg', { viewBox: '0 0 160 160', class: 'donut', role: 'img', 'aria-label': parts.map((x) => `${x.name} ${Math.round((x.value / total) * 100)}%`).join(', ') });
-  const centre = h('div', { class: 'donut-centre' });
-  const showCentre = (title, value, sub) => fill(centre, h('div', { class: 'donut-big', text: value }), h('div', { class: 'small muted', text: title }), sub ? h('div', { class: 'small muted', text: sub }) : null);
-  const reset = () => showCentre(totalLabel, format(total));
-  const point = (rad, a) => [C + rad * Math.sin(a), C - rad * Math.cos(a)];
-  let a0 = 0;
-  const marks = parts.map((x) => {
-    const a1 = a0 + (x.value / total) * Math.PI * 2;
-    const large = a1 - a0 > Math.PI ? 1 : 0;
-    const [x0, y0] = point(R, a0), [x1, y1] = point(R, Math.min(a1, a0 + Math.PI * 2 - 1e-4)), [x2, y2] = point(r, Math.min(a1, a0 + Math.PI * 2 - 1e-4)), [x3, y3] = point(r, a0);
-    const path = s('path', { d: `M${x0},${y0} A${R},${R} 0 ${large} 1 ${x1},${y1} L${x2},${y2} A${r},${r} 0 ${large} 0 ${x3},${y3} Z`, fill: x.color, class: 'slice', tabindex: 0 });
-    a0 = a1;
-    return path;
-  });
-  marks.forEach((m) => svg.append(m));
-  const share = (x) => `${Math.round((x.value / total) * 100)}%`;
-  const legendRows = parts.map((x, i) => {
-    const row = h('div', { class: 'donut-row' }, (() => { const k = h('span', { class: 'cov-key' }); k.style.background = x.color; return k; })(),
-      h('span', { class: 'grow', text: x.name }), h('b', { text: share(x) }), h('span', { class: 'small muted', text: format(x.value) }));
-    const on = () => { marks.forEach((m, j) => m.classList.toggle('dim', j !== i)); legendRows.forEach((l, j) => l.classList.toggle('on', j === i)); showCentre(x.name, share(x), format(x.value)); };
-    const off = () => { marks.forEach((m) => m.classList.remove('dim')); legendRows.forEach((l) => l.classList.remove('on')); reset(); };
-    for (const el of [row, marks[i]]) { el.addEventListener('pointerenter', on); el.addEventListener('pointerleave', off); }
-    marks[i].addEventListener('focus', on); marks[i].addEventListener('blur', off);
-    return row;
-  });
-  reset();
-  return [h('div', { class: 'donut-wrap' }, svg, centre), h('div', { class: 'donut-legend' }, legendRows)];
+/** A donut of shares (the top five and Other), with a legend. Same as a drill-down chart with nothing below. */
+function shareDonut(items, { format, total }) {
+  return drillDonut({ title: total, format, items });
+}
+
+/**
+ * The one clickable pie for the whole app. A layer is { title (what the middle totals), crumb (its name in the
+ * trail), format, items: [{ name, value, open?() → layer (or a promise of one), go?() }], note? }.
+ * Click a slice (or its legend line) to go a layer down; the middle shows the way back up, and the trail
+ * under the chart jumps to any layer above. Other opens into the items it grouped.
+ */
+function drillDonut(root) {
+  if (!root.items.some((x) => x.value > 0)) return null;
+  const box = h('div', { class: 'drill' });
+  const stack = [root];
+  const draw = () => fill(box, drawLayer());
+  const enter = async (next, row) => {
+    if (row) row.classList.add('loading');
+    const layer = await next;
+    if (!layer || !layer.items?.some((x) => x.value > 0)) { if (row) { row.classList.remove('loading'); row.append(h('span', { class: 'small muted', text: ' · nothing below this' })); } return; }
+    stack.push(layer);
+    draw();
+    box.querySelector('.donut-back')?.focus();
+  };
+  const back = (to = stack.length - 2) => { if (to < 0) return; stack.length = to + 1; draw(); };
+  function drawLayer() {
+    const node = stack[stack.length - 1];
+    const format = node.format ?? stack[0].format;
+    const sorted = node.items.filter((x) => x.value > 0).sort((p, q) => q.value - p.value);
+    if (!sorted.length) return null;
+    const top = sorted.length > 6 ? sorted.slice(0, 5) : sorted;
+    const rest = sorted.slice(top.length);
+    const parts = [...top.map((x, i) => ({ ...x, color: SERIES[i] })),
+      ...(rest.length ? [{ name: `Other (${rest.length})`, value: rest.reduce((a, x) => a + x.value, 0), color: OTHER, open: () => ({ title: node.title, crumb: 'Other', format, items: rest }) }] : [])];
+    const total = parts.reduce((a, x) => a + x.value, 0);
+    const R = 74, r = 48, C = 80;
+    const svg = s('svg', { viewBox: '0 0 160 160', class: 'donut', role: 'img', 'aria-label': parts.map((x) => `${x.name} ${Math.round((x.value / total) * 100)}%`).join(', ') });
+    const deep = stack.length > 1;
+    const centre = h('div', { class: `donut-centre${deep ? ' can-back' : ''}` });
+    const showCentre = (title, value, sub) => fill(centre,
+      deep ? h('button', { class: 'donut-back', 'aria-label': `Back to ${stack[stack.length - 2].crumb ?? 'the start'}`, onclick: () => back() }, `‹ ${stack[stack.length - 2].crumb ?? 'Back'}`) : null,
+      h('div', { class: 'donut-big', text: value }), h('div', { class: 'small muted', text: title }), sub ? h('div', { class: 'small muted', text: sub }) : null);
+    const reset = () => showCentre(node.title, format(total));
+    const point = (rad, a) => [C + rad * Math.sin(a), C - rad * Math.cos(a)];
+    let a0 = 0;
+    const can = (x) => Boolean(x.open || x.go);
+    const pick = (x, row) => (x.go ? x.go() : x.open ? enter(Promise.resolve(x.open()).then((l) => l && { crumb: x.name, ...l }), row) : null);
+    const marks = parts.map((x) => {
+      const a1 = a0 + (x.value / total) * Math.PI * 2;
+      const large = a1 - a0 > Math.PI ? 1 : 0;
+      const end = Math.min(a1, a0 + Math.PI * 2 - 1e-4);
+      const [x0, y0] = point(R, a0), [x1, y1] = point(R, end), [x2, y2] = point(r, end), [x3, y3] = point(r, a0);
+      const path = s('path', { d: `M${x0},${y0} A${R},${R} 0 ${large} 1 ${x1},${y1} L${x2},${y2} A${r},${r} 0 ${large} 0 ${x3},${y3} Z`, fill: x.color, class: `slice${can(x) ? ' can-open' : ''}`, tabindex: 0, role: can(x) ? 'button' : 'img', 'aria-label': `${x.name}, ${format(x.value)}${can(x) ? ': open' : ''}` });
+      a0 = a1;
+      return path;
+    });
+    marks.forEach((m) => svg.append(m));
+    // The hole goes back up a layer.
+    if (deep) { const hole = s('circle', { cx: C, cy: C, r: r - 2, class: 'donut-hole' }); hole.addEventListener('click', () => back()); svg.append(hole); }
+    const share = (x) => `${Math.round((x.value / total) * 100)}%`;
+    const legendRows = parts.map((x, i) => {
+      const key = h('span', { class: 'cov-key' }); key.style.background = x.color;
+      const row = h(can(x) ? 'button' : 'div', { class: `donut-row${can(x) ? ' can-open' : ''}` }, key,
+        h('span', { class: 'grow', text: x.name, title: x.name }), h('b', { text: share(x) }), h('span', { class: 'small muted', text: format(x.value) }), can(x) ? h('span', { class: 'chev', text: '›' }) : null);
+      const on = () => { marks.forEach((m, j) => m.classList.toggle('dim', j !== i)); legendRows.forEach((l, j) => l.classList.toggle('on', j === i)); showCentre(x.name, share(x), format(x.value)); };
+      const off = () => { marks.forEach((m) => m.classList.remove('dim')); legendRows.forEach((l) => l.classList.remove('on')); reset(); };
+      for (const el of [row, marks[i]]) { el.addEventListener('pointerenter', on); el.addEventListener('pointerleave', off); }
+      marks[i].addEventListener('focus', on); marks[i].addEventListener('blur', off);
+      if (can(x)) {
+        row.addEventListener('click', () => pick(x, row));
+        marks[i].addEventListener('click', () => pick(x, row));
+        marks[i].addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(x, row); } });
+      }
+      return row;
+    });
+    reset();
+    const trail = deep ? h('nav', { class: 'donut-trail', 'aria-label': 'Layers' }, stack.map((l, i) => [i ? h('span', { class: 'muted', text: ' › ' }) : null,
+      i === stack.length - 1 ? h('b', { text: l.crumb ?? 'All' }) : h('button', { class: 'linkish', text: l.crumb ?? 'All', onclick: () => back(i) })])) : null;
+    return [trail, h('div', { class: 'donut-wrap' }, svg, centre), h('div', { class: 'donut-legend' }, legendRows), node.note ?? null,
+      !deep && parts.some(can) ? h('div', { class: 'small muted', text: 'Click a slice to go a layer deeper; the middle brings you back.' }) : null];
+  }
+  draw();
+  return box;
+}
+
+/** A dish or drink a layer down: full price against each discount day, or the dish itself against each paid add-on (free changes listed under). */
+async function breakdownLayer(m, query) {
+  const r = await api('GET', `/api/costs/breakdown?${query}&from=${m.from}&to=${m.to}`);
+  if (!r.ok) return null;
+  const d = r.data;
+  const free = d.free?.length ? h('div', { class: 'small' }, h('div', { class: 'small muted strong', text: 'Free changes (no charge)' }),
+    h('div', { class: 'list compact' }, d.free.map((f) => h('div', {}, h('span', { class: 'grow', text: f.name }), h('span', { class: 'small muted', text: `${f.uses.toLocaleString()}×` }))))) : null;
+  if (d.versions?.length) return { title: 'sales', format: dollars, items: d.versions.map((v) => ({ name: `${v.name} (${v.quantity.toLocaleString()} sold)`, value: v.value })), note: free };
+  if (!d.addOns.length && !free) return null;
+  return { title: 'sales', format: dollars, items: [{ name: `${d.name} itself`, value: d.base }, ...d.addOns.map((a) => ({ name: `${a.name} (${a.uses.toLocaleString()}×)`, value: a.value }))], note: free };
 }
 
 /** Which dishes are picking up or slowing down: plates a day, the latest weeks against the earlier ones. */
@@ -556,9 +635,9 @@ function renderMargins(me, state, m) {
   const noCard = cat.noCard.length ? sideBox(`Selling with no recipe · ${dollars(cat.noCardSales)} not counted`,
     h('div', { class: 'list compact' }, cat.noCard.slice(0, 6).map((x) => h('div', {}, h('span', { class: 'grow', text: x.name }), h('span', { class: 'small muted', text: dollars(x.netSales) })))),
     h('button', { class: 'btn small-btn', text: 'See what’s missing', onclick: () => coverageScreen(me) })) : null;
-  const donut = shareDonut(cat.dishes.map((d) => ({ name: d.name, value: d.leftTotal })), { format: dollars, total: 'gross profit' });
+  const donut = drillDonut({ title: 'gross profit', crumb: cat.name, format: dollars, items: cat.dishes.map((d) => ({ name: d.name, value: d.leftTotal, open: () => breakdownLayer(m, `recipeId=${encodeURIComponent(d.recipeId)}`) })) });
   const split = donut ? sideBox(`Gross profit by ${bar ? 'drink' : 'dish'}`, donut,
-    h('div', { class: 'small muted', text: `Share of ${cat.name.toLowerCase()}’s estimated gross profit in the period. Hover for each.` })) : null;
+    h('div', { class: 'small muted', text: `Share of ${cat.name.toLowerCase()}’s estimated gross profit in the period. A layer down: what that ${bar ? 'drink' : 'dish'} sold, by add-on${bar ? ' or discount day' : ''}.` })) : null;
   const side = [summary, split, moversBox(cat.dishes, bar ? 'Drinks' : 'Plates'), noCard];
   if (charts) return show(shell(me, 'margins', [header, toolbar, page([early, missingNote(m.missing), ...chartsView(state, cat, m, again)], side)]));
   const table = h('section', { class: 'card' },
@@ -602,8 +681,8 @@ function renderSalesOnly(me, state, m, cat) {
   const summary = statBox(`${cat.name} · sales`, dollars(cat.netSales), h('div', { class: 'small muted', text: `${Math.round(sold).toLocaleString()} sold · ${cat.items.length} items · no costs yet` }));
   const cards = sideBox('Costs', h('div', { class: 'small muted', text: 'Every drink gets a recipe: a pour from the bottle or keg, a cocktail spec, one can. Then pour cost shows here like food cost does in the kitchen.' }),
     sideActions(h('button', { class: 'btn small-btn', text: 'See what’s missing', onclick: () => coverageScreen(me) })));
-  const split = shareDonut(cat.items.map((i) => ({ name: i.name, value: i.netSales })), { format: dollars, total: 'sales' });
-  const bySales = split ? sideBox('Sales by drink', split, h('div', { class: 'small muted', text: `Share of ${cat.name.toLowerCase()} sales in the period. Hover for each.` })) : null;
+  const split = drillDonut({ title: 'sales', crumb: cat.name, format: dollars, items: cat.items.map((i) => ({ name: i.name, value: i.netSales, open: () => breakdownLayer(m, `name=${encodeURIComponent(i.name)}`) })) });
+  const bySales = split ? sideBox('Sales by drink', split, h('div', { class: 'small muted', text: `Share of ${cat.name.toLowerCase()} sales in the period. Click a drink for full price against its discount days.` })) : null;
   show(shell(me, 'margins', [header, perfToolbar(me, { ...state, category: cat.name }, m, cat.name, again), page(table, [summary, bySales, cards])]));
 }
 
@@ -1111,7 +1190,7 @@ async function prepReview(me, stationId, date) {
   const r = await api('GET', `/api/prep/${stationId}/${date}`);
   if (!r.ok) return show(shell(me, 'prep', [h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const v = r.data;
-  const again = () => prepReview(me, stationId, date);
+  const again = () => refreshInPlace(() => prepReview(me, stationId, date));
   const make = (l, val) => api('POST', `/api/prep/${stationId}/${date}/make`, { itemId: l.id, toMake: val });
   const uncounted = v.lines.filter((l) => l.kind === 'count' && l.counted === undefined);
   const rows = v.lines.map((l) => {
@@ -1152,7 +1231,7 @@ async function prepWork(me, stationId, date) {
   const r = await api('GET', `/api/prep/${stationId}/${date}`);
   if (!r.ok) return show(shell(me, 'prep', [h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const v = r.data;
-  const again = () => prepWork(me, stationId, date);
+  const again = () => refreshInPlace(() => prepWork(me, stationId, date));
   if (v.status !== 'approved') {
     return show(shell(me, 'prep', [prepHeader(me, v, 'Today’s prep', 'This list hasn’t been approved yet.'),
       page(h('div', { class: 'card small muted', text: 'A chef approves the list after last night’s count. It shows up here once that’s done.' }),
@@ -1225,7 +1304,7 @@ async function prepEdit(me, stationId) {
   const r = await api('GET', `/api/prep/${stationId}/setup`);
   if (!r.ok) return show(shell(me, 'prep', [h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const s = r.data;
-  const again = () => prepEdit(me, stationId);
+  const again = () => refreshInPlace(() => prepEdit(me, stationId));
   const save = async (path, body) => { const res = await api('POST', path, body); if (!res.ok) alertLine.textContent = res.data.error ?? 'Not saved'; return res.ok; };
   const alertLine = h('div', { class: 'error', role: 'alert' });
   const move = async (list, i, dir, key) => {
@@ -1357,15 +1436,18 @@ async function menuScreen(me) {
     cardEditor(me, d, null, { name: x.pos?.itemName ?? x.name, kind: side === 'bar' ? 'drink' : 'dish', link: x.pos ? [{ ...x.pos, name: x.name }] : [] });
   };
   // Any change saves, then the page comes back with fresh numbers (staying on the same chip).
+  // The spinner stays on the button until it's saved; then that line folds away and the page refreshes where it is.
   const save = async (el, path, body, row) => {
+    pressed = null;
     busy(el, true);
     const res = await api('POST', path, body);
     if (!res.ok) { busy(el, false); return (row ?? el.parentNode).append(h('div', { class: 'error small', text: res.data.error ?? 'Not saved.' })); }
-    menuScreen(me);
+    await foldAway(row === undefined ? el.closest('.ask, .list > div') : row);
+    refreshInPlace(() => menuScreen(me));
   };
   // Same drink, different price: discount buttons folded in show under the drink, each can be kept apart;
   // a button the name doesn't give away can be folded into another variation of the same item by hand.
-  const priceVariation = (el, body) => save(el, '/api/menu/price-variation', body);
+  const priceVariation = (el, body) => save(el, '/api/menu/price-variation', body, null);
   const siblings = (x) => (x.pos?.variationName ? m.current.filter((o) => o !== x && o.pos && o.pos.itemName === x.pos.itemName && o.pos.catalogId !== x.pos.catalogId) : []);
   const includesLine = (x) => (x.includes?.length ? h('div', { class: 'small muted includes' }, 'Includes ', x.includes.map((v, n) => [n ? ', ' : '',
     h('span', { text: `${v.variationName || v.name} (${Math.round(v.quantity)} sold)` }), ' ',
@@ -1384,18 +1466,22 @@ async function menuScreen(me) {
     h('span', { class: 'small muted nowrap', text: right }));
 
   // Questions: about what's selling, and quiet dishes (still on, or came off?).
-  const answer = async (body, row) => {
+  const answer = async (body, row, el) => {
+    pressed = null;
     row.querySelectorAll('button, select').forEach((b) => (b.disabled = true));
+    busy(el, true);
     const res = await api('POST', '/api/answers', body);
     if (!res.ok) {
+      busy(el, false);
       row.querySelectorAll('button, select').forEach((b) => (b.disabled = false));
       return row.append(h('div', { class: 'error', text: res.data.error ?? 'That didn’t save.' }));
     }
-    menuScreen(me);
+    await foldAway(row);
+    refreshInPlace(() => menuScreen(me));
   };
-  const choices = (row, buttons) => h('div', { class: 'row wrap' }, buttons.map(([label, body, cls]) => h('button', { class: `btn small-btn${cls ? ' ' + cls : ''}`, text: label, onclick: () => answer(body, row) })));
+  const choices = (row, buttons) => h('div', { class: 'row wrap' }, buttons.map(([label, body, cls]) => h('button', { class: `btn small-btn${cls ? ' ' + cls : ''}`, text: label, onclick: (e) => answer(body, row, e.currentTarget) })));
   const otherCard = (row, item) => {
-    const select = h('select', { 'aria-label': 'Another recipe', onchange: () => select.value && answer({ type: 'link', ...item, recipe: select.value }, row) },
+    const select = h('select', { 'aria-label': 'Another recipe', onchange: () => select.value && answer({ type: 'link', ...item, recipe: select.value }, row, select) },
       h('option', { value: '', text: 'Another recipe…' }), (m.recipes ?? []).map((r) => h('option', { value: r, text: r })));
     return select;
   };
@@ -1473,7 +1559,7 @@ async function menuScreen(me) {
     h('button', { class: 'link', text: k.kind === 'merge' ? 'Undo' : 'Fold back', onclick: (e) => priceVariation(e.currentTarget, { catalogId: k.catalogId, action: 'reset' }) })))),
     h('div', { class: 'small muted', text: 'Discount buttons (Tuesday $10, half-price Wednesday) count as the drink they discount, unless kept apart here.' })) : null;
   const needCard = m.cards ? m.current.filter((x) => !x.hasCard).length : 0;
-  const answers = manager ? answersBox(me, () => menuScreen(me)) : null;
+  const answers = manager ? answersBox(me, () => refreshInPlace(() => menuScreen(me))) : null;
 
   async function draw() {
     const chips = h('div', { class: 'chips-row', role: 'tablist', 'aria-label': 'Show' },
@@ -1543,6 +1629,7 @@ function answersBox(me, redraw) {
         busy(undo, true);
         const res = await api('POST', '/api/answers/undo', { target: a.target });
         if (!res.ok) { busy(undo, false); return row.append(h('div', { class: 'error small', text: res.data.error ?? 'Not undone.' })); }
+        await foldAway(row);
         redraw();
       });
       return row;
@@ -1655,7 +1742,7 @@ async function recipesScreen(me, state = {}) {
 async function recipePage(me, name, opts = {}) {
   const r = await api('GET', `/api/recipes/${encodeURIComponent(name)}`);
   if (!r.ok) return show(shell(me, 'recipes', [h('h1', { text: name }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
-  const v = recipeView(me, r.data, { open: (n) => recipePage(me, n), back: h('button', { class: 'btn', text: '← Recipes', onclick: () => recipesScreen(me) }), page: true, reload: () => recipePage(me, name, opts), ...opts });
+  const v = recipeView(me, r.data, { open: (n) => recipePage(me, n), back: h('button', { class: 'btn', text: '← Recipes', onclick: () => recipesScreen(me) }), page: true, reload: () => refreshInPlace(() => recipePage(me, name, opts)), ...opts });
   show(shell(me, 'recipes', [v.head, page(v.body, v.side)]));
 }
 
@@ -2097,7 +2184,7 @@ async function todayScreen(me, filter = 'all') {
   // Fetches again quietly and redraws: the page never goes blank for it.
   const refresh = async () => {
     const again = await api('GET', '/api/today');
-    if (again.ok && here()) { t = again.data; draw(); }
+    if (again.ok && here()) { t = again.data; inPlace = true; draw(); }
   };
   const go = (g) => ({
     count: () => prepCount(me, g.stationId, g.date), review: () => prepReview(me, g.stationId, g.date), work: () => prepWork(me, g.stationId, g.date),
@@ -2216,7 +2303,7 @@ async function todayScreen(me, filter = 'all') {
       asleep.length ? `${asleep.length} snoozed.` : null,
     ].filter(Boolean).join(' ');
     // The list, in groups: by when it's needed, or by tab. Folded-up lines stay in their group.
-    const grouping = recall('todayGroup') === 'tab' ? 'tab' : 'time';
+    const grouping = 'time';
     const groupsOf = groupTodos(shown, t.today, grouping);
     const doneByGroup = new Map();
     for (const [key, d] of done) {
@@ -2230,15 +2317,13 @@ async function todayScreen(me, filter = 'all') {
       return todoSection(g, rows);
     });
     for (const [gk, keys] of doneByGroup) if (!groupsOf.some((g) => g.key === gk)) sections.push(todoSection(todoGroupInfo(gk, grouping), keys.map(doneRow)));
-    const groupSwitch = h('div', { class: 'seg', role: 'group', 'aria-label': 'Group the list' },
-      [['time', 'By when'], ['tab', 'By tab']].map(([k, label]) => h('button', { class: grouping === k ? 'on' : '', 'aria-pressed': String(grouping === k), text: label, onclick: () => { remember('todayGroup', k); draw(); } })));
 
     show(shell(me, 'today', [
       h('header', { class: 'row wrap' },
         h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${longDay(t.today)} · ${me.restaurantName}` }), h('h1', { text: 'Today' }), h('div', { class: 'sub', text: sub })),
         h('div', { class: 'row wrap' }, sides)),
       t.glance ? homeTiles(me, t, side, onSide) : null,
-      page([h('div', { class: 'row wrap todo-head' }, h('h2', { class: 'grow', text: 'To do' }), groupSwitch),
+      page([h('div', { class: 'row wrap todo-head' }, h('h2', { class: 'grow', text: 'To do' })),
         h('section', { class: 'todos', 'aria-label': 'To do' }, sections.length ? sections : h('div', { class: 'card small muted', text: asleep.length ? 'All clear, apart from what’s snoozed.' : 'All clear.' }), asleepBox)],
         [quiet, glanceCards(me, t, side, { home: Boolean(t.glance) })]),
     ]));
@@ -2605,7 +2690,11 @@ function menuReportView(d, lastYear, has, early, sortBy) {
   const up = [...movers].sort((a, b) => ch(b) - ch(a)).filter((i) => ch(i) > 0.05).slice(0, 4);
   const down = [...movers].sort((a, b) => ch(a) - ch(b)).filter((i) => ch(i) < -0.05).slice(0, 4);
   const side = [
-    (() => { const dn = shareDonut(d.categories.map((c) => ({ name: c.name, value: c.sales })), { format: dollars, total: 'sales' }); return dn ? sideBox('Sales by category', dn) : null; })(),
+    (() => {
+      const dn = drillDonut({ title: 'sales', crumb: 'Categories', format: dollars, items: d.categories.map((c) => ({ name: c.name, value: c.sales,
+        open: () => ({ title: 'sales', items: c.items.map((i) => ({ name: i.name, value: i.sales, ...(i.variations ? { open: () => ({ title: 'sales', items: i.variations.map((v) => ({ name: `${v.name} (${qty(v.quantity)} sold)`, value: v.sales })) }) } : {}) })) }) })) });
+      return dn ? sideBox('Sales by category', dn, h('div', { class: 'small muted', text: 'Click a category for its items, and an item sold more than one way (size, glass or bottle, a discount day) for those.' })) : null;
+    })(),
     total ? sideBox('How items were ordered', h('div', { class: 'list compact' },
       [['Table orders', 'table', 'mix-table'], ['To go at the register', 'register', 'mix-togo'], ['Online', 'online', 'mix-online']].map(([label, k, cls]) => h('div', {}, h('span', { class: `cov-key ${cls}` }), h('span', { class: 'grow', text: label }), h('b', { text: `${Math.round((sum(k) / total) * 100)}%` }), h('span', { class: 'small muted', text: qty(Math.round(sum(k))) }))))) : null,
     up.length || down.length ? sideBox(`Moving, against ${word}`, h('div', { class: 'list compact' },
@@ -2861,7 +2950,7 @@ function recipeNode(d, node, down, go) {
     h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: d.name }), h('div', { class: 'big', text: dollars(d.total, { cents: true }) })),
     h('div', { class: 'small muted', text: `${forWhat[0].toUpperCase()}${forWhat.slice(1)}${d.asked && d.perBatch ? ` · ${dollars(d.perBatch, { cents: true })} for a whole batch of ${unitAmount(d.yield.amount, d.yield.unit)}` : ''}${d.complete ? '' : ' · * some ingredients have no price yet'}. Click a line to go down a step.` }),
     lines)];
-  const donut = shareDonut(d.lines.map((l) => ({ name: l.name, value: l.cost })), { format: (v) => dollars(v, { cents: true }), total: forWhat });
+  const donut = drillDonut({ title: forWhat, format: (v) => dollars(v, { cents: true }), items: d.lines.map((l) => ({ name: l.name, value: l.cost, ...(l.kind === 'recipe' || l.kind === 'product' ? { go: () => down(l) } : {}) })) });
   const sideBoxes = [
     d.price !== undefined ? statBox('Food cost', d.price ? `${Math.round((d.total / d.price) * 100)}%` : '–', h('div', { class: 'small muted', text: `${dollars(d.total, { cents: true })} of an average ${dollars(d.price, { cents: true })} paid · ${d.sold.toLocaleString()} sold lately` })) : null,
     donut ? sideBox('Where the cost goes', donut) : null,
@@ -3016,8 +3105,20 @@ async function ordersScreen(me) {
         h('div', { class: 'sub', text: 'Drafted from what you’ve been buying, weighted to your busy days, less what’s on hand. Next delivery first.' })),
       sideSwitch(me, () => ordersScreen(me))),
     page(active.length ? h('div', { class: 'stack' }, active.map(vendorCard)) : h('div', { class: 'card small muted', text: 'No vendors with regular deliveries yet. They appear after a few weeks of invoices.' }),
-      [week, status, cutoffs, recentBox, pausedBox]),
+      [week, status, spendBox(me, side), cutoffs, recentBox, pausedBox]),
   ]));
+}
+
+/** Where the money went, last 30 days: each vendor, then what was bought from them; an item opens its prices. Fills in after the page is up. */
+function spendBox(me, side) {
+  const box = sideBox('Spent, last 30 days', h('div', { class: 'small muted', text: 'Loading…' }));
+  api('GET', `/api/costs/spend?area=${side}&days=30`).then((r) => {
+    if (!r.ok || !r.data.vendors.length) return box.remove();
+    const dn = drillDonut({ title: 'spent', crumb: 'Vendors', format: dollars, items: r.data.vendors.map((v) => ({ name: v.vendor, value: v.spent,
+      open: () => ({ title: 'spent', items: v.items.map((i) => ({ name: i.name, value: i.spent, ...(i.id ? { go: () => reportsScreen(me, { report: 'prices', trail: [{ kind: 'product', id: i.id, name: i.name }] }) } : {}) })) }) })) });
+    fill(box, h('div', { class: 'small muted strong', text: 'Spent, last 30 days' }), dn, h('div', { class: 'small muted', text: 'From the invoices. Click a vendor for what you bought from them, and an item for its price over time.' }));
+  });
+  return box;
 }
 
 /** One vendor's order for one delivery: lines to review, then approve, then send. */

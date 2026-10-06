@@ -692,3 +692,20 @@ select.small-select { height: 32px; font-size: 12px; max-width: 160px; }
 .tab-tag { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--tab); }
 .todo-group.tabbed .tab-tag { display: none; }
 .more-link { justify-self: start; }
+
+/* Clickable pies: a layer down on a click, back up from the middle */
+.drill { display: grid; gap: 8px; }
+svg.donut .slice:not(.can-open) { cursor: default; }
+svg.donut .donut-hole { fill: transparent; cursor: pointer; }
+.donut-centre .donut-back { pointer-events: auto; background: none; border: 0; padding: 2px 6px; font: inherit; font-size: 12px; font-weight: 600; color: var(--blue); cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.donut-row { width: 100%; background: none; border: 0; border-top: 1px solid var(--soft); font: inherit; color: inherit; text-align: left; cursor: pointer; }
+button.donut-row:hover .grow { text-decoration: underline; }
+.donut-row.loading { opacity: .5; }
+.donut-row .chev { font-size: 16px; width: 10px; }
+.donut-trail { font-size: 13px; display: flex; flex-wrap: wrap; align-items: baseline; }
+.donut-trail .linkish { color: var(--blue); }
+.leaving { overflow: hidden; opacity: 0; transition: height .2s ease, opacity .15s ease, padding .2s ease, margin .2s ease; padding-top: 0 !important; padding-bottom: 0 !important; }
+.drill { grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.drill > * { min-width: 0; }
+.donut-trail { gap: 4px; }
+button.donut-row { display: flex; min-width: 0; }

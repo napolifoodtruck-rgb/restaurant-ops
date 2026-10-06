@@ -163,6 +163,8 @@ export interface MenuItem {
   perDay: number;
   /** Plates a day against the period before (when it sold then): +0.2 is 20% more. */
   change?: number;
+  /** By Square variation, when it sold under more than one (sizes, glass or bottle, discount days). */
+  variations?: { name: string; quantity: number; sales: number }[];
 }
 
 /** Every item by how it was ordered, ranked within its category; specials compared per day on. */
@@ -182,11 +184,15 @@ export function menuReport(orders: Order[], lines: Line[], before?: { orders: Or
     }
     for (const [k, x] of agg) perDayBefore.set(k, x.q / Math.max(1, openDaysIn(x.first, x.last, days)));
   }
-  const items = new Map<string, MenuItem & { first: string; last: string }>();
+  const items = new Map<string, MenuItem & { first: string; last: string; vars: Map<string, { name: string; quantity: number; sales: number }> }>();
   for (const l of lines) {
     const k = `${l.category ?? ''}\u0000${l.item}`;
-    const it = items.get(k) ?? { name: l.item, category: l.category ?? 'Other', quantity: 0, sales: 0, byType: { table: 0, register: 0, online: 0 }, daysOn: 0, perDay: 0, first: l.day, last: l.day };
+    const it = items.get(k) ?? { name: l.item, category: l.category ?? 'Other', quantity: 0, sales: 0, byType: { table: 0, register: 0, online: 0 }, daysOn: 0, perDay: 0, first: l.day, last: l.day, vars: new Map() };
     it.quantity += l.quantity; it.sales += l.sales;
+    const vn = l.variation && !/^regular$/i.test(l.variation) ? l.variation : 'Regular';
+    const v = it.vars.get(vn) ?? { name: vn, quantity: 0, sales: 0 };
+    v.quantity += l.quantity; v.sales += l.sales;
+    it.vars.set(vn, v);
     it.byType[typeOf.get(l.orderId) ?? 'register'] += l.quantity;
     if (l.day < it.first) it.first = l.day; if (l.day > it.last) it.last = l.day;
     items.set(k, it);
@@ -196,8 +202,9 @@ export function menuReport(orders: Order[], lines: Line[], before?: { orders: Or
     const daysOn = Math.max(1, openDaysIn(it.first, it.last, open));
     const perDay = it.quantity / daysOn;
     const was = perDayBefore.get(k);
-    const { first: _f, last: _l, ...rest } = it;
-    const out: MenuItem = { ...rest, quantity: Math.round(it.quantity * 10) / 10, sales: money(it.sales), daysOn, perDay: Math.round(perDay * 10) / 10, ...(was ? { change: perDay / was - 1 } : {}) };
+    const { first: _f, last: _l, vars, ...rest } = it;
+    const variations = vars.size > 1 ? [...vars.values()].map((v) => ({ name: v.name, quantity: Math.round(v.quantity * 10) / 10, sales: money(v.sales) })).sort((a, b) => b.sales - a.sales) : undefined;
+    const out: MenuItem = { ...rest, quantity: Math.round(it.quantity * 10) / 10, sales: money(it.sales), daysOn, perDay: Math.round(perDay * 10) / 10, ...(was ? { change: perDay / was - 1 } : {}), ...(variations ? { variations } : {}) };
     cats.set(it.category, [...(cats.get(it.category) ?? []), out]);
   }
   return {

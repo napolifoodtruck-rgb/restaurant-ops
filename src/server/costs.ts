@@ -18,6 +18,9 @@ import { atLeast, type SignedIn } from './auth.ts';
 import { areaFor, loadAreas } from './areas.ts';
 import { getModel, type Model } from './model.ts';
 import { priceHistory, purchaseKind } from '../core/costReports.ts';
+import { squareModifierSales } from '../connectors/square.ts';
+import { storedModifierSales } from './squareSync.ts';
+import { purchasesOf } from './reports.ts';
 import type { ItemRef } from '../core/recipes.ts';
 
 const cents = (v: number) => Math.round(v * 100) / 100;
@@ -73,6 +76,61 @@ export async function costRoutes(db: Db, res: ServerResponse, url: URL, who: Sig
       return { id: p.externalId, name: p.name, unit: p.baseUnit, ...(h.latest !== undefined ? { perUnit: h.latest } : {}), ...(h.change90 !== undefined ? { change90: h.change90 } : {}), spent90: cents(spent), impact: cents(impact) };
     }).filter((r) => r.change90 !== undefined && Math.abs(r.change90) >= 0.03 && r.spent90 > 0);
     return send(res, 200, { area, up: rows.filter((r) => r.impact > 0).sort((a, b) => b.impact - a.impact).slice(0, 8), down: rows.filter((r) => r.impact < 0).sort((a, b) => a.impact - b.impact).slice(0, 5) }), true;
+  }
+
+  // One dish or drink, a layer down: its discount days (full price against each), or its add-ons
+  // (the dish itself against each paid add-on; free changes counted apart). For the clickable charts.
+  if (path === '/api/costs/breakdown') {
+    const from = url.searchParams.get('from'), to = url.searchParams.get('to');
+    const day = /^\d{4}-\d{2}-\d{2}$/;
+    const ranged = from && to && day.test(from) && day.test(to) && from <= to ? await getModel(db, who.restaurantId, to, { from, to }) : model;
+    const recipeId = url.searchParams.get('recipeId'), name = url.searchParams.get('name');
+    if (!recipeId && !name) throw new HttpError(400, 'Which dish?');
+    const lines = ranged.sales.filter((l) => (recipeId ? ranged.lookup(l.catalogId, l.name, l.date)?.recipeId === recipeId : l.name === name));
+    const ids = new Set(lines.map((l) => l.catalogId));
+    const sales = lines.reduce((a, l) => a + l.netSales, 0), plates = lines.reduce((a, l) => a + l.quantity, 0);
+    const versions = [...ids].flatMap((id) => ranged.folded.get(id) ?? []);
+    for (const v of versions) ids.add(v.catalogId);
+    const mods = new Map<string, { name: string; uses: number; sales: number }>();
+    for (const l of squareModifierSales(await storedModifierSales(db, who.restaurantId, ranged.from, ranged.today))) {
+      if (!ids.has(l.catalogId)) continue;
+      const key = l.modifier.name;
+      const x = mods.get(key) ?? { name: key.replace(/^[+-]+\s*/, ''), uses: 0, sales: 0 };
+      x.uses += l.quantity; x.sales += l.sales;
+      mods.set(key, x);
+    }
+    const paid = [...mods.values()].filter((x) => x.sales > 0).sort((a, b) => b.sales - a.sales);
+    const free = [...mods.values()].filter((x) => x.sales <= 0 && x.uses > 0).sort((a, b) => b.uses - a.uses);
+    const fullPrice = sales - versions.reduce((a, v) => a + v.netSales, 0);
+    return send(res, 200, {
+      name: recipeId ? (book.recipes.get(recipeId)?.name ?? recipeId) : name, sales: cents(sales), plates: Math.round(plates),
+      ...(versions.length ? { versions: [{ name: 'Full price', value: cents(fullPrice), quantity: Math.round(plates - versions.reduce((a, v) => a + v.quantity, 0)) }, ...versions.map((v) => ({ name: v.variationName || v.name, value: cents(v.netSales), quantity: Math.round(v.quantity) }))] } : {}),
+      base: cents(sales - paid.reduce((a, x) => a + x.sales, 0)),
+      addOns: paid.map((x) => ({ name: x.name, value: cents(x.sales), uses: Math.round(x.uses) })),
+      free: free.slice(0, 12).map((x) => ({ name: x.name, uses: Math.round(x.uses) })),
+    }), true;
+  }
+
+  // Where the money went: each vendor, and what was bought from them, over the last days asked for.
+  if (path === '/api/costs/spend') {
+    const area = areaFor(who, url.searchParams.get('area'));
+    const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 7), 365);
+    const since = new Date(Date.parse(`${today}T12:00:00Z`) - (days - 1) * 86_400_000).toISOString().slice(0, 10);
+    const want = area === 'bar' ? 'bar' : 'food';
+    const names = new Map(model.imported.products.map((p) => [p.externalId, p.name]));
+    const vendors = new Map<string, { vendor: string; spent: number; items: Map<string, { id?: string; name: string; spent: number }> }>();
+    for (const p of purchasesOf(model, since, today)) {
+      if (p.kind !== want) continue;
+      const v = vendors.get(p.vendor ?? 'Unknown vendor') ?? { vendor: p.vendor ?? 'Unknown vendor', spent: 0, items: new Map() };
+      v.spent += p.amount;
+      const key = p.productId ?? 'other';
+      const it = v.items.get(key) ?? { ...(p.productId ? { id: p.productId } : {}), name: p.productId ? names.get(p.productId) ?? 'Unnamed item' : 'Lines with no item', spent: 0 };
+      it.spent += p.amount;
+      v.items.set(key, it);
+      vendors.set(v.vendor, v);
+    }
+    return send(res, 200, { area, days, from: since, to: today,
+      vendors: [...vendors.values()].filter((v) => v.spent > 0).sort((a, b) => b.spent - a.spent).map((v) => ({ vendor: v.vendor, spent: cents(v.spent), items: [...v.items.values()].filter((i) => i.spent > 0).sort((a, b) => b.spent - a.spent).map((i) => ({ ...i, spent: cents(i.spent) })) })) }), true;
   }
 
   let m = path.match(/^\/api\/costs\/recipe\/(.+)$/);
