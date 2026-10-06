@@ -767,3 +767,7 @@ button.donut-row { display: flex; min-width: 0; }
   main { padding-bottom: 84px; }
 }
 @media (max-width: 700px) { .rail .me-chip { padding: 4px; gap: 0; } }
+.me-out { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: #fff; border-top: 1px solid #555; padding-top: 4px; width: 100%; text-align: center; }
+.rail .me-chip:hover .me-out { text-decoration: underline; }
+.rail .me-chip.busy::after { display: none; }
+@media (max-width: 700px) { .me-out { border-top: 0; padding: 0 8px 0 6px; width: auto; } }
