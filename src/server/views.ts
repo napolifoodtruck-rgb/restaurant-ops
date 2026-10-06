@@ -304,6 +304,7 @@ export function menuView(model: Model, view: AreaView = ALL) {
     current: current.sort(order),
     cameOff: cameOff.sort((a, b) => b.to.localeCompare(a.to)),
     cards: view.area !== 'bar',
+    coverage: coverageOf(model, view),
     checks: model.checks.filter((c) => inArea(view, (c.catalogId && categoryOf.get(c.catalogId)) || (c.recipeId && recipeCategory.get(c.recipeId)) || undefined)).map((c) => {
       const span = c.catalogId ? model.spans.filter((sp) => sp.catalogId === c.catalogId).sort((a, b) => b.last.localeCompare(a.last))[0] : undefined;
       const item = span ? posItem(span.catalogId, span.name) : undefined;

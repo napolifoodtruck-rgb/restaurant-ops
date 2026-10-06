@@ -82,7 +82,6 @@ input:focus-visible, button:focus-visible { outline: 3px solid #9DBDE6; outline-
 .pricebar .left { background: #D9E6D9; }
 .total { height: 20px; border-radius: 5px; background: var(--green); min-width: 2px; }
 .tag.blue { background: #E6EEF8; color: var(--blue); }
-@media (max-width: 1100px) { .mrow { grid-template-columns: 1fr 1fr; } .mrow.head { display: none; } .mrow > div:last-child { text-align: left; } }
 .nowrap { white-space: nowrap; }
 .asks { display: flex; flex-direction: column; }
 .ask { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-top: 1px solid var(--soft); font-size: 14px; }
@@ -195,7 +194,6 @@ header.row.wrap > .grow { flex: 1 1 280px; }
 .srow .num { text-align: right; }
 .srow .num-end { justify-content: flex-end; }
 .srow.off { opacity: .55; }
-@media (max-width: 800px) { .srow { grid-template-columns: 1fr 1fr 1fr; } .srow.head { display: none; } }
 
 /* Recipe cards */
 .clist, .ilist, .dlist { display: flex; flex-direction: column; }
@@ -269,11 +267,6 @@ pre.order-text { background: #fff; border: 1px solid var(--line); border-radius:
 a.btn { display: inline-flex; align-items: center; text-decoration: none; color: inherit; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 input[type=time] { height: 40px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; background: #fff; font-size: 14px; }
-@media (max-width: 900px) {
-  .orow { grid-template-columns: 1fr 1fr; }
-  .orow > :first-child { grid-column: 1 / -1; }
-  .orow.head { display: none; }
-}
 @media print {
   .rail, header .btn, .order-foot, .settings, .others, .row.wrap > .btn, button { display: none !important; }
   main { padding: 0; }
@@ -381,3 +374,80 @@ button.cov-card:hover { border-color: #000; }
 .cov-legend > div { display: flex; align-items: center; gap: 8px; }
 .cov-key { width: 12px; height: 12px; flex: none; }
 .cov-legend .grow { flex: 1; }
+
+/* ------------------------------------------------------------------ the page formula
+   Every screen: the bar on the left, the work in the middle, boxes to glance at on the right.
+   Tables size to the middle column (container queries), not to the screen. */
+.page { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; align-items: start; }
+.page.solo { grid-template-columns: minmax(0, 1fr); }
+.page-main { display: flex; flex-direction: column; gap: 14px; min-width: 0; container: main / inline-size; }
+.page-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.page-side .card.tight { gap: 10px; }
+.side-actions { display: flex; flex-direction: column; gap: 8px; }
+.side-actions > .btn { width: 100%; justify-content: center; }
+.side-actions > .link { align-self: flex-start; }
+.progress { height: 8px; background: var(--soft); }
+.progress > div { height: 100%; background: #000; }
+.steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.picks { display: flex; flex-direction: column; }
+.pick { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 8px 0; border: 0; border-top: 1px solid var(--soft); background: none; text-align: left; font: inherit; font-size: 15px; color: inherit; cursor: pointer; }
+.pick .grow { flex: 1; min-width: 0; }
+.pick:hover { color: var(--blue); }
+.pick.on { font-weight: 600; box-shadow: inset 3px 0 0 #000; padding-left: 12px; }
+.page-side .seg { display: flex; }
+.page-side .seg button { flex: 1; padding: 0 8px; }
+.page-side input[type=date] { width: 100%; min-width: 0; }
+.page-side img.hero { max-height: 240px; }
+.dates { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center; }
+@media (max-width: 1000px) {
+  .page { grid-template-columns: minmax(0, 1fr); }
+  .page-side { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); align-items: start; }
+  .page.side-first .page-side { order: -1; }
+}
+
+/* Performance: five columns that fit beside the boxes. */
+.mrow { grid-template-columns: minmax(130px, 1.3fr) minmax(170px, 1fr) 64px minmax(140px, 1fr) 100px; }
+.mrow.head { display: grid; }
+.mrow > div:last-child { text-align: left; }
+.mrow .plate-cell { display: flex; flex-direction: column; gap: 4px; }
+.mrow .name-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+/* Narrower middle (iPad landscape, portrait): the trend steps out. Narrower still: two columns. */
+@container main (max-width: 680px) {
+  .mrow { grid-template-columns: minmax(110px, 1fr) minmax(140px, 1fr) 60px minmax(120px, 1fr); }
+  .mrow > :nth-child(5) { display: none; }
+}
+@container main (max-width: 470px) {
+  .mrow { grid-template-columns: 1fr 1fr; }
+  .mrow > :first-child { grid-column: 1 / -1; }
+  .mrow.head { display: none; }
+}
+.pricebar .food { flex: none; } .pricebar .left { flex: 1; }
+.pricebar, .mrow .total { flex: none; min-width: 4px; }
+.srow { grid-template-columns: minmax(130px, 1.4fr) 56px 72px 76px minmax(120px, 1fr) minmax(100px, 1fr); }
+@container main (max-width: 600px) { .srow { grid-template-columns: 1fr 1fr 1fr; } .srow.head { display: none; } }
+
+/* Orders */
+.orow { grid-template-columns: minmax(150px, 1.6fr) minmax(100px, .8fr) 104px 170px 72px; }
+.orow .order-cell { display: flex; flex-direction: column; gap: 2px; }
+@container main (max-width: 620px) {
+  .orow { grid-template-columns: 1fr 1fr; }
+  .orow > :first-child { grid-column: 1 / -1; }
+  .orow.head { display: none; }
+}
+.vendor-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: center; }
+.vendor-row .when { text-align: right; }
+@container main (max-width: 520px) { .vendor-row { grid-template-columns: 1fr; } .vendor-row .when { text-align: left; } }
+.page-side .order-total .big { font-size: 34px; }
+
+/* Recipe cards list */
+@container main (max-width: 600px) { .crow { grid-template-columns: 1fr auto; } .crow.head { display: none; } }
+.page-side-boxes { display: contents; }
+.recipe .card h2 { margin-bottom: 4px; }
+@media print { .page-side { display: none !important; } .page { display: block; } }
+.order-side .order-total { min-width: 0; }
+.list > div > .grow { flex: 1; min-width: 0; }
+.list > div > button.grow { text-align: left; }
+.page-side details.settings summary { display: block; line-height: 1.5; }
+.lchip, .lkey { border-radius: 0; }
+.page-main > .error:empty { display: none; }
+@media (max-width: 700px) { .rail button { width: auto; min-width: 64px; padding: 8px 8px 6px; flex: none; } }

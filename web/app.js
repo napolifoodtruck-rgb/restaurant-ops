@@ -47,6 +47,34 @@ async function api(method, path, body) {
 function fill(el, ...kids) { el.replaceChildren(...kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false)); }
 function show(...nodes) { fill(app, ...nodes); }
 
+/**
+ * The page formula, on every screen: the work in the middle, things to glance at in boxes
+ * down the right. Narrow screens stack the boxes under the work (or above it, sideFirst).
+ */
+function page(main, side, opts = {}) {
+  const boxes = [side].flat(Infinity).filter((x) => x !== null && x !== undefined && x !== false);
+  const middle = h('div', { class: 'page-main' }, main);
+  if (!boxes.length) return h('div', { class: 'page solo' }, middle);
+  return h('div', { class: `page${opts.sideFirst ? ' side-first' : ''}` }, middle,
+    h('aside', { class: 'page-side', 'aria-label': opts.label ?? 'At a glance' }, boxes));
+}
+/** A box for the right column: a small heading, then what it holds. */
+function sideBox(title, ...body) {
+  return h('section', { class: 'card tight' }, title ? h('div', { class: 'small muted strong', text: title }) : null, ...body);
+}
+/** A box with one number that matters, and a line under it. */
+function statBox(title, value, ...under) {
+  return sideBox(title, h('div', { class: 'big', text: value }), ...under);
+}
+/** Buttons stacked full width in a side box. */
+const sideActions = (...buttons) => h('div', { class: 'side-actions' }, buttons);
+/** A thin progress bar: done of total. */
+function progress(done, total) {
+  const bar = h('div', { class: 'progress', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(total), 'aria-valuenow': String(done) }, h('div'));
+  bar.firstChild.style.width = `${total ? Math.min(100, (done / total) * 100) : 0}%`;
+  return bar;
+}
+
 const ACCESS_NAMES = { staff: 'Staff', manager: 'Manager', admin: 'Administrator', owner: 'Account owner' };
 const canAdminister = (me) => me.access === 'owner' || me.access === 'admin';
 const AREA_NAMES = { kitchen: 'Kitchen', bar: 'Bar', both: 'Kitchen and bar', none: 'Neither' };
@@ -324,18 +352,16 @@ function rangePicker(me, state, m) {
   const same = (a, b) => (!a && !b) || (a && b && a.from === b.from && a.to === b.to);
   const fromInput = h('input', { type: 'date', value: m.from, min: m.dataFrom, max: iso(new Date()), 'aria-label': 'From' });
   const toInput = h('input', { type: 'date', value: m.to, min: m.dataFrom, max: iso(new Date()), 'aria-label': 'To' });
-  return h('div', { class: 'row wrap' },
-    presetRanges().map(([label, r]) => h('button', { class: `btn small-btn${same(r, state.range) ? ' dark' : ''}`, text: label, onclick: () => marginsScreen(me, { ...state, range: r }) })),
-    h('span', { class: 'row tight' }, fromInput, h('span', { class: 'muted', text: 'to' }), toInput,
-      h('button', { class: 'btn small-btn', text: 'Show', onclick: () => fromInput.value && toInput.value && marginsScreen(me, { ...state, range: { from: fromInput.value, to: toInput.value } }) })),
-  );
+  return sideBox('Period',
+    h('div', { class: 'row wrap' }, presetRanges().map(([label, r]) => h('button', { class: `btn small-btn${same(r, state.range) ? ' dark' : ''}`, text: label, onclick: () => marginsScreen(me, { ...state, range: r }) }))),
+    h('div', { class: 'dates' }, h('span', { class: 'small muted', text: 'From' }), fromInput, h('span', { class: 'small muted', text: 'To' }), toInput),
+    h('button', { class: 'btn small-btn', text: 'Show these dates', onclick: () => fromInput.value && toInput.value && marginsScreen(me, { ...state, range: { from: fromInput.value, to: toInput.value } }) }));
 }
 
 // Sortable columns: what each sorts by, and which way a first click goes.
 const MARGIN_COLUMNS = [
   { key: 'name', label: 'Dish', value: (d) => d.name.toLowerCase(), first: 'asc' },
-  { key: 'price', label: 'One plate: food | left over', value: (d) => d.averagePrice, first: 'desc' },
-  { key: 'plate', label: 'Per plate', value: (d) => d.leftPerPlate, first: 'desc' },
+  { key: 'plate', label: 'One plate: food | left over', value: (d) => d.leftPerPlate, first: 'desc' },
   { key: 'sold', label: 'Sold', value: (d, view) => (view === 'day' ? d.soldPerDay ?? 0 : d.sold), first: 'desc', num: true },
   { key: 'left', label: (view) => (view === 'day' ? 'Left over per day on the menu' : 'Left over, all of them'), value: (d, view) => (view === 'day' ? d.leftPerDay ?? 0 : d.leftTotal), first: 'desc' },
   { key: 'trend', label: 'Trend, plates a day', value: (d) => (d.trend?.change ?? null), first: 'desc' },
@@ -354,21 +380,19 @@ function renderMargins(me, state, m) {
   if (salesCat) return renderSalesOnly(me, state, m, salesCat);
   const cat = m.categories.find((c) => c.name === state.category) ?? m.categories[0];
   const again = (changes) => renderMargins(me, { ...state, ...changes }, m);
-  const tabs = categoryTabs(me, state, m, cat?.name, again);
   const start = m.dataFrom && m.dataFrom > m.from ? m.dataFrom : m.from;
   const days = Math.round((Date.parse(m.to) - Date.parse(start)) / 86400000) + 1;
   const early = m.dataFrom && m.from < m.dataFrom ? h('div', { class: 'note', text: `Sales are stored from ${shortDate(m.dataFrom)}, so this period starts there.` }) : null;
-  const header = h('header', { class: 'row wrap' },
-    h('div', { class: 'grow' },
-      h('div', { class: 'kicker', text: `${cat ? cat.name + ' · ' : ''}${shortDate(m.from)} – ${shortDate(m.to)} · prices from Square, costs from MarginEdge` }),
-      h('h1', { text: 'Menu Performance' }),
-      h('div', { class: 'sub', text: `${sideOf(me) === 'bar' ? 'Pour cost' : 'Food cost'} ${pct(m.totals.foodCostShare)} on ${sideOf(me) === 'bar' ? 'drinks' : 'dishes'} with recipe cards. ${dollars(m.totals.leftOver)} left after food in ${days} days. Costs are priced as of ${shortDate(m.to)}.` })),
-    tabs);
+  const bar = sideOf(me) === 'bar';
+  const header = performanceHeader(me, state, `${cat ? cat.name + ' · ' : ''}${shortDate(m.from)} – ${shortDate(m.to)}`, `Prices from Square, costs from MarginEdge, priced as of ${shortDate(m.to)}.`);
   const picker = rangePicker(me, { ...state, category: cat?.name }, m);
-  if (!cat) return show(shell(me, 'margins', [header, picker, missingNote(m.missing), h('p', { class: 'muted', text: 'No dishes with recipe cards sold in this period.' })]));
+  const categories = categoryBox(me, state, m, cat?.name, again);
+  const whole = statBox(`${AREA_NAMES[sideOf(me)]} · left after ${bar ? 'pour' : 'food'} cost`, dollars(m.totals.leftOver),
+    h('div', { class: 'small muted', text: `${days} days · ${bar ? 'pour' : 'food'} cost ${pct(m.totals.foodCostShare)} on ${bar ? 'drinks' : 'dishes'} with recipe cards` }));
+  if (!cat) return show(shell(me, 'margins', [header, page([missingNote(m.missing), h('div', { class: 'card small muted', text: 'No dishes with recipe cards sold in this period.' })], [whole, categories, picker], { sideFirst: true })]));
 
   const perDay = state.view === 'day';
-  const column = MARGIN_COLUMNS.find((c) => c.key === state.sort.key) ?? MARGIN_COLUMNS[4];
+  const column = MARGIN_COLUMNS.find((c) => c.key === state.sort.key) ?? MARGIN_COLUMNS.find((c) => c.key === 'left');
   const sign = state.sort.dir === 'asc' ? 1 : -1;
   const dishes = [...cat.dishes].sort((a, b) => {
     const x = column.value(a, state.view), y = column.value(b, state.view);
@@ -379,24 +403,26 @@ function renderMargins(me, state, m) {
   });
   const maxPrice = Math.max(...dishes.map((d) => d.averagePrice), 1);
   const maxValue = Math.max(...dishes.map((d) => (perDay ? d.leftPerDay ?? 0 : d.leftTotal)), 1);
-  const bar = (cls, width) => { const b = h('div', { class: cls }); b.style.width = `${Math.max(0, width)}px`; return b; };
   const partOfPeriod = (d) => d.daysOn && d.daysOn < m.openDays;
   const rows = dishes.map((d) => {
-    const plate = h('div', { class: 'pricebar' }, bar('food', (d.plateCost / maxPrice) * 180), bar('left', ((d.averagePrice - d.plateCost) / maxPrice) * 180));
+    // Bars take a share of their column, so they fit however wide the middle is.
+    const plate = h('div', { class: 'pricebar' }, h('div', { class: 'food' }), h('div', { class: 'left' }));
+    plate.style.width = `calc((100% - 56px) * ${(d.averagePrice / maxPrice).toFixed(4)})`;
+    plate.firstChild.style.width = `${Math.min(100, (d.plateCost / d.averagePrice) * 100).toFixed(2)}%`;
     const [roleText, roleCls] = ROLE[d.role] ?? ['', ''];
     const value = perDay ? d.leftPerDay ?? 0 : d.leftTotal;
     const other = perDay ? `${dollars(d.leftTotal)} in all` : d.leftPerDay !== undefined ? `${dollars(d.leftPerDay)} a day` : '';
     const note = d.offSince ? `off the menu since ${shortDate(d.offSince)}` : partOfPeriod(d) ? `on the menu ${d.daysOn} of ${m.openDays} days, since ${shortDate(d.firstSold)}` : null;
     const opened = state.open?.includes(d.name);
+    // Roles judge money over the whole period; in the per-day view, a dish that joined partway is just marked new.
+    const role = d.offSince ? null : perDay ? (partOfPeriod(d) ? h('span', { class: 'tag blue', text: 'New' }) : null) : roleText ? h('span', { class: `tag ${roleCls}`, text: roleText }) : null;
     const row = h('div', { class: `mrow${d.offSince ? ' off' : ''}` },
-      h('div', {}, h('button', { class: 'name linkish', 'aria-expanded': opened ? 'true' : 'false', title: 'Show the plate, ingredient by ingredient', onclick: () => again({ open: opened ? state.open.filter((n) => n !== d.name) : [...(state.open ?? []), d.name] }) }, d.name, h('span', { class: 'muted', text: opened ? ' ▾' : ' ▸' })), note ? h('div', { class: 'small muted', text: note }) : null),
-      h('div', { class: 'row tight' }, plate, h('span', { class: 'small muted', text: `${dollars(d.averagePrice, { cents: true })}` })),
-      h('div', { class: 'small', text: `${dollars(d.plateCost, { cents: true })}${d.estimated ? '*' : ''} food · ${dollars(d.leftPerPlate, { cents: true })} left` }),
+      h('div', { class: 'name-cell' }, h('button', { class: 'name linkish', 'aria-expanded': opened ? 'true' : 'false', title: 'Show the plate, ingredient by ingredient', onclick: () => again({ open: opened ? state.open.filter((n) => n !== d.name) : [...(state.open ?? []), d.name] }) }, d.name, h('span', { class: 'muted', text: opened ? ' ▾' : ' ▸' })), note ? h('div', { class: 'small muted', text: note }) : null, role),
+      h('div', { class: 'plate-cell' }, h('div', { class: 'row tight' }, plate, h('span', { class: 'small muted', text: `${dollars(d.averagePrice, { cents: true })}` })),
+        h('div', { class: 'small', text: `${dollars(d.plateCost, { cents: true })}${d.estimated ? '*' : ''} food · ${dollars(d.leftPerPlate, { cents: true })} left` })),
       h('div', { class: 'num' }, h('div', { text: d.sold.toLocaleString() }), d.soldPerDay !== undefined ? h('div', { class: 'small muted', text: `${d.soldPerDay}/day` }) : null),
-      h('div', {}, h('div', { class: 'row tight' }, bar('total', (value / maxValue) * 160), h('b', { text: dollars(value) })), other ? h('div', { class: 'small muted', text: other }) : null),
+      h('div', {}, h('div', { class: 'row tight' }, (() => { const t = h('div', { class: 'total' }); t.style.width = `calc((100% - 64px) * ${(Math.max(0, value) / maxValue).toFixed(4)})`; return t; })(), h('b', { text: dollars(value) })), other ? h('div', { class: 'small muted', text: other }) : null),
       trendCell(d.trend),
-      // Roles judge money over the whole period; in the per-day view, a dish that joined partway is just marked new.
-      h('div', {}, d.offSince ? null : perDay ? (partOfPeriod(d) ? h('span', { class: 'tag blue', text: 'New' }) : null) : h('span', { class: `tag ${roleCls}`, text: roleText })),
     );
     return opened ? [row, plateDetail(d)] : row;
   });
@@ -409,31 +435,46 @@ function renderMargins(me, state, m) {
       onclick: () => again({ sort: { key: c.key, dir: active ? (state.sort.dir === 'asc' ? 'desc' : 'asc') : c.first } }),
     }, label, h('span', { class: 'arrow', text: active ? (state.sort.dir === 'asc' ? ' ▲' : ' ▼') : '' }));
   };
-  const toggle = h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Show' }),
-    h('button', { class: `btn small-btn${perDay ? '' : ' dark'}`, text: 'All of it', onclick: () => again({ view: 'total' }) }),
-    h('button', { class: `btn small-btn${perDay ? ' dark' : ''}`, text: 'Per day on the menu', onclick: () => again({ view: 'day' }) }));
-  const modeSwitch = h('div', { class: 'row tight' },
-    h('button', { class: `btn small-btn${state.mode === 'charts' ? '' : ' dark'}`, text: 'Table', onclick: () => again({ mode: 'table' }) }),
-    h('button', { class: `btn small-btn${state.mode === 'charts' ? ' dark' : ''}`, text: 'Charts', onclick: () => again({ mode: 'charts' }) }));
-  if (state.mode === 'charts') {
-    return show(shell(me, 'margins', [header, h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, picker), modeSwitch), early, missingNote(m.missing), ...chartsView(state, cat, m, again)]));
-  }
+  const seg = (label, options) => h('div', { class: 'seg', role: 'group', 'aria-label': label },
+    options.map(([text, on, go]) => h('button', { class: on ? 'on' : '', 'aria-pressed': String(on), text, onclick: go })));
+  const charts = state.mode === 'charts';
+  const view = sideBox('View',
+    seg('Table or charts', [['Table', !charts, () => again({ mode: 'table' })], ['Charts', charts, () => again({ mode: 'charts' })]]),
+    charts ? null : seg('Left over', [['All of it', !perDay, () => again({ view: 'total' })], ['Per day on', perDay, () => again({ view: 'day' })]]),
+    charts ? null : h('div', { class: 'small muted', text: perDay ? 'Per open day each dish was on the menu: fair to new dishes and specials.' : 'Across every plate sold in the period.' }));
+  const catLeft = cat.dishes.reduce((a, d) => a + d.leftTotal, 0);
+  const summary = statBox(`${cat.name} · left after ${bar ? 'pour' : 'food'} cost`, dollars(catLeft),
+    h('div', { class: 'small muted', text: `${bar ? 'Pour' : 'Food'} cost ${pct(cat.foodCostShare)} · ${cat.dishes.length} ${bar ? 'drinks' : 'dishes'} · ${days} days` }),
+    h('div', { class: 'small muted', text: `Whole ${sideOf(me)} menu: ${dollars(m.totals.leftOver)} left, ${pct(m.totals.foodCostShare)} ${bar ? 'pour' : 'food'} cost.` }));
+  const noCard = cat.noCard.length ? sideBox(`Selling with no card · ${dollars(cat.noCardSales)} not counted`,
+    h('div', { class: 'list compact' }, cat.noCard.slice(0, 6).map((x) => h('div', {}, h('span', { class: 'grow', text: x.name }), h('span', { class: 'small muted', text: dollars(x.netSales) })))),
+    h('button', { class: 'btn small-btn', text: 'See what’s missing', onclick: () => coverageScreen(me) })) : null;
+  const side = [summary, categories, picker, view, noCard];
+  if (charts) return show(shell(me, 'margins', [header, page([early, missingNote(m.missing), ...chartsView(state, cat, m, again)], side, { sideFirst: true })]));
   const table = h('section', { class: 'card' },
-    h('div', { class: 'row' }, h('div', { class: 'grow small muted', text: perDay ? 'Left over per open day the dish was on the menu: fair to new dishes and specials that weren’t there the whole time. Click a column title to sort.' : 'Left over across every plate sold in the period. Click a column title to sort.' }), toggle),
-    h('div', { class: 'mrow head', role: 'row' }, MARGIN_COLUMNS.map(headCell), h('div')),
+    h('div', { class: 'small muted', text: 'Click a dish for its plate, ingredient by ingredient, or a column title to sort.' }),
+    h('div', { class: 'mrow head', role: 'row' }, MARGIN_COLUMNS.map(headCell)),
     rows,
     h('div', { class: 'small muted', text: 'Price is what guests paid on average, after discounts. * part of the card still uses an estimated price. Top earners together bring in 80% of the money in the period. Trend: plates per open day, week by week; weeks off the menu are left out.' }),
   );
-  const noCard = cat.noCard.length ? h('section', { class: 'card' },
-    h('h2', { text: `Selling with no recipe card: ${dollars(cat.noCardSales)} in sales not counted above` }),
-    h('div', { class: 'small', text: cat.noCard.map((x) => `${x.name} ${dollars(x.netSales)}`).join(' · ') })) : null;
-  show(shell(me, 'margins', [header, h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, picker), modeSwitch), early, missingNote(m.missing), table, noCard]));
+  show(shell(me, 'margins', [header, page([early, missingNote(m.missing), table], side, { sideFirst: true })]));
 }
 
-function categoryTabs(me, state, m, current, again) {
-  const names = [...m.categories.map((c) => c.name), ...(m.salesOnly ?? []).map((c) => c.name)];
-  return h('div', { class: 'row wrap' }, sideSwitch(me, () => marginsScreen(me, { ...state, category: undefined })),
-    names.map((n) => h('button', { class: `btn small-btn${n === current ? ' dark' : ''}`, onclick: () => again({ category: n }), text: n })));
+function performanceHeader(me, state, kicker, sub) {
+  return h('header', { class: 'row wrap' },
+    h('div', { class: 'grow' }, h('div', { class: 'kicker', text: kicker }), h('h1', { text: 'Menu Performance' }), h('div', { class: 'sub', text: sub })),
+    sideSwitch(me, () => marginsScreen(me, { ...state, category: undefined })));
+}
+
+/** The categories down the side: what's left after food in each (or sales, with no costs yet). */
+function categoryBox(me, state, m, current, again) {
+  const rows = [
+    ...m.categories.map((c) => ({ name: c.name, text: `${dollars(c.dishes.reduce((a, d) => a + d.leftTotal, 0))} left` })),
+    ...(m.salesOnly ?? []).map((c) => ({ name: c.name, text: `${dollars(c.netSales)} sales` })),
+  ];
+  if (!rows.length) return null;
+  return sideBox('Category', h('div', { class: 'picks' }, rows.map((r) => h('button', { class: `pick${r.name === current ? ' on' : ''}`, 'aria-pressed': String(r.name === current), onclick: () => again({ category: r.name }) },
+    h('span', { class: 'grow', text: r.name }), h('span', { class: 'small muted', text: r.text })))));
 }
 
 /** Categories with sales but no costs yet (drinks, until they're linked to what they pour from). */
@@ -445,12 +486,7 @@ function renderSalesOnly(me, state, m, cat) {
   const max = Math.max(...items.map((i) => i[sortKey === 'salesPerDay' ? 'salesPerDay' : 'netSales']), 1);
   const bar = (v) => { const b = h('div', { class: 'total' }); b.style.width = `${Math.max(2, (v / max) * 140)}px`; return b; };
   const perDayView = sortKey === 'salesPerDay';
-  const header = h('header', { class: 'row wrap' },
-    h('div', { class: 'grow' },
-      h('div', { class: 'kicker', text: `${cat.name} · ${shortDate(m.from)} – ${shortDate(m.to)} · sales from Square` }),
-      h('h1', { text: 'Menu Performance' }),
-      h('div', { class: 'sub', text: `${dollars(cat.netSales)} in sales. Costs come once each ${sideOf(me) === 'bar' ? 'drink is linked to the bottle, keg or recipe it pours from' : 'item has a recipe card'}.` })),
-    categoryTabs(me, state, m, cat.name, again));
+  const header = performanceHeader(me, state, `${cat.name} · ${shortDate(m.from)} – ${shortDate(m.to)}`, `Sales from Square. Costs come once each ${sideOf(me) === 'bar' ? 'drink has a recipe card: the pour from the bottle or keg, or the cocktail’s spec' : 'item has a recipe card'}.`);
   const table = h('section', { class: 'card' },
     h('div', { class: 'srow head' }, cols.map(([k, label]) => h('button', { class: `sort${sortKey === k ? ' on' : ''}${k === 'name' ? '' : ' num'}`, text: label + (sortKey === k ? ' ▼' : ''), onclick: () => again({ salesSort: k }) }))),
     items.map((i) => h('div', { class: `srow${i.offSince ? ' off' : ''}` },
@@ -461,7 +497,11 @@ function renderSalesOnly(me, state, m, cat) {
       h('div', { class: 'row tight num-end' }, perDayView ? null : bar(i.netSales), h('b', { text: dollars(i.netSales) })),
       h('div', { class: 'row tight num-end' }, perDayView ? bar(i.salesPerDay) : null, h('span', { text: dollars(i.salesPerDay) })))),
     h('div', { class: 'small muted', text: 'Per day on: open days from an item’s first sale to its last (or today, if it’s still selling), so a new bottle or a seasonal cocktail is compared fairly.' }));
-  show(shell(me, 'margins', [header, rangePicker(me, { ...state, category: cat.name }, m), table]));
+  const sold = cat.items.reduce((a, i) => a + i.sold, 0);
+  const summary = statBox(`${cat.name} · sales`, dollars(cat.netSales), h('div', { class: 'small muted', text: `${Math.round(sold).toLocaleString()} sold · ${cat.items.length} items · no costs yet` }));
+  const cards = sideBox('Costs', h('div', { class: 'small muted', text: 'Every drink gets a card: a pour from the bottle or keg, a cocktail spec, one can. Then pour cost shows here like food cost does in the kitchen.' }),
+    sideActions(h('button', { class: 'btn small-btn', text: 'See what’s missing', onclick: () => coverageScreen(me) })));
+  show(shell(me, 'margins', [header, page(table, [summary, categoryBox(me, state, m, cat.name, again), rangePicker(me, { ...state, category: cat.name }, m), cards], { sideFirst: true })]));
 }
 
 const UNIT_CHOICES = ['lb', 'oz', 'g', 'kg', 'gal', 'qt', 'pt', 'cup', 'floz', 'l', 'ml', 'each'];
@@ -754,8 +794,15 @@ async function prepHome(me, allStations = false) {
     return form;
   };
   const addStation = p.canEdit ? h('button', { class: 'btn', text: 'New station', onclick: (e) => { e.target.replaceWith(newStation()); } }) : null;
+  const how = sideBox('How prep works', h('ol', { class: 'steps' },
+    h('li', { text: 'At night, each station counts what’s left.' }),
+    h('li', { text: 'A chef reviews the suggestions and approves.' }),
+    h('li', { text: 'Next day, the station preps from the approved list, cleaning last.' })));
+  const book = sideBox('Recipes', h('div', { class: 'small muted', text: 'Every prep on a list opens its card, scaled to what the list says to make.' }),
+    sideActions(h('button', { class: 'btn small-btn', text: 'Recipe book', onclick: () => recipesScreen(me) })));
   if (!p.stations.length) {
-    return show(shell(me, 'prep', [h('header', {}, h('h1', { text: 'Prep' }), h('div', { class: 'sub', text: 'No station lists yet. A manager can import them under Settings → Prep lists, or add one here.' })), addStation]));
+    return show(shell(me, 'prep', [h('header', {}, h('h1', { text: 'Prep' }), h('div', { class: 'sub', text: 'No station lists yet.' })),
+      page([h('div', { class: 'card small muted', text: 'A manager can import the station lists under Settings → Prep lists, or add a station here.' }), addStation], [how])]));
   }
   const status = (l, kind) => {
     if (!l) return h('span', { class: 'tag', text: kind === 'tomorrow' ? 'Not counted' : 'No list' });
@@ -772,12 +819,22 @@ async function prepHome(me, allStations = false) {
     h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'small muted', text: `Tonight’s count for ${dayName(p.tomorrow)}` }), status(s.tomorrow, 'tomorrow')),
       h('button', { class: 'btn', text: 'Count', onclick: () => prepCount(me, s.id, p.tomorrow) }),
       p.canApprove ? h('button', { class: 'btn', text: 'Review', onclick: () => prepReview(me, s.id, p.tomorrow) }) : null)));
+  // Tonight's counts at a glance: how many stations are counted and approved.
+  const counted = p.stations.filter((s) => s.tomorrow && (s.tomorrow.status === 'approved' || Number(s.tomorrow.counted))).length;
+  const approved = p.stations.filter((s) => s.tomorrow?.status === 'approved').length;
+  const tonight = sideBox(`Tonight · for ${dayName(p.tomorrow)}`, progress(approved, p.stations.length),
+    h('div', { class: 'small', text: `${counted} of ${p.stations.length} counted · ${approved} approved` }));
+  const plans = atLeast(me.roleLevel, 'chef') ? (await api('GET', '/api/plans')).data?.plans?.filter((x) => x.status === 'planned') ?? [] : [];
+  const coming = plans.length ? sideBox('Coming to the menu', h('div', { class: 'list compact' }, plans.map((x) => h('div', {}, h('span', { class: 'grow', text: x.name }), h('span', { class: 'small muted', text: `from ${shortDate(x.startsOn)}` })))),
+    h('button', { class: 'link', text: 'Plan it on Menu', onclick: () => menuScreen(me) })) : null;
   show(shell(me, 'prep', [
     h('header', {}, h('div', { class: 'kicker', text: dayName(p.today) }), h('h1', { text: 'Prep' }),
-      h('div', { class: 'sub', text: 'At night: count each station. A manager reviews and approves. Next day: the station preps from the approved list, cleaning last.' })),
-    mine ? h('div', { class: 'row' }, h('div', { class: 'grow small muted', text: allStations ? `This iPad is the ${mine.name} station’s.` : `This iPad is the ${mine.name} station’s. Other stations are a tap away.` }),
-      h('button', { class: 'link', text: allStations ? `Just ${mine.name}` : 'All stations', onclick: () => prepHome(me, !allStations) })) : null,
-    h('div', { class: 'grid' }, cards), addStation ? h('div', {}, addStation) : null]));
+      h('div', { class: 'sub', text: 'Each station’s list for today, and tonight’s count.' })),
+    page([
+      mine ? h('div', { class: 'row' }, h('div', { class: 'grow small muted', text: allStations ? `This iPad is the ${mine.name} station’s.` : `This iPad is the ${mine.name} station’s. Other stations are a tap away.` }),
+        h('button', { class: 'link', text: allStations ? `Just ${mine.name}` : 'All stations', onclick: () => prepHome(me, !allStations) })) : null,
+      h('div', { class: 'grid' }, cards), addStation ? h('div', {}, addStation) : null,
+    ], [tonight, coming, how, book])]));
 }
 
 function prepHeader(me, v, title, sub, extra) {
@@ -818,10 +875,15 @@ async function prepCount(me, stationId, date) {
         else need.textContent = res.data.error ?? 'Not saved';
       }, `${l.name} on hand`));
   });
+  const left = countable.filter((l) => l.counted === undefined && (l.kind === 'count' || l.bulkUnit));
   show(shell(me, 'prep', [
-    prepHeader(me, v, 'Count', v.status === 'approved' ? 'Already approved for tomorrow. A chef can reopen it to change counts.' : `How much is left of each, in the station’s units. ${counted} of ${toCount} counted.`),
-    h('section', { class: 'card' }, h('div', { class: 'list' }, rows)),
-    h('div', { class: 'row' }, h('button', { class: 'btn dark', text: 'Done counting', onclick: () => prepHome(me) })),
+    prepHeader(me, v, 'Count', v.status === 'approved' ? 'Already approved for tomorrow. A chef can reopen it to change counts.' : 'How much is left of each, in the station’s units.'),
+    page(h('section', { class: 'card' }, h('div', { class: 'list' }, rows)), [
+      sideBox('Counted', progress(counted, toCount), h('div', { class: 'small', text: `${counted} of ${toCount}` }),
+        sideActions(h('button', { class: 'btn dark', text: 'Done counting', onclick: () => prepHome(me) }))),
+      left.length && left.length < toCount ? sideBox('Not counted yet', h('div', { class: 'small', text: left.map((l) => l.name).join(' · ') })) : null,
+      sideBox('Tips', h('div', { class: 'small muted', text: 'Counts save as you go. Bulk items are optional: count them when you know, and the suggestion for what fills from them gets sharper.' })),
+    ]),
   ]));
 }
 
@@ -851,11 +913,18 @@ async function prepReview(me, stationId, date) {
       if (res.ok) again();
     } });
   const share = v.share !== undefined && v.share < 1 ? `${WEEKDAY[new Date(`${date}T12:00:00`).getDay()]} usually runs at ${Math.round(v.share * 100)}% of a ${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][v.busiest]}, so pars are scaled to that. ` : '';
+  const toMake = v.lines.filter((l) => l.kind !== 'task' && (l.toMake ?? 0) > 0).length;
   show(shell(me, 'prep', [
-    prepHeader(me, v, approved ? 'Approved' : 'Review and approve',
-      approved ? `Approved by ${v.approvedBy ?? 'a chef'} ${v.approvedAt ? 'at ' + timeOf(v.approvedAt) : ''}. The station sees this list tomorrow.` : `${share}Counted by ${v.countedBy ?? 'nobody yet'}. Change any number, then approve.`, approve),
-    uncounted.length && !approved ? h('div', { class: 'note', text: `${uncounted.length} item${uncounted.length === 1 ? '' : 's'} not counted: ${uncounted.map((l) => l.name).join(', ')}. With no count, nothing is suggested for them.` }) : null,
-    h('section', { class: 'card' }, h('div', { class: 'list' }, rows)),
+    prepHeader(me, v, approved ? 'Approved' : 'Review and approve', approved ? 'The station sees this list tomorrow.' : 'Change any number, then approve.'),
+    page(h('section', { class: 'card' }, h('div', { class: 'list' }, rows)), [
+      sideBox(approved ? 'Approved' : 'Not approved yet',
+        h('div', { class: 'small', text: approved ? `By ${v.approvedBy ?? 'a chef'}${v.approvedAt ? ' at ' + timeOf(v.approvedAt) : ''}.` : `Counted by ${v.countedBy ?? 'nobody yet'}. ${toMake} thing${toMake === 1 ? '' : 's'} to make.` }),
+        sideActions(approve)),
+      uncounted.length && !approved ? (uncounted.length === v.lines.filter((l) => l.kind === 'count').length
+        ? sideBox('Not counted', h('div', { class: 'small', text: 'Nothing on this list has been counted yet, so there’s nothing to suggest.' }), sideActions(h('button', { class: 'btn small-btn', text: 'Count now', onclick: () => prepCount(me, stationId, date) })))
+        : sideBox(`Not counted (${uncounted.length})`, h('div', { class: 'small', text: uncounted.map((l) => l.name).join(' · ') }), h('div', { class: 'small muted', text: 'With no count, nothing is suggested for them.' }))) : null,
+      share ? sideBox('Pars', h('div', { class: 'small muted', text: share.trim() })) : null,
+    ]),
   ]));
 }
 
@@ -866,8 +935,9 @@ async function prepWork(me, stationId, date) {
   const v = r.data;
   const again = () => prepWork(me, stationId, date);
   if (v.status !== 'approved') {
-    return show(shell(me, 'prep', [prepHeader(me, v, 'Today’s prep', 'This list hasn’t been approved yet. A chef approves it after last night’s count.'),
-      v.canApprove ? h('button', { class: 'btn dark', text: 'Review it now', onclick: () => prepReview(me, stationId, date) }) : null]));
+    return show(shell(me, 'prep', [prepHeader(me, v, 'Today’s prep', 'This list hasn’t been approved yet.'),
+      page(h('div', { class: 'card small muted', text: 'A chef approves the list after last night’s count. It shows up here once that’s done.' }),
+        v.canApprove ? sideBox('Approve', sideActions(h('button', { class: 'btn dark', text: 'Review it now', onclick: () => prepReview(me, stationId, date) }))) : null)]));
   }
   const work = v.lines.filter((l) => l.kind === 'task' || (l.toMake ?? 0) > 0);
   const done = work.filter((l) => l.doneAt).length;
@@ -880,15 +950,18 @@ async function prepWork(me, stationId, date) {
       h('div', { class: 'small muted', text: l.doneAt ? `Done by ${l.doneBy ?? ''} at ${timeOf(l.doneAt)}` : l.startedAt ? `Started by ${l.startedBy ?? ''} at ${timeOf(l.startedAt)}` : '' })),
     l.recipeName ? h('button', { class: 'btn', text: 'Recipe', onclick: () => recipeSheet(me, l.recipeName, { amount: l.toMake, unit: l.unit }) }) : null,
     !l.doneAt && !l.startedAt && l.kind !== 'task' ? h('button', { class: 'btn', text: 'Start', onclick: () => act(l, 'start') }) : null));
-  const cleaning = h('section', { class: 'card' }, h('h2', { text: 'Cleaning' }),
+  const cleanDone = v.checklist.filter((c) => c.doneAt).length;
+  const cleaning = sideBox(`Cleaning · ${cleanDone} of ${v.checklist.length}`,
     h('div', { class: 'list' }, v.checklist.map((c) => h('div', {},
       h('button', { class: `check small${c.doneAt ? ' on' : ''}`, 'aria-label': c.doneAt ? `Undo ${c.name}` : `Mark ${c.name} done`, onclick: async () => { const res = await api('POST', `/api/prep/${stationId}/${date}/check`, { checklistId: c.id, done: !c.doneAt }); if (res.ok) again(); } }, c.doneAt ? '✓' : ''),
       h('span', { class: 'grow', text: c.name }), c.frequency === 'weekly' ? h('span', { class: 'tag', text: 'weekly' }) : null,
       c.doneAt ? h('span', { class: 'small muted nowrap', text: `${c.doneBy ?? ''} ${timeOf(c.doneAt)}` }) : null))));
   show(shell(me, 'prep', [
-    prepHeader(me, v, `${v.station.name} prep`, `${done} of ${work.length} done · approved by ${v.approvedBy ?? 'the chef'}`),
-    h('section', { class: 'card' }, work.length ? h('div', { class: 'list' }, rows) : h('div', { class: 'muted', text: 'Nothing to make today.' })),
-    cleaning,
+    prepHeader(me, v, `${v.station.name} prep`, `Approved by ${v.approvedBy ?? 'the chef'}. Cleaning last.`),
+    page(h('section', { class: 'card' }, work.length ? h('div', { class: 'list' }, rows) : h('div', { class: 'muted', text: 'Nothing to make today.' })), [
+      sideBox('Done', progress(done, work.length), h('div', { class: 'small', text: `${done} of ${work.length}` })),
+      v.checklist.length ? cleaning : null,
+    ]),
   ]));
 }
 
@@ -964,8 +1037,7 @@ async function prepEdit(me, stationId) {
     h('header', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'kicker', text: 'Edit list' }), h('h1', { text: s.station.name }),
       h('div', { class: 'sub', text: 'Changes save as you go. Par is the busiest day’s par; other days are scaled to their sales.' })),
       h('button', { class: 'btn', text: '← Stations', onclick: () => prepHome(me) })),
-    alertLine,
-    h('section', { class: 'card' }, h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: 'Prep items' }),
+    page([alertLine, h('section', { class: 'card' }, h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: 'Prep items' }),
         s.items.some((it) => it.recipeSuggestion) ? h('button', { class: 'btn small-btn', text: `Tie ${s.items.filter((it) => it.recipeSuggestion).length} to the suggested cards`, title: 'So the recipe opens from the prep list', onclick: async () => {
           for (const it of s.items.filter((x) => x.recipeSuggestion)) await save(`/api/prep/items/${it.id}`, { recipeName: it.recipeSuggestion });
           again();
@@ -975,7 +1047,17 @@ async function prepEdit(me, stationId) {
       h('div', { class: 'row' }, newItem, h('button', { class: 'btn dark', text: 'Add', onclick: async () => { if (newItem.value.trim() && await save(`/api/prep/${stationId}/items`, { name: newItem.value, kind: 'count' })) again(); } }))),
     h('section', { class: 'card' }, h('h2', { text: 'Cleaning tasks' }),
       h('div', { class: 'list' }, s.checklist.map((c, i) => checkRow(c, i, s.checklist))),
-      h('div', { class: 'row' }, newTask, h('button', { class: 'btn dark', text: 'Add', onclick: async () => { if (newTask.value.trim() && await save(`/api/prep/${stationId}/checklist`, { name: newTask.value, frequency: 'daily' })) again(); } }))),
+      h('div', { class: 'row' }, newTask, h('button', { class: 'btn dark', text: 'Add', onclick: async () => { if (newTask.value.trim() && await save(`/api/prep/${stationId}/checklist`, { name: newTask.value, frequency: 'daily' })) again(); } })))], [
+      sideBox('On this list', h('div', { class: 'list compact' },
+        h('div', {}, h('span', { class: 'grow', text: 'Prep items' }), h('b', { text: String(s.items.length) })),
+        h('div', {}, h('span', { class: 'grow', text: 'Tied to a recipe card' }), h('b', { text: String(s.items.filter((it) => it.recipeName).length) })),
+        h('div', {}, h('span', { class: 'grow', text: 'Cleaning tasks' }), h('b', { text: String(s.checklist.length) })))),
+      sideBox('Kinds', h('div', { class: 'stack small' },
+        h('div', {}, h('b', { text: 'Count' }), h('span', { class: 'muted', text: ': counted at night against its par; the app suggests what to make.' })),
+        h('div', {}, h('b', { text: 'Daily task' }), h('span', { class: 'muted', text: ': on the list every day, nothing to count.' })),
+        h('div', {}, h('b', { text: 'Bulk, as needed' }), h('span', { class: 'muted', text: ': made in batches; suggested when the station items it fills run low.' })))),
+      sideBox('Par', h('div', { class: 'small muted', text: 'Par is the busiest day’s. Other days are scaled to their sales, so a quiet Tuesday asks for less.' })),
+    ]),
   ]));
 }
 
@@ -1058,22 +1140,27 @@ async function menuScreen(me) {
       return row;
     }),
   ];
-  const todo = h('section', { class: 'card' },
-    h('h2', { text: 'Needs you' }),
-    questionRows.length ? h('div', { class: 'asks' }, questionRows) : h('div', { class: 'small muted', text: 'Nothing right now.' }),
-    h('div', { class: 'small muted', text: 'Answers are saved to the kitchen book; margins and the menu update straight away.' }));
-  const off = h('section', { class: 'card' },
-    h('h2', { text: 'Came off' }),
-    h('div', { class: 'list' }, m.cameOff.slice(0, 20).map((x) => dishRow(x, `${shortDate(x.from)} – ${shortDate(x.to)}`, false))));
+  const todo = questionRows.length ? h('section', { class: 'card', id: 'menu-questions' },
+    h('div', { class: 'row' }, h('h2', { class: 'grow', text: `Needs you (${questionRows.length})` }), h('span', { class: 'small muted', text: 'Answers update margins straight away.' })),
+    h('div', { class: 'asks' }, questionRows)) : null;
+  const off = m.cameOff.length ? sideBox('Came off', h('div', { class: 'list compact' }, m.cameOff.slice(0, 12).map((x) => h('div', {},
+    h('span', { class: 'grow', text: x.name }), h('span', { class: 'small muted nowrap', text: `${shortDate(x.from)} – ${shortDate(x.to)}` }))))) : null;
   const coming = atLeast(me.roleLevel, 'chef') && sideOf(me) === 'kitchen' ? await comingUpCard(me) : null;
+  const needCard = m.cards ? m.current.filter((x) => !x.hasCard).length : 0;
+  const onMenu = sideBox('On the menu now', h('div', { class: 'list compact' },
+    sections.map((sec) => h('div', {}, h('span', { class: 'grow', text: sec }), h('b', { text: String(m.current.filter((x) => x.section === sec).length) })))),
+    needCard ? h('div', { class: 'small muted', text: `${needCard} without a recipe card.` }) : null,
+    sideActions(h('button', { class: 'btn small-btn', text: 'Recipe cards', onclick: () => cardsScreen(me) })));
   show(shell(me, 'menu', [
     h('header', { class: 'row wrap' },
-      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[sideOf(me)]} · what’s selling, from Square sales since ${shortDate(m.from)}` }), h('h1', { text: sideOf(me) === 'bar' ? 'Bar menu' : 'Menu' }),
-        h('div', { class: 'sub', text: 'Dates come from the first and last day each item sold. Seasonal versions on one button are kept apart.' })),
-      h('div', { class: 'row wrap' }, h('button', { class: 'btn', text: 'Recipe cards', onclick: () => cardsScreen(me) }), sideSwitch(me, () => menuScreen(me)))),
-    missingNote(m.missing),
-    coming,
-    h('div', { class: 'grid' }, columns, todo, off),
+      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[sideOf(me)]} · from Square sales since ${shortDate(m.from)}` }), h('h1', { text: sideOf(me) === 'bar' ? 'Bar menu' : 'Menu' }),
+        h('div', { class: 'sub', text: 'What’s selling. Dates come from the first and last day each item sold; seasonal versions on one button are kept apart.' })),
+      sideSwitch(me, () => menuScreen(me))),
+    page([missingNote(m.missing), columns, todo, coming],
+      [m.coverage ? coverageCard(me, m.coverage, sideOf(me)) : null, onMenu,
+        questionRows.length ? sideBox('Needs you', h('div', { class: 'small', text: `${questionRows.length} question${questionRows.length === 1 ? '' : 's'} about what’s selling: new buttons, and which card a dish is.` }),
+          sideActions(h('button', { class: 'btn small-btn dark', text: 'Answer them', onclick: () => document.getElementById('menu-questions')?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }))) : null,
+        off]),
   ]));
 }
 
@@ -1150,15 +1237,27 @@ async function recipesScreen(me, state = {}) {
     .filter((s) => s.cards.length);
   const search = h('input', { type: 'search', placeholder: 'Find a recipe', 'aria-label': 'Find a recipe', value: state.q ?? '', class: 'search' });
   search.addEventListener('input', () => { clearTimeout(search.timer); search.timer = setTimeout(() => { recipesScreen(me, { q: search.value }).then(() => { const s = document.querySelector('input.search'); s?.focus(); s?.setSelectionRange(s.value.length, s.value.length); }); }, 250); });
+  // Down the side: the sections to jump to, how much of the menu has cards, and (managers) the cards themselves.
+  const all = r.data[side];
+  const count = (pred) => all.reduce((a, sec) => a + sec.cards.filter(pred).length, 0);
+  const preps = count((c) => c.kind === 'prep' || c.kind === 'barPrep');
+  const contents = q ? null : sideBox('In the book', h('div', { class: 'picks' }, all.map((sec) => h('button', { class: 'pick', onclick: () => document.getElementById(`sec-${sec.section}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }) },
+    h('span', { class: 'grow', text: sec.section }), h('span', { class: 'small muted', text: String(sec.cards.length) })))),
+    h('div', { class: 'small muted', text: `${count(() => true) - preps} ${side === 'bar' ? 'drinks' : 'dishes'} and ${preps} preps. Tap a card for the recipe; a prep in it opens its own card.` }));
+  const coverage = !q && r.data.coverage?.[side] ? coverageCard(me, r.data.coverage[side], side) : null;
+  const tools = atLeast(me.roleLevel, 'manager') ? sideBox('Recipe cards', h('div', { class: 'small muted', text: 'Write, change and cost the cards behind the book.' }),
+    sideActions(h('button', { class: 'btn small-btn', text: 'All cards', onclick: () => cardsScreen(me) }),
+      h('button', { class: 'btn small-btn dark', text: 'New card', onclick: async () => { const d = (await api('GET', `/api/cards?area=${side}`)).data; cardEditor(me, d, null, { kind: side === 'bar' ? 'drink' : 'dish' }); } }))) : null;
   show(shell(me, 'recipes', [
     h('header', { class: 'row wrap' },
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: q ? 'Kitchen and bar' : AREA_NAMES[side] }), h('h1', { text: 'Recipes' })),
       h('div', { class: 'row wrap' }, search, q ? null : sideSwitch(me, () => recipesScreen(me)))),
-    sections.length ? h('div', { class: 'book' }, sections.map((s) => h('section', { class: 'card' },
+    page(sections.length ? h('div', { class: 'book' }, sections.map((s) => h('section', { class: 'card', id: `sec-${s.section}` },
       h('div', { class: 'row' }, h('h2', { class: 'grow', text: s.section }), h('span', { class: 'small muted', text: String(s.cards.length) })),
       h('div', { class: 'book-list' }, s.cards.map((c) => h('button', { class: `book-item${c.image ? ' with-photo' : ''}`, onclick: () => recipePage(me, c.name) },
         photo(c.image), h('span', { text: c.name }))))))
     ) : h('div', { class: 'card small muted', text: q ? 'No recipe by that name.' : `No ${side === 'bar' ? 'drink' : ''} recipe cards yet.` }),
+    [contents, coverage, tools]),
   ]));
 }
 
@@ -1166,7 +1265,8 @@ async function recipesScreen(me, state = {}) {
 async function recipePage(me, name, opts = {}) {
   const r = await api('GET', `/api/recipes/${encodeURIComponent(name)}`);
   if (!r.ok) return show(shell(me, 'recipes', [h('h1', { text: name }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
-  show(shell(me, 'recipes', [recipeView(me, r.data, { open: (n) => recipePage(me, n), back: h('button', { class: 'btn', text: '← Recipes', onclick: () => recipesScreen(me) }), ...opts })]));
+  const v = recipeView(me, r.data, { open: (n) => recipePage(me, n), back: h('button', { class: 'btn', text: '← Recipes', onclick: () => recipesScreen(me) }), page: true, ...opts });
+  show(shell(me, 'recipes', [v.head, page(v.body, v.side)]));
 }
 
 /** A card over whatever's on screen (a prep list), so nobody loses their place. */
@@ -1197,34 +1297,56 @@ const nice = (n) => {
 
 function recipeView(me, r, opts) {
   let scale = r.scale ?? 1;
-  const body = h('div', { class: 'recipe' });
   const y = r.yields[0];
   const prep = r.kind === 'prep' || r.kind === 'barPrep';
+  const page = Boolean(opts.page);
+  const body = h('div', { class: 'recipe' });
+  const side = page ? h('div', { class: 'page-side-boxes' }) : null;
+  const makesText = () => (prep ? `Makes ${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}${r.yields.length > 1 ? ` (${r.yields.slice(1).map((x) => `${nice(x.amount * scale)} ${UNIT_LABEL(x.unit)}`).join(', ')})` : ''}` : r.kind === 'drink' ? 'One drink' : 'One plate');
+  const sellsAs = r.sellsAs.filter((n) => n.toLowerCase() !== r.name.toLowerCase());
+  const editButton = r.canEdit && !opts.sheet ? h('button', { class: 'btn', text: 'Edit card', onclick: async () => { const d = (await api('GET', '/api/cards')).data; const c = d.cards.find((x) => x.name === r.name); if (c) cardEditor(me, d, c); } }) : null;
+  const usedIn = () => (r.usedBy.length ? r.usedBy.map((n, k) => [k ? ', ' : '', h('button', { class: 'linkish card-link', text: n, onclick: () => opts.open(n) })]) : null);
+  // The page's title row stays put; only the amounts change with the batch size.
+  const head = page ? h('header', { class: 'row wrap' },
+    h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[r.side]} · ${r.section}` }), h('h1', { text: r.name }),
+      h('div', { class: 'sub', text: [sellsAs.length ? `Sells as ${sellsAs.join(', ')}` : '', r.shelfLifeDays ? `keeps ${r.shelfLifeDays} days` : ''].filter(Boolean).join(' · ') || null })),
+    opts.back ?? null, editButton) : null;
   const draw = () => {
-    const makes = prep ? `Makes ${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}${r.yields.length > 1 ? ` (${r.yields.slice(1).map((x) => `${nice(x.amount * scale)} ${UNIT_LABEL(x.unit)}`).join(', ')})` : ''}` : r.kind === 'drink' ? 'One drink' : 'One plate';
+    const sizes = [0.5, 1, 2, 3];
+    const other = r.scaledTo && Math.abs(r.scale - 1) > 1e-6 && !sizes.includes(r.scale);
     const scaler = prep ? h('div', { class: 'seg', role: 'group', 'aria-label': 'How much to make' },
-      [0.5, 1, 2, 3].map((k) => h('button', { class: Math.abs(scale - k) < 1e-6 ? 'on' : '', text: k === 0.5 ? '½ batch' : k === 1 ? '1 batch' : `${k} batches`, onclick: () => { scale = k; draw(); } })),
-      r.scaledTo && Math.abs(r.scale - 1) > 1e-6 && ![0.5, 1, 2, 3].includes(r.scale) ? h('button', { class: Math.abs(scale - r.scale) < 1e-6 ? 'on' : '', text: `For ${nice(r.scaledTo.amount)} ${UNIT_LABEL(r.scaledTo.unit)}`, onclick: () => { scale = r.scale; draw(); } }) : null) : null;
+      sizes.map((k) => h('button', { class: Math.abs(scale - k) < 1e-6 ? 'on' : '', 'aria-pressed': String(Math.abs(scale - k) < 1e-6), 'aria-label': `${k} batch${k > 1 ? 'es' : ''}`,
+        text: page ? (k === 0.5 ? '½' : String(k)) : k === 0.5 ? '½ batch' : k === 1 ? '1 batch' : `${k} batches`, onclick: () => { scale = k; draw(); } })),
+      other ? h('button', { class: Math.abs(scale - r.scale) < 1e-6 ? 'on' : '', text: `For ${nice(r.scaledTo.amount)} ${UNIT_LABEL(r.scaledTo.unit)}`, onclick: () => { scale = r.scale; draw(); } }) : null) : null;
+    const asked = r.asked && !r.scaledTo && prep ? h('div', { class: 'note', text: `The list says make ${nice(r.asked.amount)} ${UNIT_LABEL(r.asked.unit)}. This card is written in ${UNIT_LABEL(y.unit)}, so it shows one batch.` }) : null;
+    const table = h('table', { class: 'ingredients' }, h('tbody', {}, r.ingredients.map((i) => h('tr', {},
+      h('td', { class: 'amt', text: `${nice(i.amount * scale)} ${UNIT_LABEL(i.unit)}` }),
+      h('td', {}, i.card ? h('button', { class: 'linkish card-link', text: i.card, onclick: () => opts.open(i.card) }) : h('span', { text: i.name }),
+        i.yieldPercent ? h('span', { class: 'small muted', text: ` (after trimming; ${i.yieldPercent}% usable)` }) : null,
+        i.note ? h('div', { class: 'small muted', text: i.note }) : null)))));
+    const method = r.method ? h('div', { class: 'method' }, h('h3', { text: 'Method' }), r.method.split(/\n+/).map((p) => h('p', { text: p }))) : h('div', { class: 'small muted', text: r.canEdit && !opts.sheet ? 'No method written yet. Add one with Edit card.' : 'No method written yet.' });
+    const cost = r.cost !== undefined ? `Costs ${money2(r.cost * scale)}${r.complete ? '' : ' (some lines have no price yet)'}` : null;
+    if (page) {
+      fill(body, asked, h('section', { class: 'card' }, h('h2', { text: makesText() }), table), h('section', { class: 'card' }, method));
+      fill(side,
+        r.image ? h('section', { class: 'card tight' }, photo(r.image, 'hero')) : null,
+        prep ? sideBox('How much', h('div', { class: 'big', text: `${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}` }), scaler, h('div', { class: 'small muted', text: 'Batches: every amount scales with it.' })) : null,
+        r.usedBy.length ? sideBox('Used in', h('div', { class: 'small' }, usedIn())) : null,
+        cost ? sideBox('Cost · managers only', h('div', { class: 'big', text: money2(r.cost * scale) }), h('div', { class: 'small muted', text: `${prep ? `for ${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}` : r.kind === 'drink' ? 'a drink' : 'a plate'}${r.complete ? '' : ' · some lines have no price yet'}` })) : null);
+      return;
+    }
     fill(body,
       h('div', { class: 'row wrap' },
-        h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[r.side]} · ${r.section}` }), h(opts.sheet ? 'h2' : 'h1', { class: opts.sheet ? 'sheet-title' : '', text: r.name }),
-          h('div', { class: 'sub', text: [makes, r.sellsAs.filter((n) => n.toLowerCase() !== r.name.toLowerCase()).length ? `sells as ${r.sellsAs.join(', ')}` : '', r.shelfLifeDays ? `keeps ${r.shelfLifeDays} days` : ''].filter(Boolean).join(' · ') })),
-        opts.back ?? null,
-        r.canEdit && !opts.sheet ? h('button', { class: 'btn', text: 'Edit card', onclick: async () => { const d = (await api('GET', '/api/cards')).data; const c = d.cards.find((x) => x.name === r.name); if (c) cardEditor(me, d, c); } }) : null),
+        h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[r.side]} · ${r.section}` }), h('h2', { class: 'sheet-title', text: r.name }),
+          h('div', { class: 'sub', text: [makesText(), sellsAs.length ? `sells as ${r.sellsAs.join(', ')}` : '', r.shelfLifeDays ? `keeps ${r.shelfLifeDays} days` : ''].filter(Boolean).join(' · ') })),
+        opts.back ?? null, editButton),
       r.image ? photo(r.image, 'hero') : null,
-      scaler,
-      r.asked && !r.scaledTo && prep ? h('div', { class: 'note', text: `The list says make ${nice(r.asked.amount)} ${UNIT_LABEL(r.asked.unit)}. This card is written in ${UNIT_LABEL(y.unit)}, so it shows one batch.` }) : null,
-      h('table', { class: 'ingredients' }, h('tbody', {}, r.ingredients.map((i) => h('tr', {},
-        h('td', { class: 'amt', text: `${nice(i.amount * scale)} ${UNIT_LABEL(i.unit)}` }),
-        h('td', {}, i.card ? h('button', { class: 'linkish card-link', text: i.card, onclick: () => opts.open(i.card) }) : h('span', { text: i.name }),
-          i.yieldPercent ? h('span', { class: 'small muted', text: ` (after trimming; ${i.yieldPercent}% usable)` }) : null,
-          i.note ? h('div', { class: 'small muted', text: i.note }) : null))))),
-      r.method ? h('div', { class: 'method' }, h('h3', { text: 'Method' }), r.method.split(/\n+/).map((p) => h('p', { text: p }))) : h('div', { class: 'small muted', text: r.canEdit && !opts.sheet ? 'No method written yet. Add one with Edit card.' : 'No method written yet.' }),
-      r.usedBy.length ? h('div', { class: 'small' }, h('span', { class: 'muted', text: 'Used in ' }), r.usedBy.map((n, k) => [k ? ', ' : '', h('button', { class: 'linkish card-link', text: n, onclick: () => opts.open(n) })])) : null,
-      r.cost !== undefined ? h('div', { class: 'small muted', text: `Costs ${money2(r.cost * scale)}${r.complete ? '' : ' (some lines have no price yet)'} · managers only` }) : null);
+      scaler, asked, table, method,
+      r.usedBy.length ? h('div', { class: 'small' }, h('span', { class: 'muted', text: 'Used in ' }), usedIn()) : null,
+      cost ? h('div', { class: 'small muted', text: `${cost} · managers only` }) : null);
   };
   draw();
-  return body;
+  return page ? { head, body, side: [...side.children].length ? side : null } : body;
 }
 
 // ------------------------------------------------------------------ recipe cards
@@ -1252,32 +1374,33 @@ async function cardsScreen(me, opts = {}) {
   });
   const search = h('input', { type: 'text', placeholder: 'Find a card', 'aria-label': 'Find a card', value: filter });
   search.addEventListener('change', () => cardsScreen(me, { filter: search.value }));
-  const noCard = d.noCard.slice(0, 40);
-  const noCardBox = noCard.length ? h('section', { class: 'card' },
-    h('div', { class: 'row' }, h('h2', { class: 'grow', text: `Selling without a card (${d.noCard.length})` }),
-      side === 'bar' ? h('button', { class: 'btn dark', text: 'Draft bar cards', onclick: () => draftsScreen(me) }) : null),
-    h('div', { class: 'small muted', text: side === 'bar' ? 'Wine, beer, sodas and coffee can be drafted in bulk from your invoices. Cocktails and house drinks get a card each.' : 'Their food cost isn’t counted until they have a card.' }),
-    h('div', { class: 'list' }, noCard.map((x) => h('div', {},
-      h('div', { class: 'grow' }, h('div', { text: x.name }), h('div', { class: 'small muted', text: `${x.category} · ${x.sold} sold · ${dollars(x.netSales)} in 90 days` })),
-      h('button', { class: 'btn small-btn', text: 'Write card', onclick: () => cardEditor(me, d, null, { name: x.itemName, kind: side === 'bar' ? 'drink' : 'dish', link: [x] }) }),
-      h('button', { class: 'link', text: 'No card needed', title: 'A fee, a gift card, or nothing poured or cooked', onclick: async () => { await api('POST', '/api/cards/no-card', { items: [x] }); cardsScreen(me, opts); } }))))) : null;
+  // Down the side: what still sells without a card (the full list is on Recipe coverage), names to tidy, a new card.
+  const noCardBox = d.noCard.length ? sideBox(`Selling without a card (${d.noCard.length})`,
+    h('div', { class: 'list compact' }, d.noCard.slice(0, 8).map((x) => h('div', {},
+      h('button', { class: 'linkish grow', text: x.name, title: `Write the card for ${x.name}`, onclick: () => cardEditor(me, d, null, { name: x.itemName, kind: side === 'bar' ? 'drink' : 'dish', link: [x] }) }),
+      h('span', { class: 'small muted', text: dollars(x.netSales) })))),
+    sideActions(h('button', { class: 'btn small-btn', text: 'All of them', onclick: () => coverageScreen(me) }),
+      side === 'bar' ? h('button', { class: 'btn small-btn dark', text: 'Draft bar cards', onclick: () => draftsScreen(me) }) : null)) : null;
   const tidy = (await api('GET', '/api/cards/tidy')).data?.proposals ?? [];
-  const tidyBox = tidy.some((t) => t.to || t.remove) ? h('div', { class: 'note row wrap' },
-    h('div', { class: 'grow', text: `${tidy.filter((t) => t.to || t.remove).length} card names could be tidied: dishes and drinks named as they sell in Square, preps capitalized, duplicates removed.` }),
-    h('button', { class: 'btn dark', text: 'Review names', onclick: () => tidyScreen(me) })) : null;
+  const tidyCount = tidy.filter((t) => t.to || t.remove).length;
+  const tidyBox = tidyCount ? sideBox('Names to tidy', h('div', { class: 'small muted', text: `${tidyCount} card name${tidyCount === 1 ? '' : 's'} could match Square, be capitalized, or lose a duplicate.` }),
+    sideActions(h('button', { class: 'btn small-btn', text: 'Review names', onclick: () => tidyScreen(me) }))) : null;
+  const kinds = Object.entries(KIND_NAMES).map(([k, t]) => [t, d.cards.filter((c) => c.kind === k).length]).filter(([, n]) => n);
+  const fix = d.cards.filter((c) => c.problems?.length).length;
+  const totals = sideBox('Cards', h('div', { class: 'list compact' }, kinds.map(([t, n]) => h('div', {}, h('span', { class: 'grow', text: t }), h('b', { text: String(n) })))),
+    fix ? h('div', { class: 'small warn-text', text: `${fix} with something to fix: hover the tag for what.` }) : null,
+    sideActions(h('button', { class: 'btn small-btn dark', text: 'New card', onclick: () => cardEditor(me, d, null, { kind: side === 'bar' ? 'drink' : 'dish' }) })));
   show(shell(me, 'menu', [
     h('header', { class: 'row wrap' },
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[side]} · costed from invoice prices` }), h('h1', { text: 'Recipe cards' }),
         h('div', { class: 'sub', text: side === 'bar' ? 'Every drink poured or mixed has a card: a pour from the bottle or keg, a cocktail spec, a dose of coffee. Cans and sodas are one of what was bought.' : 'What goes into each dish and prep, priced from what you paid.' })),
-      h('div', { class: 'row wrap' }, h('button', { class: 'btn', text: '← Menu', onclick: () => menuScreen(me) }), sideSwitch(me, () => cardsScreen(me)),
-        h('button', { class: 'btn dark', text: 'New card', onclick: () => cardEditor(me, d, null, { kind: side === 'bar' ? 'drink' : 'dish' }) }))),
-    tidyBox,
-    noCardBox,
-    h('section', { class: 'card' },
+      h('div', { class: 'row wrap' }, h('button', { class: 'btn', text: '← Menu', onclick: () => menuScreen(me) }), sideSwitch(me, () => cardsScreen(me)))),
+    page(h('section', { class: 'card' },
       h('div', { class: 'row' }, h('h2', { class: 'grow', text: `Cards (${d.cards.length})` }), search),
       cardRows.length ? h('div', { class: 'clist' }, h('div', { class: 'crow head' }, h('div', { text: 'Card' }), h('div', { text: 'Kind' }), h('div', { class: 'num', text: 'Cost' }), h('div', { class: 'num', text: 'Of the price' }), h('div')), cardRows)
         : h('div', { class: 'small muted', text: side === 'bar' ? 'No drink cards yet.' : 'No cards yet.' }),
       h('div', { class: 'small muted', text: '* part of the card has no price yet.' })),
+    [totals, noCardBox, tidyBox]),
   ]));
 }
 
@@ -1311,9 +1434,11 @@ async function tidyScreen(me) {
   show(shell(me, 'menu', [
     h('header', { class: 'row wrap' },
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: 'Recipe cards' }), h('h1', { text: 'Tidy card names' }),
-        h('div', { class: 'sub', text: 'Dishes and drinks take the name they sell under in Square; everything else is capitalized. Every rename follows the card into the cards that use it, the prep lists and menu plans. Change any new name before applying.' })),
+        h('div', { class: 'sub', text: 'Dishes and drinks take the name they sell under in Square; everything else is capitalized. Every rename follows the card into the cards that use it, the prep lists and menu plans.' })),
       h('button', { class: 'btn', text: '← Cards', onclick: () => cardsScreen(me) })),
-    h('section', { class: 'card' }, list.length ? h('div', { class: 'tlist' }, rows) : h('div', { class: 'small muted', text: 'Every name is tidy.' }), err, list.length ? h('div', {}, apply) : null),
+    page(h('section', { class: 'card' }, list.length ? h('div', { class: 'tlist' }, rows) : h('div', { class: 'small muted', text: 'Every name is tidy.' })),
+      list.length ? [sideBox('Apply', h('div', { class: 'small', text: `${list.filter((t) => t.to).length} to rename · ${list.filter((t) => t.remove).length} duplicate${list.filter((t) => t.remove).length === 1 ? '' : 's'} to remove` }),
+        h('div', { class: 'small muted', text: 'Uncheck anything that should stay as it is.' }), err, sideActions(apply))] : null),
   ]));
 }
 
@@ -1423,15 +1548,15 @@ function cardEditor(me, d, card, start = {}) {
     h('header', { class: 'row wrap' },
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: card ? 'Recipe card' : 'New recipe card' }), h('h1', { text: card?.name ?? (c.name || 'New card') })),
       h('button', { class: 'btn', text: '← Cards', onclick: () => cardsScreen(me) })),
-    h('div', { class: 'editor' },
-      h('section', { class: 'card' },
+    h('div', { class: 'page editor' },
+      h('section', { class: 'card page-main' },
         h('div', { class: 'row wrap' }, h('label', { class: 'grow' }, 'Name', nameInput), h('label', {}, 'Kind', kind)),
         yieldBox,
         datalist, lines,
         h('label', {}, 'Method', method),
         err,
         h('div', { class: 'row wrap' }, h('button', { class: 'btn dark', text: 'Save card', onclick: save }), h('button', { class: 'btn', text: 'Cancel', onclick: () => cardsScreen(me) }), h('div', { class: 'grow' }), del)),
-      h('aside', { class: 'glance' },
+      h('aside', { class: 'page-side' },
         h('div', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Cost' }), total, totalNote),
         h('div', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Sells as' }), linkBox),
         card?.usedBy?.length ? h('div', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Used in' }), h('div', { class: 'small', text: card.usedBy.join(' · ') })) : null)),
@@ -1497,13 +1622,13 @@ async function draftsScreen(me, pours = {}) {
       if (!res.ok) return (err.textContent = res.data.error ?? 'Not saved.');
       draftsScreen(me, pours);
     } });
-    return h('section', { class: 'card' },
+    return h('section', { class: 'card', id: `group-${shape}` },
       h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, h('h2', { text: `${title} (${list.length})` }), h('div', { class: 'small muted', text: note })),
         shape === 'wineGlass' ? pourInput('winePour', 'Pour', 'fl oz') : shape === 'draft' ? pourInput('draftPour', 'Pour', 'fl oz') : shape === 'coffee' ? pourInput('dose', 'Dose', 'g') : null),
       h('div', { class: 'dlist' }, rows), err, h('div', {}, saveBtn));
   });
   const own = drafts.filter((x) => x.shape === 'ownCard');
-  const ownBox = own.length ? h('section', { class: 'card' },
+  const ownBox = own.length ? h('section', { class: 'card', id: 'group-ownCard' },
     h('h2', { text: `Cocktails and house drinks (${own.length})` }),
     h('div', { class: 'small muted', text: 'Each gets its own card: the spec, the syrups and juices from bar prep, the garnish. Fees and things nothing is poured for need no card.' }),
     h('div', { class: 'list' }, own.map((x) => h('div', {},
@@ -1518,8 +1643,20 @@ async function draftsScreen(me, pours = {}) {
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: 'Bar · from Square buttons and MarginEdge products' }), h('h1', { text: 'Draft bar cards' }),
         h('div', { class: 'sub', text: 'Each drink matched to the bottle, keg or can it comes from. Check what’s flagged, uncheck anything wrong, and save a group at a time. Saved cards can be changed like any other.' })),
       h('button', { class: 'btn', text: '← Cards', onclick: () => cardsScreen(me) })),
-    groups, ownBox,
-    drafts.length ? null : h('div', { class: 'card small muted', text: 'Every drink has a card.' }),
+    page([groups, ownBox, drafts.length ? null : h('div', { class: 'card small muted', text: 'Every drink has a card.' })], drafts.length ? [
+      sideBox('Groups', h('div', { class: 'picks' }, [...SHAPES.map(([shape, title]) => [shape, title]), ['ownCard', 'Cocktails and house drinks']].map(([shape, title]) => {
+        const list = drafts.filter((x) => x.shape === shape);
+        if (!list.length) return null;
+        const flagged = list.filter((x) => x.check).length;
+        return h('button', { class: 'pick', onclick: () => document.getElementById(`group-${shape}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }) },
+          h('span', { class: 'grow', text: title }), flagged ? h('span', { class: 'tag warn', text: `${flagged} to check` }) : null, h('span', { class: 'small muted', text: String(list.length) }));
+      }))),
+      sideBox('Pours', h('div', { class: 'list compact' },
+        h('div', {}, h('span', { class: 'grow', text: 'Wine by the glass' }), h('b', { text: `${qty(pours.winePour)} fl oz` })),
+        h('div', {}, h('span', { class: 'grow', text: 'Draft beer' }), h('b', { text: `${qty(pours.draftPour)} fl oz` })),
+        h('div', {}, h('span', { class: 'grow', text: 'Coffee dose' }), h('b', { text: `${qty(pours.dose)} g` }))),
+        h('div', { class: 'small muted', text: 'Change a pour at the top of its group; every draft in it follows.' })),
+    ] : null),
   ]));
 }
 
@@ -1581,9 +1718,8 @@ async function todayScreen(me, filter = 'all') {
     h('header', { class: 'row wrap' },
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${longDay(t.today)} · ${me.restaurantName}` }), h('h1', { text: 'Today' }), h('div', { class: 'sub', text: sub })),
       h('div', { class: 'row wrap' }, sides, chips)),
-    h('div', { class: 'today' },
-      h('section', { class: 'todos', 'aria-label': 'To do' }, shown.length ? shown.map(itemRow) : h('div', { class: 'card small muted', text: 'All clear.' })),
-      h('aside', { class: 'glance', 'aria-label': 'At a glance' }, glanceCards(me, t, side))),
+    page(h('section', { class: 'todos', 'aria-label': 'To do' }, shown.length ? shown.map(itemRow) : h('div', { class: 'card small muted', text: 'All clear.' })),
+      glanceCards(me, t, side)),
   ]));
 }
 
@@ -1649,27 +1785,35 @@ async function ordersScreen(me) {
   const vendorCard = (v) => {
     const [tag, cls] = v.order ? STATUS_TAG[v.order.status] : ['Not started', ''];
     return h('section', { class: 'card' },
-      h('div', { class: 'row' }, h('h2', { class: 'grow', text: v.name }), h('span', { class: `tag ${cls}`, text: tag })),
-      h('div', { class: 'small muted', text: `Delivers ${v.weekdays.map((d) => WD[d]).join(', ')}${v.source === 'confirmed' ? '' : ' (from invoices)'} · about ${dollars(v.spendPerWeek)} a week` }),
-      h('div', { class: 'row' },
-        h('div', { class: 'grow' }, h('div', { class: 'strong', text: v.next ? `Next: ${weekdayName(v.next)}, ${shortDate(v.next)}` : 'No delivery coming up' }),
-          h('div', { class: `small${v.deadline && v.deadline.date <= today ? ' warn-text' : ' muted'}`, text: dueText(v.deadline, today) })),
-        v.order?.total ? h('span', { class: 'small muted', text: dollars(v.order.total) }) : null,
-        v.next ? h('button', { class: `btn${v.order ? '' : ' dark'}`, text: v.order ? 'Open' : 'Start order', onclick: () => orderScreen(me, v.vendorId) }) : null));
+      h('div', { class: 'vendor-row' },
+        h('div', {}, h('div', { class: 'row tight wrap' }, h('h2', { text: v.name }), h('span', { class: `tag ${cls}`, text: tag })),
+          h('div', { class: 'small muted', text: `Delivers ${v.weekdays.map((d) => WD[d]).join(', ')}${v.source === 'confirmed' ? '' : ' (from invoices)'} · about ${dollars(v.spendPerWeek)} a week` })),
+        h('div', { class: 'row tight' },
+          h('div', { class: 'when' }, h('div', { class: 'strong', text: v.next ? `${weekdayName(v.next)}, ${shortDate(v.next)}` : 'No delivery coming up' }),
+            h('div', { class: `small${v.deadline && v.deadline.date <= today ? ' warn-text' : ' muted'}`, text: v.order?.total ? `${dollars(v.order.total)} · ${dueText(v.deadline, today).toLowerCase()}` : dueText(v.deadline, today) })),
+          v.next ? h('button', { class: `btn${v.order ? '' : ' dark'}`, text: v.order ? 'Open' : 'Start order', onclick: () => orderScreen(me, v.vendorId) }) : null)));
   };
+  const drafts = active.filter((v) => v.order?.status === 'draft').length;
+  const unsent = active.filter((v) => v.order?.status === 'approved').length;
+  const week = statBox(`${AREA_NAMES[side]} · usual spend`, `${dollars(active.reduce((a, v) => a + (v.spendPerWeek ?? 0), 0))} a week`,
+    h('div', { class: 'small muted', text: `From ${active.length} vendor${active.length === 1 ? '' : 's'} with regular deliveries, by their invoices.` }));
+  const status = sideBox('Orders in progress', h('div', { class: 'list compact' },
+    h('div', {}, h('span', { class: 'grow', text: 'Drafts to approve' }), h('b', { text: String(drafts) })),
+    h('div', {}, h('span', { class: 'grow', text: 'Approved, not sent' }), h('b', { text: String(unsent) }))),
+    h('div', { class: 'small muted', text: 'A manager approves each order; nothing goes out by itself.' }));
+  const noCutoff = active.filter((v) => !v.deadline).length;
+  const cutoffs = noCutoff ? sideBox('Order cutoffs', h('div', { class: 'small muted', text: `${noCutoff} vendor${noCutoff === 1 ? ' has' : 's have'} no cutoff yet. Open a vendor and set it under Vendor settings, and Today reminds whoever orders before it’s due.` })) : null;
+  const recentBox = recent.length ? sideBox('Recent orders', h('div', { class: 'picks' }, recent.map((o) => h('button', { class: 'pick', onclick: () => orderScreen(me, o.vendorId, o.delivery) },
+    h('span', { class: 'grow' }, h('div', { text: o.vendorName }), h('div', { class: 'small muted', text: `${o.status === 'sent' ? 'Sent' : 'Approved'} · for ${WD[new Date(`${o.delivery}T12:00:00`).getDay()]} ${shortDate(o.delivery)}` })),
+    o.total ? h('span', { class: 'small', text: dollars(o.total) }) : null)))) : null;
+  const pausedBox = paused.length ? sideBox('Not ordering from', h('div', { class: 'small', text: paused.map((v) => v.name).join(' · ') })) : null;
   show(shell(me, 'orders', [
     h('header', { class: 'row wrap' },
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[side]} · ${dayName(today)}` }), h('h1', { text: 'Orders' }),
-        h('div', { class: 'sub', text: 'Drafted from what you’ve been buying, weighted to your busy days, less what’s on hand. A manager approves each order before it goes out; the app never sends one by itself.' })),
+        h('div', { class: 'sub', text: 'Drafted from what you’ve been buying, weighted to your busy days, less what’s on hand. Next delivery first.' })),
       sideSwitch(me, () => ordersScreen(me))),
-    active.length ? h('div', { class: 'grid' }, active.map(vendorCard)) : h('div', { class: 'card small muted', text: 'No vendors with regular deliveries yet. They appear after a few weeks of invoices.' }),
-    recent.length ? h('section', { class: 'card' }, h('h2', { text: 'Recent orders' }),
-      h('div', { class: 'list' }, recent.map((o) => h('div', {},
-        h('div', { class: 'grow' }, h('div', { text: `${o.vendorName} · ${weekdayName(o.delivery)} ${shortDate(o.delivery)}` }),
-          h('div', { class: 'small muted', text: o.status === 'sent' ? `Sent by ${o.sentBy ?? ''} ${when(o.sentAt)}` : `Approved by ${o.approvedBy ?? ''} ${when(o.approvedAt)}, not sent yet` })),
-        o.total ? h('span', { class: 'small', text: dollars(o.total) }) : null,
-        h('button', { class: 'btn small-btn', text: 'Open', onclick: () => orderScreen(me, o.vendorId, o.delivery) }))))) : null,
-    paused.length ? h('div', { class: 'small muted', text: `Not ordering from: ${paused.map((v) => v.name).join(', ')}` }) : null,
+    page(active.length ? h('div', { class: 'stack' }, active.map(vendorCard)) : h('div', { class: 'card small muted', text: 'No vendors with regular deliveries yet. They appear after a few weeks of invoices.' }),
+      [week, status, cutoffs, recentBox, pausedBox]),
   ]));
 }
 
@@ -1691,7 +1835,7 @@ async function orderScreen(me, vendorId, delivery) {
   const drawTotal = () => {
     const on = lines.filter((l) => l.packs > 0);
     const total = on.reduce((s, l) => s + l.packs * (l.packPrice ?? 0), 0);
-    fill(totalBox, h('div', { class: 'grow' }, h('div', { class: 'big', text: dollars(total, { exact: true }) }), h('div', { class: 'small muted', text: `${on.length} item${on.length === 1 ? '' : 's'}${v.minimum && total < v.minimum ? ` · below the ${dollars(v.minimum)} minimum` : ''}` })));
+    fill(totalBox, h('div', { class: 'grow' }, h('div', { class: 'big', text: dollars(total, { exact: true }) }), h('div', { class: `small${v.minimum && total < v.minimum ? ' warn-text' : ' muted'}`, text: `${on.length} item${on.length === 1 ? '' : 's'}${v.minimum && total < v.minimum ? ` · below the ${dollars(v.minimum)} minimum` : ''}` })));
   };
   const lineRow = (l) => {
     const cost = h('div', { class: 'num', text: l.packs ? dollars(l.packs * l.packPrice, { cents: true }) : '' });
@@ -1702,7 +1846,7 @@ async function orderScreen(me, vendorId, delivery) {
       h('div', {}, h('div', { class: 'strong', text: l.name }), h('div', { class: 'small muted', text: l.reason })),
       h('div', { class: 'small', text: `${l.packLabel} · ${dollars(l.packPrice, { cents: true })}` }),
       onHand ? h('div', { class: 'row tight' }, onHand, h('span', { class: 'small muted', text: l.unit })) : h('div', { class: 'small muted', text: l.onHandInput !== '' ? `${qty(l.onHandInput)} ${l.unit} counted` : '' }),
-      h('div', { class: 'row tight' }, packs, l.suggested && l.suggested !== l.packs ? h('span', { class: 'small muted', text: `suggested ${l.suggested}` }) : null),
+      h('div', { class: 'order-cell' }, packs, l.suggested && l.suggested !== l.packs ? h('span', { class: 'small muted', text: `suggested ${l.suggested}` }) : null),
       cost);
   };
   const body = () => ({ delivery: d.delivery, lines: lines.filter((l) => l.packs > 0 || l.onHandInput !== '').map((l) => ({ productId: l.productId, packs: l.packs, suggested: l.suggested, ...(l.onHandInput !== '' ? { onHand: l.onHandInput } : {}) })) });
@@ -1734,28 +1878,33 @@ async function orderScreen(me, vendorId, delivery) {
   }
 
   const settingsBox = vendorSettings(me, d, () => orderScreen(me, vendorId, d.delivery));
-  const deliveries = h('div', { class: 'row wrap' }, h('span', { class: 'small muted', text: 'Delivery:' }), d.upcoming.map((x) => h('button', { class: `btn small-btn${x === d.delivery ? ' dark' : ''}`, text: `${WD[new Date(`${x}T12:00:00`).getDay()]} ${shortDate(x)}`, onclick: () => orderScreen(me, vendorId, x) })));
   const [tag, cls] = STATUS_TAG[status] ?? ['New', ''];
   drawTotal();
+  // The order's total and what to do with it sit on the right, beside the lines.
+  const totalSide = h('section', { class: 'card tight order-side' },
+    h('div', { class: 'row' }, h('div', { class: 'grow small muted strong', text: editable ? 'This order' : 'Ordered' }), h('span', { class: `tag ${cls}`, text: tag })),
+    totalBox, err,
+    sideActions(
+      editable ? h('button', { class: 'btn dark', text: 'Approve order', onclick: async () => { const o = await save(); if (o && await act('approve', o.id)) orderScreen(me, vendorId, d.delivery); } }) : null,
+      editable ? h('button', { class: 'btn', text: 'Save draft', onclick: async () => { if (await save()) orderScreen(me, vendorId, d.delivery); } }) : null,
+      editable ? h('button', { class: 'btn', text: 'Update suggestions', title: 'Saves the counts and works the suggestions out again', onclick: async () => { if (await save()) orderScreen(me, vendorId, d.delivery); } }) : null,
+      order && status !== 'sent' ? h('button', { class: 'link danger', text: 'Cancel order', onclick: async () => { if (confirmText('Cancel this order?') && await act('cancel', order.id)) ordersScreen(me); } }) : null),
+    editable ? h('div', { class: 'small muted', text: 'Nothing goes to the vendor until it’s approved and you send it.' }) : null);
+  const whenBox = sideBox('Delivery', h('div', { class: 'row wrap' }, d.upcoming.map((x) => h('button', { class: `btn small-btn${x === d.delivery ? ' dark' : ''}`, text: `${WD[new Date(`${x}T12:00:00`).getDay()]} ${shortDate(x)}`, onclick: () => orderScreen(me, vendorId, x) }))),
+    h('div', { class: 'small muted', text: `Covers use until ${weekdayName(d.following)}’s delivery.` }));
   show(shell(me, 'orders', [
     h('header', { class: 'row wrap' },
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `Order · ${v.name}` }), h('h1', { text: `${weekdayName(d.delivery)}, ${shortDate(d.delivery)}` }),
-        h('div', { class: 'sub', text: `${dueText(d.deadline, d.today)} · covers use until ${weekdayName(d.following)}’s delivery` })),
-      h('span', { class: `tag ${cls}`, text: tag }), h('button', { class: 'btn', text: '← Orders', onclick: () => ordersScreen(me) })),
-    deliveries,
-    sendBox,
-    h('section', { class: 'card' },
-      h('h2', { text: editable ? 'To order' : 'Ordered' }),
-      editable ? h('div', { class: 'small muted', text: 'Count what’s on hand to sharpen the suggestions; blank uses the estimate from recent deliveries.' }) : null,
-      h('div', { class: 'olist' }, head, (editable ? suggestedLines : lines.filter((l) => l.packs > 0)).map(lineRow)),
-      editable && otherLines.length ? others : null,
-      err,
-      h('div', { class: 'row wrap order-foot' }, totalBox,
-        editable ? h('button', { class: 'btn', text: 'Update suggestions', title: 'Saves the counts and works the suggestions out again', onclick: async () => { if (await save()) orderScreen(me, vendorId, d.delivery); } }) : null,
-        editable ? h('button', { class: 'btn', text: 'Save draft', onclick: async () => { if (await save()) orderScreen(me, vendorId, d.delivery); } }) : null,
-        editable ? h('button', { class: 'btn dark', text: 'Approve order', onclick: async () => { const o = await save(); if (o && await act('approve', o.id)) orderScreen(me, vendorId, d.delivery); } }) : null,
-        order && status !== 'sent' ? h('button', { class: 'link danger', text: 'Cancel order', onclick: async () => { if (confirmText('Cancel this order?') && await act('cancel', order.id)) ordersScreen(me); } }) : null)),
-    settingsBox,
+        h('div', { class: 'sub', text: dueText(d.deadline, d.today) })),
+      h('button', { class: 'btn', text: '← Orders', onclick: () => ordersScreen(me) })),
+    page([
+      sendBox,
+      h('section', { class: 'card' },
+        h('h2', { text: editable ? 'To order' : 'Ordered' }),
+        editable ? h('div', { class: 'small muted', text: 'Count what’s on hand to sharpen the suggestions; blank uses the estimate from recent deliveries.' }) : null,
+        h('div', { class: 'olist' }, head, (editable ? suggestedLines : lines.filter((l) => l.packs > 0)).map(lineRow)),
+        editable && otherLines.length ? others : null),
+    ], [totalSide, whenBox, settingsBox]),
   ]));
 }
 
@@ -1813,7 +1962,7 @@ async function coverageScreen(me) {
   if (!m.ok) return show(shell(me, 'today', [h('h1', { text: 'Recipe coverage' }), h('div', { class: 'error', text: m.data.error ?? 'Couldn’t load.' })]));
   const c = m.data.coverage;
   const noCard = (cards.data.noCard ?? []).slice(0, 60);
-  const noCardBox = noCard.length ? h('section', { class: 'card' },
+  const noCardBox = noCard.length ? h('section', { class: 'card', id: 'cov-nocard' },
     h('div', { class: 'row' }, h('h2', { class: 'grow', text: `Selling without a card (${cards.data.noCard.length})` }),
       side === 'bar' ? h('button', { class: 'btn dark', text: 'Draft bar cards', onclick: () => draftsScreen(me) }) : null),
     h('div', { class: 'small muted', text: 'Their sales aren’t counted in food cost until they have a card. Biggest sellers first.' }),
@@ -1826,9 +1975,17 @@ async function coverageScreen(me) {
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[side]} · last 90 days of sales` }), h('h1', { text: 'Recipe coverage' }),
         h('div', { class: 'sub', text: 'How much of what you sell has a full plate cost behind it. Fill in the missing prices and write the missing cards, and food cost covers the whole menu.' })),
       h('div', { class: 'row wrap' }, h('button', { class: 'btn', text: '← Today', onclick: () => todayScreen(me) }), sideSwitch(me, () => coverageScreen(me)))),
-    h('section', { class: 'card' }, coverageBar(c, true)),
-    gapsCard(me, m.data.gaps, () => coverageScreen(me)) ?? h('div', { class: 'card small muted', text: 'Every card prices out completely.' }),
-    noCardBox,
+    page([
+      gapsCard(me, m.data.gaps, () => coverageScreen(me)) ?? h('div', { class: 'card small muted', text: 'Every card prices out completely.' }),
+      noCardBox,
+    ], [
+      sideBox('Sales, last 90 days', coverageBar(c, true)),
+      sideBox('What to do', h('ol', { class: 'steps' },
+        c.gapCount ? h('li', { text: `Answer the ${c.gapCount} price question${c.gapCount === 1 ? '' : 's'}: one answer fixes every dish that uses it.` }) : null,
+        c.noCardCount ? h('li', {}, 'Write a card for what sells without one, biggest first ', h('button', { class: 'linkish', text: '(the list)', onclick: () => document.getElementById('cov-nocard')?.scrollIntoView({ behavior: 'smooth' }) }), '.') : null,
+        h('li', { text: 'Things that aren’t food or drink (fees, gift cards) can be marked No card needed.' }))),
+      sideBox('Recipe cards', sideActions(h('button', { class: 'btn small-btn', text: 'All cards', onclick: () => cardsScreen(me) }))),
+    ]),
   ]));
 }
 
@@ -1838,13 +1995,12 @@ async function home(me) {
   const manager = atLeast(me.roleLevel, 'manager');
   const signOut = h('button', { class: 'btn', onclick: async () => { await api('POST', '/api/logout'); start(); }, text: 'Sign out' });
   const header = h('header', { class: 'row' },
-    h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${me.name} · ${ACCESS_NAMES[me.access] ?? me.access}` }), h('h1', { text: 'Settings' }),
-      h('div', { class: 'sub', text: manager ? 'Connections, your team and kitchen iPads. Menu and Performance are in the bar on the left.' : 'Your prep list will show up here once your station is set up.' })),
-    signOut);
-  const cards = [ownPinCard(me)];
-  if (manager) cards.unshift(await syncCard('square'), await syncCard('marginedge'), await importCard(), await prepImportCard(), await teamCard(me), await areasCard(), await deviceCard());
-  if (canAdminister(me)) cards.push(brandCard(me));
-  show(shell(me, 'settings', [header, h('div', { class: 'grid' }, cards)]));
+    h('div', { class: 'grow' }, h('div', { class: 'kicker', text: me.restaurantName ?? '' }), h('h1', { text: 'Settings' }),
+      h('div', { class: 'sub', text: manager ? 'Your team, kitchen iPads and how the menu is split, in the middle; connections and your own sign-in on the right.' : 'Your prep list will show up here once your station is set up.' })));
+  const you = sideBox('Signed in', h('div', { class: 'strong', text: me.name }), h('div', { class: 'small muted', text: `${ACCESS_NAMES[me.access] ?? me.access}${me.area ? ` · ${AREA_NAMES[me.area] ?? me.area}` : ''}` }), sideActions(signOut));
+  const main = manager ? [await teamCard(me), await areasCard(), await deviceCard(), await importCard(), await prepImportCard()] : [h('div', { class: 'card small muted', text: 'Nothing to set up here yet.' })];
+  const side = [you, manager ? await syncCard('square') : null, manager ? await syncCard('marginedge') : null, ownPinCard(me), canAdminister(me) ? brandCard(me) : null];
+  show(shell(me, 'settings', [header, page(main, side)]));
 }
 
 const SOURCES = {

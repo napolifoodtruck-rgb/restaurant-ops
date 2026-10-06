@@ -309,6 +309,12 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   // The recipe book: anyone can read it, by side and section; costs are for managers.
   const bookForCook = (await call('GET', '/api/recipes', { cookies: marcoOnExpo })).json;
   assert.deepEqual(bookForCook.bar.map((s: any) => [s.section, s.cards.map((c: any) => c.name)]), [['Non-Alcoholic Drinks', ['House Soda']], ['Drinks', ['Lemonade']], ['Bar preps', ['Lemon Juice', 'Simple Syrup 1:1']]]);
+  // How much of each side's sales has a full plate cost: for managers, beside the book and the menu.
+  assert.equal(bookForCook.coverage, undefined);
+  const ownerBook = (await call('GET', '/api/recipes', { cookies: ownerSession })).json;
+  assert.deepEqual(Object.keys(ownerBook.coverage), ['kitchen', 'bar']);
+  assert.equal(typeof ownerBook.coverage.bar.complete, 'number');
+  assert.equal(typeof (await call('GET', '/api/menu?area=bar', { cookies: ownerSession })).json.coverage.noCard, 'number');
   const sodaForCook = (await call('GET', '/api/recipes/House%20Soda', { cookies: marcoOnExpo })).json;
   assert.deepEqual([sodaForCook.ingredients[0].card, sodaForCook.cost, sodaForCook.canEdit], ['Simple Syrup 1:1', undefined, false]);
   const syrupScaled = (await call('GET', '/api/recipes/Simple%20Syrup%201%3A1?amount=2&unit=qt', { cookies: marcoOnExpo })).json;

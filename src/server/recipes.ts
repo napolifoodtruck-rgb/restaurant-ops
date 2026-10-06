@@ -16,6 +16,7 @@ import { HttpError, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, loadBook } from './model.ts';
 import { loadAreas } from './areas.ts';
+import { coverageOf } from './views.ts';
 import { cardView, kindOf, linkedItems, yieldConversions } from './cards.ts';
 import { tryConvert } from '../core/units.ts';
 import { normalizeName as cardKey } from '../connectors/marginedgeRecipes.ts';
@@ -69,7 +70,11 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
     for (const l of model.sales) if (l.category) sales.set(l.category, (sales.get(l.category) ?? 0) + l.netSales);
     const shape = (m: Map<string, { name: string; kind: string }[]>) => [...m].map(([section, list]) => ({ section, cards: list.sort((a, b) => a.name.localeCompare(b.name)) }))
       .sort((a, b) => Number(/preps$/i.test(a.section)) - Number(/preps$/i.test(b.section)) || (sales.get(b.section) ?? 0) - (sales.get(a.section) ?? 0) || a.section.localeCompare(b.section));
-    return send(res, 200, { kitchen: shape(sides.kitchen), bar: shape(sides.bar) }), true;
+    // Managers also see how much of each side's sales has a full plate cost behind it.
+    const coverage = atLeast(who.roleLevel, 'manager')
+      ? { coverage: { kitchen: coverageOf(model, { area: 'kitchen', areaOf }), bar: coverageOf(model, { area: 'bar', areaOf }) } }
+      : {};
+    return send(res, 200, { kitchen: shape(sides.kitchen), bar: shape(sides.bar), ...coverage }), true;
   }
 
   const m = path.match(/^\/api\/recipes\/(.+)$/);
