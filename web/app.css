@@ -538,3 +538,30 @@ svg.time-bars line.usual { stroke: var(--orange); stroke-width: 1; stroke-dashar
 @media (prefers-reduced-motion: reduce) { .tag.live::before { animation: none; } }
 .ink { color: var(--ink); font-weight: 600; }
 .live-row .right { white-space: pre-line; text-align: right; font-weight: 600; }
+
+/* Performance: filters across the top */
+.toolbar { gap: 10px; padding: 14px 20px; }
+.tool-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.tool-label { width: 72px; flex: none; font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.tool-end { margin-left: auto; }
+.toolbar input[type=date] { width: 150px; }
+@media (max-width: 700px) { .tool-label { width: 100%; } .tool-end { margin-left: 0; } }
+
+/* Donut: share of the whole, with the numbers beside it */
+.donut-wrap { position: relative; width: 180px; height: 180px; margin: 4px auto 0; }
+svg.donut { width: 100%; height: 100%; display: block; }
+svg.donut .slice { stroke: var(--card); stroke-width: 2; cursor: pointer; transition: opacity .15s; }
+svg.donut .slice.dim { opacity: .25; }
+svg.donut .slice:focus { outline: none; stroke: #000; }
+.donut-centre { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; pointer-events: none; padding: 0 46px; }
+.donut-big { font-size: 20px; font-weight: 600; line-height: 1.1; }
+.donut-centre .small { line-height: 1.2; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.donut-legend { display: flex; flex-direction: column; }
+.donut-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-top: 1px solid var(--soft); font-size: 14px; cursor: default; }
+.donut-row.on { background: var(--soft); }
+.donut-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.donut-row .small { width: 52px; text-align: right; }
+.movers svg.spark { flex: none; }
+.dates-inline[hidden] { display: none; }
+.toolbar input[type=date] { width: 140px; }

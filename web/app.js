@@ -348,14 +348,85 @@ function presetRanges() {
   ];
 }
 
-function rangePicker(me, state, m) {
+/**
+ * Across the top of Performance: which category, which period, table or charts. Filters sit
+ * in one place above what they filter.
+ */
+function perfToolbar(me, state, m, current, again, mode) {
   const same = (a, b) => (!a && !b) || (a && b && a.from === b.from && a.to === b.to);
   const fromInput = h('input', { type: 'date', value: m.from, min: m.dataFrom, max: iso(new Date()), 'aria-label': 'From' });
   const toInput = h('input', { type: 'date', value: m.to, min: m.dataFrom, max: iso(new Date()), 'aria-label': 'To' });
-  return sideBox('Period',
-    h('div', { class: 'row wrap' }, presetRanges().map(([label, r]) => h('button', { class: `btn small-btn${same(r, state.range) ? ' dark' : ''}`, text: label, onclick: () => marginsScreen(me, { ...state, range: r }) }))),
-    h('div', { class: 'dates' }, h('span', { class: 'small muted', text: 'From' }), fromInput, h('span', { class: 'small muted', text: 'To' }), toInput),
-    h('button', { class: 'btn small-btn', text: 'Show these dates', onclick: () => fromInput.value && toInput.value && marginsScreen(me, { ...state, range: { from: fromInput.value, to: toInput.value } }) }));
+  const names = [...m.categories.map((c) => c.name), ...(m.salesOnly ?? []).map((c) => c.name)];
+  const chip = (text, on, go) => h('button', { class: `chip${on ? ' on' : ''}`, 'aria-pressed': String(on), text, onclick: go });
+  return h('section', { class: 'card toolbar' },
+    h('div', { class: 'tool-row' }, h('span', { class: 'tool-label', text: 'Category' }),
+      h('div', { class: 'chips', role: 'group', 'aria-label': 'Category' }, names.map((n) => chip(n, n === current, () => again({ category: n })))),
+      mode ? h('div', { class: 'seg tool-end', role: 'group', 'aria-label': 'Table or charts' },
+        [['Table', mode !== 'charts', 'table'], ['Charts', mode === 'charts', 'charts']].map(([t, on, k]) => h('button', { class: on ? 'on' : '', 'aria-pressed': String(on), text: t, onclick: () => again({ mode: k }) }))) : null),
+    (() => {
+      // Custom dates open in place of the chips' last slot; a period that isn't a preset shows them open.
+      const custom = Boolean(state.range) && !presetRanges().some(([, r]) => same(r, state.range));
+      const dates = h('div', { class: 'row tight dates-inline' }, fromInput, h('span', { class: 'small muted', text: 'to' }), toInput,
+        h('button', { class: 'btn small-btn', text: 'Show', onclick: () => fromInput.value && toInput.value && marginsScreen(me, { ...state, range: { from: fromInput.value, to: toInput.value } }) }));
+      dates.hidden = !custom;
+      const open = chip('Custom dates', custom, () => { dates.hidden = !dates.hidden; open.classList.toggle('on', !dates.hidden); if (!dates.hidden) fromInput.focus(); });
+      return h('div', { class: 'tool-row' }, h('span', { class: 'tool-label', text: 'Period' }),
+        h('div', { class: 'chips', role: 'group', 'aria-label': 'Period' }, presetRanges().map(([label, r]) => chip(label, same(r, state.range), () => marginsScreen(me, { ...state, range: r }))), open),
+        dates);
+    })());
+}
+
+/**
+ * Who brings in the money, as a share: a donut of the five biggest and everyone else, with the
+ * numbers beside it (a donut alone is for a glance; the list is for reading).
+ */
+function shareDonut(items, { format, total: totalLabel }) {
+  const sorted = items.filter((x) => x.value > 0).sort((a, b) => b.value - a.value);
+  if (!sorted.length) return null;
+  const top = sorted.slice(0, 5);
+  const rest = sorted.slice(5);
+  const parts = [...top.map((x, i) => ({ ...x, color: SERIES[i] })), ...(rest.length ? [{ name: `Other (${rest.length})`, value: rest.reduce((a, x) => a + x.value, 0), color: OTHER }] : [])];
+  const total = parts.reduce((a, x) => a + x.value, 0);
+  const R = 74, r = 48, C = 80;
+  const svg = s('svg', { viewBox: '0 0 160 160', class: 'donut', role: 'img', 'aria-label': parts.map((x) => `${x.name} ${Math.round((x.value / total) * 100)}%`).join(', ') });
+  const centre = h('div', { class: 'donut-centre' });
+  const showCentre = (title, value, sub) => fill(centre, h('div', { class: 'donut-big', text: value }), h('div', { class: 'small muted', text: title }), sub ? h('div', { class: 'small muted', text: sub }) : null);
+  const reset = () => showCentre(totalLabel, format(total));
+  const point = (rad, a) => [C + rad * Math.sin(a), C - rad * Math.cos(a)];
+  let a0 = 0;
+  const marks = parts.map((x) => {
+    const a1 = a0 + (x.value / total) * Math.PI * 2;
+    const large = a1 - a0 > Math.PI ? 1 : 0;
+    const [x0, y0] = point(R, a0), [x1, y1] = point(R, Math.min(a1, a0 + Math.PI * 2 - 1e-4)), [x2, y2] = point(r, Math.min(a1, a0 + Math.PI * 2 - 1e-4)), [x3, y3] = point(r, a0);
+    const path = s('path', { d: `M${x0},${y0} A${R},${R} 0 ${large} 1 ${x1},${y1} L${x2},${y2} A${r},${r} 0 ${large} 0 ${x3},${y3} Z`, fill: x.color, class: 'slice', tabindex: 0 });
+    a0 = a1;
+    return path;
+  });
+  marks.forEach((m) => svg.append(m));
+  const share = (x) => `${Math.round((x.value / total) * 100)}%`;
+  const legendRows = parts.map((x, i) => {
+    const row = h('div', { class: 'donut-row' }, (() => { const k = h('span', { class: 'cov-key' }); k.style.background = x.color; return k; })(),
+      h('span', { class: 'grow', text: x.name }), h('b', { text: share(x) }), h('span', { class: 'small muted', text: format(x.value) }));
+    const on = () => { marks.forEach((m, j) => m.classList.toggle('dim', j !== i)); legendRows.forEach((l, j) => l.classList.toggle('on', j === i)); showCentre(x.name, share(x), format(x.value)); };
+    const off = () => { marks.forEach((m) => m.classList.remove('dim')); legendRows.forEach((l) => l.classList.remove('on')); reset(); };
+    for (const el of [row, marks[i]]) { el.addEventListener('pointerenter', on); el.addEventListener('pointerleave', off); }
+    marks[i].addEventListener('focus', on); marks[i].addEventListener('blur', off);
+    return row;
+  });
+  reset();
+  return [h('div', { class: 'donut-wrap' }, svg, centre), h('div', { class: 'donut-legend' }, legendRows)];
+}
+
+/** Which dishes are picking up or slowing down: plates a day, the latest weeks against the earlier ones. */
+function moversBox(dishes, word) {
+  const live = dishes.filter((d) => !d.offSince && d.trend?.change !== undefined);
+  const up = live.filter((d) => d.trend.change >= 0.05).sort((a, b) => b.trend.change - a.trend.change).slice(0, 3);
+  const down = live.filter((d) => d.trend.change <= -0.05).sort((a, b) => a.trend.change - b.trend.change).slice(0, 3);
+  if (!up.length && !down.length) return null;
+  const row = (d, cls, arrow) => h('div', {}, h('span', { class: 'grow', text: d.name }), sparkline(d.trend.series, cls === 'trend-up' ? 'up' : 'down'), h('b', { class: cls, text: `${arrow} ${Math.abs(Math.round(d.trend.change * 100))}%` }));
+  return sideBox('Picking up and slowing down',
+    h('div', { class: 'list compact movers' }, up.map((d) => row(d, 'trend-up', '▲')), down.map((d) => row(d, 'trend-down', '▼'))),
+    h('div', { class: 'small muted', text: `${word} a day, recent weeks against earlier ones in the period.` }));
 }
 
 // Sortable columns: what each sorts by, and which way a first click goes.
@@ -385,11 +456,10 @@ function renderMargins(me, state, m) {
   const early = m.dataFrom && m.from < m.dataFrom ? h('div', { class: 'note', text: `Sales are stored from ${shortDate(m.dataFrom)}, so this period starts there.` }) : null;
   const bar = sideOf(me) === 'bar';
   const header = performanceHeader(me, state, `${cat ? cat.name + ' · ' : ''}${shortDate(m.from)} – ${shortDate(m.to)}`, `Prices from Square, costs from MarginEdge, priced as of ${shortDate(m.to)}.`);
-  const picker = rangePicker(me, { ...state, category: cat?.name }, m);
-  const categories = categoryBox(me, state, m, cat?.name, again);
+  const toolbar = perfToolbar(me, { ...state, category: cat?.name }, m, cat?.name, again, state.mode ?? 'table');
   const whole = statBox(`${AREA_NAMES[sideOf(me)]} · estimated gross profit`, dollars(m.totals.leftOver),
     h('div', { class: 'small muted', text: `${days} days · ${bar ? 'pour' : 'food'} cost ${pct(m.totals.foodCostShare)} on ${bar ? 'drinks' : 'dishes'} with recipes` }));
-  if (!cat) return show(shell(me, 'margins', [header, page([missingNote(m.missing), h('div', { class: 'card small muted', text: 'No dishes with recipes sold in this period.' })], [whole, categories, picker], { sideFirst: true })]));
+  if (!cat) return show(shell(me, 'margins', [header, toolbar, page([missingNote(m.missing), h('div', { class: 'card small muted', text: 'No dishes with recipes sold in this period.' })], [whole])]));
 
   const perDay = state.view === 'day';
   const column = MARGIN_COLUMNS.find((c) => c.key === state.sort.key) ?? MARGIN_COLUMNS.find((c) => c.key === 'left');
@@ -438,27 +508,29 @@ function renderMargins(me, state, m) {
   const seg = (label, options) => h('div', { class: 'seg', role: 'group', 'aria-label': label },
     options.map(([text, on, go]) => h('button', { class: on ? 'on' : '', 'aria-pressed': String(on), text, onclick: go })));
   const charts = state.mode === 'charts';
-  const view = sideBox('View',
-    seg('Table or charts', [['Table', !charts, () => again({ mode: 'table' })], ['Charts', charts, () => again({ mode: 'charts' })]]),
-    charts ? null : seg('Estimated gross profit', [['All of it', !perDay, () => again({ view: 'total' })], ['Per day on', perDay, () => again({ view: 'day' })]]),
-    charts ? null : h('div', { class: 'small muted', text: perDay ? 'Per open day each dish was on the menu: fair to new dishes and specials.' : 'Across every plate sold in the period.' }));
   const catLeft = cat.dishes.reduce((a, d) => a + d.leftTotal, 0);
+  const fc = (cat.weeklyFoodCost ?? []).map((v) => (v === null ? null : v));
   const summary = statBox(`${cat.name} · estimated gross profit`, dollars(catLeft),
     h('div', { class: 'small muted', text: `${bar ? 'Pour' : 'Food'} cost ${pct(cat.foodCostShare)} · ${cat.dishes.length} ${bar ? 'drinks' : 'dishes'} · ${days} days` }),
+    fc.some((v) => v !== null) ? h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: `${bar ? 'Pour' : 'Food'} cost by week` }), sparkline(fc, 'flat')) : null,
     h('div', { class: 'small muted', text: `Whole ${sideOf(me)} menu: ${dollars(m.totals.leftOver)} estimated gross profit, ${pct(m.totals.foodCostShare)} ${bar ? 'pour' : 'food'} cost.` }),
     h('div', { class: 'small muted', text: `Sales minus each recipe’s ${bar ? 'pour' : 'food'} cost at today’s invoice prices. Waste, comps and labor aren’t in it.` }));
   const noCard = cat.noCard.length ? sideBox(`Selling with no recipe · ${dollars(cat.noCardSales)} not counted`,
     h('div', { class: 'list compact' }, cat.noCard.slice(0, 6).map((x) => h('div', {}, h('span', { class: 'grow', text: x.name }), h('span', { class: 'small muted', text: dollars(x.netSales) })))),
     h('button', { class: 'btn small-btn', text: 'See what’s missing', onclick: () => coverageScreen(me) })) : null;
-  const side = [summary, categories, picker, view, noCard];
-  if (charts) return show(shell(me, 'margins', [header, page([early, missingNote(m.missing), ...chartsView(state, cat, m, again)], side, { sideFirst: true })]));
+  const donut = shareDonut(cat.dishes.map((d) => ({ name: d.name, value: d.leftTotal })), { format: dollars, total: 'gross profit' });
+  const split = donut ? sideBox(`Gross profit by ${bar ? 'drink' : 'dish'}`, donut,
+    h('div', { class: 'small muted', text: `Share of ${cat.name.toLowerCase()}’s estimated gross profit in the period. Hover for each.` })) : null;
+  const side = [summary, split, moversBox(cat.dishes, bar ? 'Drinks' : 'Plates'), noCard];
+  if (charts) return show(shell(me, 'margins', [header, toolbar, page([early, missingNote(m.missing), ...chartsView(state, cat, m, again)], side)]));
   const table = h('section', { class: 'card' },
-    h('div', { class: 'small muted', text: 'Click a dish for its plate, ingredient by ingredient, or a column title to sort.' }),
+    h('div', { class: 'row wrap' }, h('div', { class: 'grow small muted', text: perDay ? 'Per open day each dish was on the menu: fair to new dishes and specials. Click a dish for its plate, or a column title to sort.' : 'Across every plate sold in the period. Click a dish for its plate, or a column title to sort.' }),
+      seg('Estimated gross profit', [['All of it', !perDay, () => again({ view: 'total' })], ['Per day on the menu', perDay, () => again({ view: 'day' })]])),
     h('div', { class: 'mrow head', role: 'row' }, MARGIN_COLUMNS.map(headCell)),
     rows,
     h('div', { class: 'small muted', text: 'Price is what guests paid on average, after discounts. * part of the recipe still uses an estimated price. Top earners together bring in 80% of the money in the period. Trend: plates per open day, week by week; weeks off the menu are left out.' }),
   );
-  show(shell(me, 'margins', [header, page([early, missingNote(m.missing), table], side, { sideFirst: true })]));
+  show(shell(me, 'margins', [header, toolbar, page([early, missingNote(m.missing), table], side)]));
 }
 
 function performanceHeader(me, state, kicker, sub) {
@@ -467,16 +539,6 @@ function performanceHeader(me, state, kicker, sub) {
     sideSwitch(me, () => marginsScreen(me, { ...state, category: undefined })));
 }
 
-/** The categories down the side: what's left after food in each (or sales, with no costs yet). */
-function categoryBox(me, state, m, current, again) {
-  const rows = [
-    ...m.categories.map((c) => ({ name: c.name, text: `${dollars(c.dishes.reduce((a, d) => a + d.leftTotal, 0))} gross profit` })),
-    ...(m.salesOnly ?? []).map((c) => ({ name: c.name, text: `${dollars(c.netSales)} sales` })),
-  ];
-  if (!rows.length) return null;
-  return sideBox('Category', h('div', { class: 'picks' }, rows.map((r) => h('button', { class: `pick${r.name === current ? ' on' : ''}`, 'aria-pressed': String(r.name === current), onclick: () => again({ category: r.name }) },
-    h('span', { class: 'grow', text: r.name }), h('span', { class: 'small muted', text: r.text })))));
-}
 
 /** Categories with sales but no costs yet (drinks, until they're linked to what they pour from). */
 function renderSalesOnly(me, state, m, cat) {
@@ -487,7 +549,7 @@ function renderSalesOnly(me, state, m, cat) {
   const max = Math.max(...items.map((i) => i[sortKey === 'salesPerDay' ? 'salesPerDay' : 'netSales']), 1);
   const bar = (v) => { const b = h('div', { class: 'total' }); b.style.width = `${Math.max(2, (v / max) * 140)}px`; return b; };
   const perDayView = sortKey === 'salesPerDay';
-  const header = performanceHeader(me, state, `${cat.name} · ${shortDate(m.from)} – ${shortDate(m.to)}`, `Sales from Square. Costs come once each ${sideOf(me) === 'bar' ? 'drink has a recipe card: the pour from the bottle or keg, or the cocktail’s spec' : 'item has a recipe card'}.`);
+  const header = performanceHeader(me, state, `${cat.name} · ${shortDate(m.from)} – ${shortDate(m.to)}`, `Sales from Square. Costs come once each ${sideOf(me) === 'bar' ? 'drink has a recipe: the pour from the bottle or keg, or the cocktail’s spec' : 'item has a recipe'}.`);
   const table = h('section', { class: 'card' },
     h('div', { class: 'srow head' }, cols.map(([k, label]) => h('button', { class: `sort${sortKey === k ? ' on' : ''}${k === 'name' ? '' : ' num'}`, text: label + (sortKey === k ? ' ▼' : ''), onclick: () => again({ salesSort: k }) }))),
     items.map((i) => h('div', { class: `srow${i.offSince ? ' off' : ''}` },
@@ -502,7 +564,9 @@ function renderSalesOnly(me, state, m, cat) {
   const summary = statBox(`${cat.name} · sales`, dollars(cat.netSales), h('div', { class: 'small muted', text: `${Math.round(sold).toLocaleString()} sold · ${cat.items.length} items · no costs yet` }));
   const cards = sideBox('Costs', h('div', { class: 'small muted', text: 'Every drink gets a recipe: a pour from the bottle or keg, a cocktail spec, one can. Then pour cost shows here like food cost does in the kitchen.' }),
     sideActions(h('button', { class: 'btn small-btn', text: 'See what’s missing', onclick: () => coverageScreen(me) })));
-  show(shell(me, 'margins', [header, page(table, [summary, categoryBox(me, state, m, cat.name, again), rangePicker(me, { ...state, category: cat.name }, m), cards], { sideFirst: true })]));
+  const split = shareDonut(cat.items.map((i) => ({ name: i.name, value: i.netSales })), { format: dollars, total: 'sales' });
+  const bySales = split ? sideBox('Sales by drink', split, h('div', { class: 'small muted', text: `Share of ${cat.name.toLowerCase()} sales in the period. Hover for each.` })) : null;
+  show(shell(me, 'margins', [header, perfToolbar(me, { ...state, category: cat.name }, m, cat.name, again), page(table, [summary, bySales, cards])]));
 }
 
 const UNIT_CHOICES = ['lb', 'oz', 'g', 'kg', 'gal', 'qt', 'pt', 'cup', 'floz', 'l', 'ml', 'each'];
@@ -1325,7 +1389,7 @@ async function comingUpCard(me) {
     } }));
   const planRows = p.plans.map((plan) => {
     const row = h('div', { class: 'ask' });
-    const head = h('div', {}, h('b', { text: plan.name }), h('span', { class: 'small muted', text: ` · starts ${shortDate(plan.startsOn)}${plan.replaces ? ` · replaces ${plan.replaces}` : ''}${plan.recipeName ? '' : ' · no recipe card yet'}` }),
+    const head = h('div', {}, h('b', { text: plan.name }), h('span', { class: 'small muted', text: ` · starts ${shortDate(plan.startsOn)}${plan.replaces ? ` · replaces ${plan.replaces}` : ''}${plan.recipeName ? '' : ' · no recipe yet'}` }),
       plan.status === 'applied' ? h('span', { class: 'tag ok', text: 'On the prep lists' }) : null);
     row.append(head);
     if (plan.status !== 'planned') return row;
@@ -1754,7 +1818,7 @@ async function draftsScreen(me, pours = {}) {
       const amount = shape === 'wineGlass' || shape === 'draft' ? h('span', { class: 'small muted', text: `${qty(ing?.amount ?? (shape === 'draft' ? pours.draftPour : pours.winePour))} fl oz` })
         : shape === 'coffee' ? h('span', { class: 'small muted', text: dr.ingredients.map((i) => `${qty(i.amount)} ${UNIT_LABEL(i.unit)} ${i.name}`).join(' + ') }) : h('span', { class: 'small muted', text: `1 ${ing?.unit ?? ''}` });
       return h('div', { class: `drow${dr.check ? ' flagged' : ''}` }, box,
-        h('div', {}, h('div', { class: 'strong', text: dr.name }), h('div', { class: 'small muted', text: `${dr.quantity} sold · ${dollars(dr.netSales)}${dr.items.length > 1 ? ` · ${dr.items.length} buttons` : ''}${dr.cardExists ? ' · a card with this name exists' : ''}` })),
+        h('div', {}, h('div', { class: 'strong', text: dr.name }), h('div', { class: 'small muted', text: `${dr.quantity} sold · ${dollars(dr.netSales)}${dr.items.length > 1 ? ` · ${dr.items.length} buttons` : ''}${dr.cardExists ? ' · a recipe with this name exists' : ''}` })),
         shape === 'coffee' ? amount : h('div', { class: 'row tight' }, pick, amount),
         dr.check ? h('span', { class: 'tag warn', text: dr.matches.length ? 'Check' : 'Pick' }) : h('span'));
     });
