@@ -486,10 +486,11 @@ function shareDonut(items, { format, total }) {
  * Click a slice (or its legend line) to go a layer down; the middle shows the way back up, and the trail
  * under the chart jumps to any layer above. Other opens into the items it grouped.
  */
-function drillDonut(root) {
+function drillDonut(root, opts = {}) {
   if (!root.items.some((x) => x.value > 0)) return null;
-  const box = h('div', { class: 'drill' });
-  const stack = [root];
+  const large = Boolean(opts.large);
+  const box = h('div', { class: `drill${large ? ' large' : ''}` });
+  const stack = opts.stack ? [...opts.stack] : [root];
   const draw = () => fill(box, drawLayer());
   const enter = async (next, row) => {
     if (row) row.classList.add('loading');
@@ -508,12 +509,14 @@ function drillDonut(root) {
     // Fill the ring: slices until 90% is shown (up to twelve), so Other is only the small tail;
     // a tail of one is just shown, and Other opens into the rest.
     const whole = sorted.reduce((a, x) => a + x.value, 0);
+    // Expanded, it shows up to fifty, until 99% is in view.
+    const most = large ? 50 : 12, enough = large ? 0.99 : 0.9;
     let n = 0, shownSoFar = 0;
-    while (n < sorted.length && n < 12 && (n < 5 || shownSoFar / whole < 0.9)) shownSoFar += sorted[n++].value;
+    while (n < sorted.length && n < most && (n < 5 || shownSoFar / whole < enough)) shownSoFar += sorted[n++].value;
     if (sorted.length - n === 1) n++;
     const top = sorted.slice(0, n);
     const rest = sorted.slice(n);
-    const parts = [...top.map((x, i) => ({ ...x, color: x.color ?? PIE_COLORS[i] })),
+    const parts = [...top.map((x, i) => ({ ...x, color: x.color ?? (large ? BIG_COLORS[i] : PIE_COLORS[i]) })),
       ...(rest.length ? [{ name: `Other (${rest.length})`, value: rest.reduce((a, x) => a + x.value, 0), color: OTHER, open: () => ({ title: node.title, crumb: 'Other', format, items: rest }) }] : [])];
     const total = parts.reduce((a, x) => a + x.value, 0);
     const R = 74, r = 48, C = 80;
@@ -559,11 +562,31 @@ function drillDonut(root) {
     reset();
     const trail = deep ? h('nav', { class: 'donut-trail', 'aria-label': 'Layers' }, stack.map((l, i) => [i ? h('span', { class: 'muted', text: ' › ' }) : null,
       i === stack.length - 1 ? h('b', { text: l.crumb ?? 'All' }) : h('button', { class: 'linkish', text: l.crumb ?? 'All', onclick: () => back(i) })])) : null;
-    return [trail, h('div', { class: 'donut-wrap' }, svg, centre), h('div', { class: 'donut-legend' }, legendRows), node.note ?? null,
+    const expand = !large ? h('button', { class: 'link pie-expand', 'aria-label': 'Expand this chart', title: 'Open it large, with up to 50 slices', onclick: () => openBigPie(box, stack) }, '⤢ Expand') : null;
+    if (large) return [trail, h('div', { class: 'pie-big-body' }, h('div', { class: 'donut-wrap' }, svg, centre), h('div', { class: 'donut-legend' }, legendRows)), node.note ?? null];
+    return [h('div', { class: 'pie-tools' }, trail ?? h('span'), expand), h('div', { class: 'donut-wrap' }, svg, centre), h('div', { class: 'donut-legend' }, legendRows), node.note ?? null,
       !deep && parts.some((x) => x.open) ? h('div', { class: 'small muted', text: 'Click a slice to go a layer deeper; the middle brings you back.' }) : null];
   }
   draw();
   return box;
+}
+
+/**
+ * A pie, large, at the top of the middle of the page: up to 50 slices with their own colors and the
+ * legend beside it, starting from the layer the small one was on. Close puts it away.
+ */
+function openBigPie(box, stack) {
+  const main = box.closest('.page')?.querySelector('.page-main') ?? app.querySelector('main');
+  if (!main) return;
+  main.querySelector('.pie-big')?.remove();
+  const title = box.closest('section')?.querySelector('.small.strong')?.textContent ?? 'Chart';
+  const big = drillDonut(stack[0], { large: true, stack });
+  const card = h('section', { class: 'card pie-big', 'aria-label': title },
+    h('div', { class: 'row' }, h('h2', { class: 'grow', text: title }), h('button', { class: 'btn small-btn', text: 'Close', onclick: () => card.remove() })),
+    big);
+  main.prepend(card);
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  card.querySelector('button')?.focus();
 }
 
 /**
@@ -802,6 +825,8 @@ const SERIES = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300'
 const OTHER = '#b9b4aa';
 // Pies can have up to twelve slices: the six series colors, then six more that stay apart from them and from Other.
 const PIE_COLORS = [...SERIES, '#7c5cff', '#0097a7', '#a16207', '#be185d', '#4d7c0f', '#1e3a8a'];
+// Fifty for an expanded pie: the twelve first, then hues spread around the wheel at three depths, none grey.
+const BIG_COLORS = [...PIE_COLORS, ...Array.from({ length: 38 }, (_, i) => `hsl(${Math.round((i * 137.5 + 20) % 360)}, ${i % 2 ? 55 : 70}%, ${i % 3 === 0 ? 38 : i % 3 === 1 ? 52 : 64}%)`)];
 const SVGNS = 'http://www.w3.org/2000/svg';
 function s(tag, attrs = {}, ...children) {
   const el = document.createElementNS(SVGNS, tag);

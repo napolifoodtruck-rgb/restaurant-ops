@@ -795,3 +795,14 @@ button.donut-row { display: flex; min-width: 0; }
 .me-out { border: 1px solid #777; border-top: 1px solid #777; padding: 4px 8px; width: auto; margin-top: 2px; }
 .rail .me-chip:hover .me-out { border-color: #fff; text-decoration: none; }
 @media (max-width: 700px) { .rail .me-chip { padding: 4px; border-radius: 999px; } .me-out { border: 0; padding: 0 8px 0 6px; margin: 0; } }
+
+/* Pies: Expand opens one large in the middle of the page */
+.pie-tools { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
+.pie-expand { font-size: 12px; white-space: nowrap; }
+.pie-big .drill.large { gap: 12px; }
+.pie-big-body { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 24px; align-items: start; }
+.drill.large .donut-wrap { width: 360px; height: 360px; margin: 0; }
+.drill.large .donut-big { font-size: 28px; }
+.drill.large .donut-legend { display: block; columns: 2 220px; column-gap: 20px; }
+.drill.large .donut-row { break-inside: avoid; }
+@container main (max-width: 700px) { .pie-big-body { grid-template-columns: minmax(0, 1fr); } .drill.large .donut-wrap { width: min(320px, 100%); height: auto; aspect-ratio: 1; margin: 0 auto; } }
