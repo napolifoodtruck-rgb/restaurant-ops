@@ -10,6 +10,10 @@
  *   SQUARE_LOCATION_ID    only needed when the Square account has several locations
  *   MARGINEDGE_API_KEY    read-only use; 'later' or unset = not connected yet
  *   MARGINEDGE_UNIT_ID    only needed when the key covers several restaurants
+ *   SQUARE_CHECKOUT_TOKEN        online orders: a token that can create orders and payments
+ *   SQUARE_APPLICATION_ID        online orders: the Square app the card form belongs to
+ *   SQUARE_CHECKOUT_LOCATION_ID  online orders: the location they're placed at
+ *   SQUARE_ENVIRONMENT           'production' to take real payments; anything else is Square's sandbox
  */
 
 import { createServer } from 'node:http';
@@ -33,7 +37,14 @@ const sync = {
   square: { token: process.env.SQUARE_ACCESS_TOKEN, locationId: process.env.SQUARE_LOCATION_ID || undefined, version: process.env.SQUARE_VERSION || undefined },
   marginedge: { key: process.env.MARGINEDGE_API_KEY, unitId: process.env.MARGINEDGE_UNIT_ID || undefined },
 };
-const handle = createApp({ db, setupToken: process.env.SETUP_TOKEN || undefined, secureCookies: process.env.NODE_ENV === 'production', sync });
+const checkout = {
+  token: process.env.SQUARE_CHECKOUT_TOKEN,
+  applicationId: process.env.SQUARE_APPLICATION_ID || undefined,
+  locationId: process.env.SQUARE_CHECKOUT_LOCATION_ID || undefined,
+  environment: process.env.SQUARE_ENVIRONMENT === 'production' ? 'production' as const : 'sandbox' as const,
+  version: process.env.SQUARE_VERSION || undefined,
+};
+const handle = createApp({ db, setupToken: process.env.SETUP_TOKEN || undefined, secureCookies: process.env.NODE_ENV === 'production', sync, checkout });
 const stopScheduler = startScheduler(db, sync);
 const port = Number(process.env.PORT ?? 3000);
 const server = createServer(handle);

@@ -1,6 +1,6 @@
 /**
- * Online ordering settings over HTTP. Managers only. Part one: what's sold online, and how many
- * pizzas each pickup window takes. Checkout comes next.
+ * Online ordering settings over HTTP. Managers only: what's sold online, and how many pizzas each
+ * pickup window takes. Customers order through onlineCheckout.ts.
  *
  *   GET  /api/online/menu                      every Square item with its online settings, and problems that would stop an order
  *   POST /api/online/items/:itemId             { published?, countsAsPizza? (true | false | null = from its category), soldOutToday? }
@@ -16,8 +16,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
-import { MODIFIER_MODES, modifierProblems, onlineMenu, type CatalogObject, type ModifierMode } from '../core/onlineMenu.ts';
-import { isWindowStart, pizzaLimitProblem, windowStarts, windowsFor, type DayCell, type PlanCell } from '../core/pickupWindows.ts';
+import { MODIFIER_MODES, modifierProblems, onlineMenu, type CatalogObject, type ModifierMode, type OnlineMenuItem } from '../core/onlineMenu.ts';
+import { isWindowStart, pizzaLimitProblem, windowStarts, windowsFor, type DayCell, type PickupWindow, type PlanCell } from '../core/pickupWindows.ts';
 import { addDays } from '../core/forecast.ts';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -39,6 +39,23 @@ async function loadDay(db: Db, restaurantId: string, day: string): Promise<DayCe
   return rows.map((r) => ({ starts: hhmm(r.starts), maxPizzas: Number(r.max_pizzas) }));
 }
 
+/** Every Square item with its online settings, as of the last catalog sync. */
+export async function loadOnlineMenu(db: Db, restaurantId: string, today: string): Promise<{ menu: OnlineMenuItem[]; synced: boolean }> {
+  const catalog = (await db.query<{ data: CatalogObject }>('SELECT data FROM pos_catalog WHERE restaurant_id = $1', [restaurantId])).rows.map((r) => (typeof r.data === 'string' ? JSON.parse(r.data) : r.data) as CatalogObject);
+  const items = (await db.query<{ item_id: string; published: boolean; counts_as_pizza: boolean | null; sold_out_on: string | null }>('SELECT item_id, published, counts_as_pizza, sold_out_on::text AS sold_out_on FROM online_items WHERE restaurant_id = $1', [restaurantId])).rows;
+  const modes = Object.fromEntries((await db.query<{ modifier_id: string; mode: ModifierMode }>('SELECT modifier_id, mode FROM online_modifiers WHERE restaurant_id = $1', [restaurantId])).rows.map((r) => [r.modifier_id, r.mode]));
+  const menu = onlineMenu(catalog, items.map((r) => ({ itemId: r.item_id, published: r.published, ...(r.counts_as_pizza !== null ? { countsAsPizza: r.counts_as_pizza } : {}), ...(r.sold_out_on ? { soldOutOn: r.sold_out_on } : {}) })), modes, today);
+  return { menu, synced: catalog.length > 0 };
+}
+
+/** The windows of a date, with the pizzas already in paid orders and live holds. */
+export async function loadWindows(db: Db, restaurantId: string, day: string, exceptOrder?: string): Promise<PickupWindow[]> {
+  const taken = Object.fromEntries((await db.query<{ starts: string; pizzas: string }>(
+    "SELECT window_starts::text AS starts, sum(pizzas)::text AS pizzas FROM online_orders WHERE restaurant_id = $1 AND day = $2 AND (status = 'paid' OR (status = 'held' AND hold_until > now())) AND id <> $3 GROUP BY window_starts",
+    [restaurantId, day, exceptOrder ?? '00000000-0000-0000-0000-000000000000'])).rows.map((r) => [hhmm(r.starts), Number(r.pizzas)]));
+  return windowsFor(day, await loadPlan(db, restaurantId), await loadDay(db, restaurantId, day), taken);
+}
+
 export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResponse, path: string, url: URL, who: SignedIn, timezone: string): Promise<boolean> {
   if (!path.startsWith('/api/online/')) return false;
   if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
@@ -47,11 +64,8 @@ export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResp
   let m: RegExpMatchArray | null;
 
   if (method === 'GET' && path === '/api/online/menu') {
-    const catalog = (await db.query<{ data: CatalogObject }>('SELECT data FROM pos_catalog WHERE restaurant_id = $1', [who.restaurantId])).rows.map((r) => (typeof r.data === 'string' ? JSON.parse(r.data) : r.data) as CatalogObject);
-    const items = (await db.query<{ item_id: string; published: boolean; counts_as_pizza: boolean | null; sold_out_on: string | null }>('SELECT item_id, published, counts_as_pizza, sold_out_on::text AS sold_out_on FROM online_items WHERE restaurant_id = $1', [who.restaurantId])).rows;
-    const modes = Object.fromEntries((await db.query<{ modifier_id: string; mode: ModifierMode }>('SELECT modifier_id, mode FROM online_modifiers WHERE restaurant_id = $1', [who.restaurantId])).rows.map((r) => [r.modifier_id, r.mode]));
-    const menu = onlineMenu(catalog, items.map((r) => ({ itemId: r.item_id, published: r.published, ...(r.counts_as_pizza !== null ? { countsAsPizza: r.counts_as_pizza } : {}), ...(r.sold_out_on ? { soldOutOn: r.sold_out_on } : {}) })), modes, now.date);
-    return send(res, 200, { today: now.date, synced: catalog.length > 0, items: menu.map((x) => ({ ...x, problems: x.published ? modifierProblems(x) : [] })) }), true;
+    const { menu, synced } = await loadOnlineMenu(db, who.restaurantId, now.date);
+    return send(res, 200, { today: now.date, synced, items: menu.map((x) => ({ ...x, problems: x.published ? modifierProblems(x) : [] })) }), true;
   }
 
   if (method === 'POST' && (m = path.match(/^\/api\/online\/items\/([A-Za-z0-9_-]{1,64})$/))) {
@@ -91,8 +105,7 @@ export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResp
       starts: windowStarts(),
       plan,
       day,
-      // Orders aren't taken yet, so nothing is taken; checkout fills this in.
-      windows: windowsFor(day, plan, await loadDay(db, who.restaurantId, day)),
+      windows: await loadWindows(db, who.restaurantId, day),
       changedDays: changed.map((r) => ({ day: r.day, windows: Number(r.windows), closed: Boolean(r.closed) && Number(r.windows) === windowStarts().length, ...(r.note ? { note: r.note } : {}) })),
     }), true;
   }

@@ -22,6 +22,15 @@ services:
         sync: false
       - key: MARGINEDGE_API_KEY
         sync: false
+      # Online orders. Leave SQUARE_ENVIRONMENT as sandbox until a test order has gone through end to end.
+      - key: SQUARE_CHECKOUT_TOKEN
+        sync: false
+      - key: SQUARE_APPLICATION_ID
+        sync: false
+      - key: SQUARE_CHECKOUT_LOCATION_ID
+        sync: false
+      - key: SQUARE_ENVIRONMENT
+        value: sandbox
 
 databases:
   - name: restaurant-ops-db
