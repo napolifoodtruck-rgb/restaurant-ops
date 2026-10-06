@@ -242,7 +242,6 @@ function shell(me, active, content) {
     h('nav', { class: 'rail', 'aria-label': 'Main' },
       h('div', { class: 'logo' }, brandMark('rail')),
       nav.map(([key, label, go]) => h('button', { class: active === key ? 'on' : '', disabled: !go, title: go ? label : 'Coming next', onclick: go ? () => go(me) : undefined }, icon(key), label)),
-      h('div', { class: 'spacer' }),
       h('button', { class: active === 'settings' ? 'on' : '', onclick: () => home(me) }, icon('settings'), 'Settings'),
     ),
     h('main', {}, content),
