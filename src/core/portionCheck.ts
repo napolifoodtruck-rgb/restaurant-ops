@@ -104,7 +104,7 @@ export function suggestPortions(book: RecipeBook, input: PortionCheckInput, opti
       card: quantity,
       suggested: { amount, unit: quantity.unit },
       ratio,
-      message: `${recipe.name}: purchases of ${product.name} fit ${fmt({ amount, unit: quantity.unit })} a portion, the card says ${fmt(quantity)}. Use ${fmt({ amount, unit: quantity.unit })}, or weigh a few?`,
+      message: `${recipe.name}: purchases of ${product.name} fit ${fmt({ amount, unit: quantity.unit })} a portion, the recipe says ${fmt(quantity)}. Use ${fmt({ amount, unit: quantity.unit })}, or weigh a few?`,
     });
   }
   return out.sort((a, b) => Math.abs(b.ratio - 1) - Math.abs(a.ratio - 1));

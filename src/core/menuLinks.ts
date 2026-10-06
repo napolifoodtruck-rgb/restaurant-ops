@@ -329,7 +329,7 @@ export function describeQuestion(q: LinkQuestion): string {
     case 'renamed':
       return `"${q.previous?.posName}" now sells as "${q.posName}". Same recipe?`;
     case 'confirm':
-      if (top!.kind === 'prep') return `"${q.posName}" only matches the ${top!.name} prep recipe. Is it sold as is, or does it need its own card?`;
+      if (top!.kind === 'prep') return `"${q.posName}" only matches the ${top!.name} prep recipe. Is it sold as is, or does it need its own recipe?`;
       return `Is "${q.posName}" the ${top!.name} recipe?${others.length ? ` (or ${others.join(', ')})` : ''}`;
     case 'choose':
       return q.candidates.length

@@ -79,7 +79,7 @@ test('exact names link on their own; the rest become questions, best sellers fir
     ['Spinaci', 'confirm', 'spinachi'],
   ]);
   assert.equal(describeQuestion(questions[1]!), 'Is "Bufala Margherita" the Buffalo Margherita recipe? (or Margherita)');
-  assert.equal(describeQuestion(questions[3]!), '"Corn Panna" only matches the Corn Panna prep recipe. Is it sold as is, or does it need its own card?');
+  assert.equal(describeQuestion(questions[3]!), '"Corn Panna" only matches the Corn Panna prep recipe. Is it sold as is, or does it need its own recipe?');
   assert.equal(describeQuestion(questions[0]!), 'No recipe for "Calabria" yet.');
 });
 

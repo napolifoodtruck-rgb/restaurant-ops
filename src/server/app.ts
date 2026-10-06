@@ -459,7 +459,7 @@ export function createApp(config: AppConfig) {
           return send(res, 200, { ok: true });
         }
         const current = (await loadBook(db, who.restaurantId)).linkAnswers ?? { confirm: [], newDish: [] };
-        if (b.type === 'link' && !(await getModel(db, who.restaurantId, await today())).recipes.some((r) => r.name === b.recipe)) throw new HttpError(400, 'No recipe card by that name.');
+        if (b.type === 'link' && !(await getModel(db, who.restaurantId, await today())).recipes.some((r) => r.name === b.recipe)) throw new HttpError(400, 'No recipe by that name.');
         await saveBook(db, who.restaurantId, 'linkAnswers', withAnswer(current, b as unknown as Exclude<Answer, { type: 'conversion' | 'price' }>), who.staffId);
         return send(res, 200, { ok: true });
       }

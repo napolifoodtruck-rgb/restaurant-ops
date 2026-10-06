@@ -197,21 +197,21 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string, 
     const before = items.length;
     const questions: (Omit<TodayItem, 'group' | 'label' | 'tone' | 'go' | 'button'> & { name: string })[] = [
       ...menu.checks.map((c) => {
-        const answers = c.kind === 'dishChanged' && c.item && c.suggestedDate ? [{ label: `New version from ${shortDate(c.suggestedDate)}`, body: { type: 'newDish', ...c.item, from: c.suggestedDate, note: 'new version, card to come' } }, { label: 'Same dish', body: { type: 'dismiss', dedupeKey: c.dedupeKey } }]
+        const answers = c.kind === 'dishChanged' && c.item && c.suggestedDate ? [{ label: `New version from ${shortDate(c.suggestedDate)}`, body: { type: 'newDish', ...c.item, from: c.suggestedDate, note: 'new version, recipe to come' } }, { label: 'Same dish', body: { type: 'dismiss', dedupeKey: c.dedupeKey } }]
           : c.kind === 'newButton' && side === 'bar' ? [{ label: 'Got it', body: { type: 'dismiss', dedupeKey: c.dedupeKey } }]
-          : c.kind === 'newButton' && c.item ? [{ label: 'New dish, card to come', body: { type: 'newDish', ...c.item } }, { label: 'Not food', body: { type: 'notFood', ...c.item } }]
+          : c.kind === 'newButton' && c.item ? [{ label: 'New dish, recipe to come', body: { type: 'newDish', ...c.item } }, { label: 'Not food', body: { type: 'notFood', ...c.item } }]
           : [{ label: 'Ignore', body: { type: 'dismiss', dedupeKey: c.dedupeKey } }];
         return { key: `q:${c.dedupeKey}`, name: c.title, title: c.title, dollars: c.netSales, detail: `${dollars(c.netSales)} in sales over 90 days`, answers };
       }),
       ...menu.linkQuestions.map((q) => {
         const sold = q.first ? ` · sold ${shortDate(q.first)} – ${shortDate(q.last!)}` : '';
         return q.candidates.length
-          ? { key: `q:link:${q.item.catalogId}:${q.name}`, name: q.name, title: q.candidates.length === 1 || q.type === 'confirm' ? `${q.name}: is it the ${q.candidates[0]} card?` : `${q.name}: which recipe card is it?`, dollars: q.netSales,
+          ? { key: `q:link:${q.item.catalogId}:${q.name}`, name: q.name, title: q.candidates.length === 1 || q.type === 'confirm' ? `${q.name}: is it the ${q.candidates[0]} recipe?` : `${q.name}: which recipe is it?`, dollars: q.netSales,
               detail: `${dollars(q.netSales)} in sales over 90 days${sold}`,
-              answers: [...q.candidates.slice(0, 2).map((c, i) => ({ label: i === 0 && (q.candidates.length === 1 || q.type === 'confirm') ? `Yes, ${c}` : i === 0 ? c : `No, ${c}`, body: { type: 'link', ...q.item, recipe: c } })), { label: 'New dish, card to come', body: { type: 'newDish', ...q.item } }] }
-          : { key: `q:link:${q.item.catalogId}:${q.name}`, name: q.name, title: `${q.name} sells but has no recipe card`, dollars: q.netSales,
-              detail: `${dollars(q.netSales)} in sales over 90 days${sold}. Mark it and it stops asking; its plate cost comes with the card.`,
-              answers: [{ label: 'New dish, card to come', body: { type: 'newDish', ...q.item } }, { label: 'Not food', body: { type: 'notFood', ...q.item } }] };
+              answers: [...q.candidates.slice(0, 2).map((c, i) => ({ label: i === 0 && (q.candidates.length === 1 || q.type === 'confirm') ? `Yes, ${c}` : i === 0 ? c : `No, ${c}`, body: { type: 'link', ...q.item, recipe: c } })), { label: 'New dish, recipe to come', body: { type: 'newDish', ...q.item } }] }
+          : { key: `q:link:${q.item.catalogId}:${q.name}`, name: q.name, title: `${q.name} sells but has no recipe`, dollars: q.netSales,
+              detail: `${dollars(q.netSales)} in sales over 90 days${sold}. Mark it and it stops asking; its plate cost comes with the recipe.`,
+              answers: [{ label: 'New dish, recipe to come', body: { type: 'newDish', ...q.item } }, { label: 'Not food', body: { type: 'notFood', ...q.item } }] };
       }),
     ].sort((a, b) => (b.dollars ?? 0) - (a.dollars ?? 0));
     for (const { name: _, ...q } of questions.slice(0, 3)) items.push({ ...q, group: 'menu', label: 'Question', tone: 'ask', go: { to: 'menu' }, button: 'Menu' });
@@ -235,8 +235,8 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string, 
       const drinks = [...new Set(missing.map((u) => posItem(u.catalogId, u.name).itemName))];
       if (drinks.length) {
         const total = missing.reduce((s, u) => s + u.netSales, 0);
-        items.push({ key: 'bar:nocard', group: 'menu', label: 'Recipe cards', tone: 'ask', dollars: total, title: `${drinks.length} drink${drinks.length === 1 ? ' has' : 's have'} no recipe card`,
-          detail: `${dollars(total)} in sales over 90 days with no cost behind it: ${list(drinks, 3)}`, go: { to: 'drafts' }, button: 'Draft cards' });
+        items.push({ key: 'bar:nocard', group: 'menu', label: 'Recipes', tone: 'ask', dollars: total, title: `${drinks.length} drink${drinks.length === 1 ? ' has' : 's have'} no recipe`,
+          detail: `${dollars(total)} in sales over 90 days with no cost behind it: ${list(drinks, 3)}`, go: { to: 'drafts' }, button: 'Draft recipes' });
       }
     }
     for (const it of items.slice(before)) it.side = side;

@@ -28,7 +28,7 @@ test('an ingredient in one dish: purchases give its real portion', () => {
   });
   // Mozzarella is on two dishes and flour is inside a prep: not pinned on one dish. Chorizo matches.
   assert.deepEqual(suggestions.map((s) => [s.recipeName, s.productName, s.card.amount, s.suggested.amount, s.suggested.unit]), [['Pepperoni', 'Pepperoni, Sliced', 3, 1.75, 'oz']]);
-  assert.equal(suggestions[0]!.message, 'Pepperoni: purchases of Pepperoni, Sliced fit 1.75 oz a portion, the card says 3 oz. Use 1.75 oz, or weigh a few?');
+  assert.equal(suggestions[0]!.message, 'Pepperoni: purchases of Pepperoni, Sliced fit 1.75 oz a portion, the recipe says 3 oz. Use 1.75 oz, or weigh a few?');
 });
 
 test('a confirmed portion changes the recipe', () => {

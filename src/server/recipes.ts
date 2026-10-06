@@ -81,7 +81,7 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
   if (m) {
     const name = decodeURIComponent(m[1]!);
     const c = byName.get(cardKey(name));
-    if (!c) throw new HttpError(404, 'No recipe card by that name.');
+    if (!c) throw new HttpError(404, 'No recipe by that name.');
     const kind = kindOf(c.card);
     const prep = kind === 'prep' || kind === 'barPrep';
     const yields = c.card.yields.length ? c.card.yields : [{ amount: 1, unit: 'each' }];
