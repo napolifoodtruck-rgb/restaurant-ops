@@ -488,7 +488,7 @@ function drillDonut(root) {
     if (!sorted.length) return null;
     const top = sorted.length > 6 ? sorted.slice(0, 5) : sorted;
     const rest = sorted.slice(top.length);
-    const parts = [...top.map((x, i) => ({ ...x, color: SERIES[i] })),
+    const parts = [...top.map((x, i) => ({ ...x, color: x.color ?? SERIES[i] })),
       ...(rest.length ? [{ name: `Other (${rest.length})`, value: rest.reduce((a, x) => a + x.value, 0), color: OTHER, open: () => ({ title: node.title, crumb: 'Other', format, items: rest }) }] : [])];
     const total = parts.reduce((a, x) => a + x.value, 0);
     const R = 74, r = 48, C = 80;
@@ -498,7 +498,7 @@ function drillDonut(root) {
     const showCentre = (title, value, sub) => fill(centre,
       deep ? h('button', { class: 'donut-back', 'aria-label': `Back to ${stack[stack.length - 2].crumb ?? 'the start'}`, onclick: () => back() }, `‹ ${stack[stack.length - 2].crumb ?? 'Back'}`) : null,
       h('div', { class: 'donut-big', text: value }), h('div', { class: 'small muted', text: title }), sub ? h('div', { class: 'small muted', text: sub }) : null);
-    const reset = () => showCentre(node.title, format(total));
+    const reset = () => (node.centre ? showCentre(node.centre.label, node.centre.big) : showCentre(node.title, format(total)));
     const point = (rad, a) => [C + rad * Math.sin(a), C - rad * Math.cos(a)];
     let a0 = 0;
     const can = (x) => Boolean(x.open || x.go);
@@ -535,7 +535,7 @@ function drillDonut(root) {
     const trail = deep ? h('nav', { class: 'donut-trail', 'aria-label': 'Layers' }, stack.map((l, i) => [i ? h('span', { class: 'muted', text: ' › ' }) : null,
       i === stack.length - 1 ? h('b', { text: l.crumb ?? 'All' }) : h('button', { class: 'linkish', text: l.crumb ?? 'All', onclick: () => back(i) })])) : null;
     return [trail, h('div', { class: 'donut-wrap' }, svg, centre), h('div', { class: 'donut-legend' }, legendRows), node.note ?? null,
-      !deep && parts.some(can) ? h('div', { class: 'small muted', text: 'Click a slice to go a layer deeper; the middle brings you back.' }) : null];
+      !deep && parts.some((x) => x.open) ? h('div', { class: 'small muted', text: 'Click a slice to go a layer deeper; the middle brings you back.' }) : null];
   }
   draw();
   return box;
@@ -3319,13 +3319,18 @@ function coverageBar(c, big = false) {
   return [bar, legend];
 }
 
+/** How much of the menu's sales has a full cost behind it, as a pie; any slice (or the button) opens what's missing. */
 function coverageCard(me, c, side) {
   const total = c.complete + c.gaps + c.noCard;
   if (!total) return null;
-  return h('button', { class: 'card tight cov-card', onclick: () => { if (side !== 'all') me.side = side; coverageScreen(me); }, 'aria-label': 'Recipe coverage: see what’s missing' },
+  const open = () => { if (side !== 'all') me.side = side; coverageScreen(me); };
+  const pie = drillDonut({ title: 'fully costed', format: dollars, centre: { big: `${Math.round((c.complete / total) * 100)}%`, label: 'fully costed' },
+    items: [['Fully costed', c.complete, '#000'], ['Missing a price', c.gaps, '#B45A00'], ['No recipe yet', c.noCard, OTHER]].map(([name, value, color]) => ({ name, value, color, ...(name === 'Fully costed' ? {} : { go: open }) })) });
+  return h('section', { class: 'card tight cov-card' },
     h('div', { class: 'small muted strong', text: `Menu with full costs, last 90 days${side === 'all' ? '' : ` · ${AREA_NAMES[side]}`}` }),
-    coverageBar(c),
-    h('div', { class: 'small muted', text: [c.gapCount ? `${c.gapCount} price${c.gapCount === 1 ? '' : 's'} to fill in` : '', c.noCardCount ? `${c.noCardCount} item${c.noCardCount === 1 ? '' : 's'} without a recipe` : ''].filter(Boolean).join(' · ') || 'Everything is costed.' }));
+    pie,
+    h('div', { class: 'small muted', text: [c.gapCount ? `${c.gapCount} price${c.gapCount === 1 ? '' : 's'} to fill in` : '', c.noCardCount ? `${c.noCardCount} item${c.noCardCount === 1 ? '' : 's'} without a recipe` : ''].filter(Boolean).join(' · ') || 'Everything is costed.' }),
+    sideActions(h('button', { class: 'btn small-btn', text: 'See what’s missing', onclick: open })));
 }
 
 /** What keeps the menu from being fully costed: prices and conversions to fill in, cards to write. */
