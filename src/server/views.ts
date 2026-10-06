@@ -271,7 +271,10 @@ export function menuView(model: Model, view: AreaView = ALL) {
   const imageFor = (e: { recipeId?: string }) => { const c = e.recipeId ? posNameOf.get(e.recipeId)?.catalogId : undefined; const url = c ? model.imageOf(c) : undefined; return url ? { image: url } : {}; };
   // Discount buttons folded into this one: shown on its line, each able to be kept apart.
   const includesFor = (catalogId?: string) => { const f = catalogId ? model.folded.get(catalogId) : undefined; return f?.length ? { includes: f, catalogId } : {}; };
+  const lastSoldOf = new Map<string, string>();
+  for (const sp of model.spans) { const id = model.lookup(sp.catalogId, sp.name, sp.last)?.recipeId; if (id && (lastSoldOf.get(id) ?? '') < sp.last) lastSoldOf.set(id, sp.last); }
   const currentAll = onMenu(model.entries, today).map((e) => ({
+    ...(e.recipeId && lastSoldOf.get(e.recipeId) ? { lastSold: lastSoldOf.get(e.recipeId) } : {}),
     ...imageFor(e),
     ...includesFor(e.recipeId ? posNameOf.get(e.recipeId)?.catalogId : undefined),
     name: shownName(e),
@@ -305,7 +308,7 @@ export function menuView(model: Model, view: AreaView = ALL) {
     const after = quietThreshold(posDays.get(`${s.catalogId}|${s.name}`) ?? []);
     const from = (a?.status === 'stillOn' || a?.status === 'on') && a.date > s.last ? a.date : s.last;
     const quiet = daysFrom(from, today) > after;
-    current.push({ ...item, since: s.first, ...(quiet ? { quiet: { since: s.last, after } } : {}) });
+    current.push({ ...item, since: s.first, lastSold: s.last, ...(quiet ? { quiet: { since: s.last, after } } : {}) });
   }
 
   // Dishes and drinks with a recipe that aren't on now: to put back on the menu if one came off by mistake.
@@ -334,7 +337,8 @@ export function menuView(model: Model, view: AreaView = ALL) {
     missing: model.missing,
     current: current.sort(order),
     cameOff: cameOff.sort((a, b) => b.to.localeCompare(a.to)),
-    cards: view.area !== 'bar',
+    // Drinks get recipes too (a pour, a spec), so both sides flag what's selling without one.
+    cards: true,
     addable,
     quietCount: current.filter((x) => x.quiet).length,
     coverage: coverageOf(model, view),

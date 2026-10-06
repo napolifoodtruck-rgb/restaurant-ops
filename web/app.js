@@ -1479,10 +1479,29 @@ async function menuScreen(me) {
     return pick;
   };
   const setStatus = (el, x, status, date) => save(el, '/api/menu/status', { menuKey: x.menuKey, status, name: x.name, ...(date ? { date } : {}) });
-  const dishRow = (x, right, flagCard = m.cards) => h('div', {}, photo(x.image, 'thumb small'), h('div', { class: 'grow' }, h('div', { text: x.name }), includesLine(x)), sameAs(x),
-    x.quiet ? h('button', { class: 'tag ask tag-button', text: 'quiet', title: `Hasn’t sold since ${shortDate(x.quiet.since)}: still on?`, onclick: () => pickChip('needs') }) : null,
-    x.hasCard || !flagCard ? null : h('button', { class: 'tag warn tag-button', text: 'needs recipe', title: `Write the recipe for ${x.name}`, onclick: () => writeCard(x) }),
-    h('span', { class: 'small muted nowrap', text: right }));
+  // Taking a dish off: the choice opens in its row (from today, or from its last sale), and the row folds away once saved.
+  const yesterday = (() => { const d = new Date(); d.setDate(d.getDate() - 1); return iso(d); })();
+  const takeOff = (x, row, actions) => {
+    const offFrom = x.lastSold && x.lastSold < yesterday ? x.lastSold : null;
+    fill(actions, h('span', { class: 'small muted', text: 'Off the menu:' }),
+      h('button', { class: 'btn small-btn dark', text: 'From today', onclick: (e) => setStatus(e.currentTarget, x, 'off', x.lastSold && x.lastSold > yesterday ? x.lastSold : yesterday) }),
+      offFrom ? h('button', { class: 'btn small-btn', text: `Since its last sale, ${shortDate(offFrom)}`, onclick: (e) => setStatus(e.currentTarget, x, 'off', offFrom) }) : null,
+      h('button', { class: 'link', text: 'Cancel', onclick: () => fill(actions, normalActions(x, row, actions)) }));
+    actions.querySelector('.btn')?.focus();
+  };
+  const normalActions = (x, row, actions) => [
+    x.hasCard || !flagCards ? null : h('button', { class: 'tag warn tag-button', text: 'needs recipe', title: `Write the recipe for ${x.name}`, onclick: () => writeCard(x) }),
+    h('span', { class: 'small muted nowrap', text: since(x.since) }),
+    manager && x.menuKey ? h('button', { class: 'link take-off', text: 'Take off', title: `Take ${x.name} off the menu`, onclick: () => takeOff(x, row, actions) }) : null];
+  const flagCards = m.cards;
+  const dishRow = (x) => {
+    const actions = h('div', { class: 'row-actions' });
+    const row = h('div', {}, photo(x.image, 'thumb small'), h('div', { class: 'grow' }, h('div', { text: x.name }), includesLine(x)), sameAs(x),
+      x.quiet ? h('button', { class: 'tag ask tag-button', text: 'quiet', title: `Hasn’t sold since ${shortDate(x.quiet.since)}: still on?`, onclick: () => pickChip('needs') }) : null,
+      actions);
+    fill(actions, normalActions(x, row, actions));
+    return row;
+  };
 
   // Questions: about what's selling, and quiet dishes (still on, or came off?).
   const answer = (body, row, el) => pageAction(async () => {
@@ -1599,7 +1618,7 @@ async function menuScreen(me) {
       const parts = [...new Set(m.current.filter((x) => baseOf(x.section) === chip).map((x) => x.section))];
       main = parts.map((sec) => h('section', { class: 'card' },
         h('div', { class: 'row' }, h('h2', { class: 'grow', text: sec }), h('span', { class: 'small muted', text: String(m.current.filter((x) => x.section === sec).length) })),
-        h('div', { class: 'list' }, m.current.filter((x) => x.section === sec).map((x) => dishRow(x, since(x.since))))));
+        h('div', { class: 'list' }, m.current.filter((x) => x.section === sec).map((x) => dishRow(x)))));
     }
     const onMenu = sideBox('On the menu now', h('div', { class: 'list compact' },
       sections.map((sec) => h('div', {}, h('button', { class: 'linkish grow', text: sec, onclick: () => pickChip(sec) }), h('b', { text: String(m.current.filter((x) => baseOf(x.section) === sec).length) })))),

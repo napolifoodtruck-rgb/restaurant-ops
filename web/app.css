@@ -709,3 +709,5 @@ button.donut-row:hover .grow { text-decoration: underline; }
 .drill > * { min-width: 0; }
 .donut-trail { gap: 4px; }
 button.donut-row { display: flex; min-width: 0; }
+.row-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.row-actions .take-off { font-size: 13px; }
