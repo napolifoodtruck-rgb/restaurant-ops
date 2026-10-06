@@ -361,6 +361,33 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.deepEqual([syrupScaled.scale, syrupScaled.usedBy], [2, ['House Soda']]); // scaled to what the list says to make
   assert.equal((await call('GET', '/api/recipes/House%20Soda', { cookies: ownerSession })).json.cost, 0);
 
+  // Cost reports and the price explorer: managers only. A dish steps down to its recipes and ingredients.
+  for (const path of ['/api/reports/prime?from=2026-09-28&to=2026-10-04', '/api/reports/hours?from=2026-09-28&to=2026-10-04', '/api/reports/usage?from=2026-09-28&to=2026-10-04', '/api/costs/dishes', '/api/costs/search?q=soda']) {
+    assert.equal((await call('GET', path, { cookies: marcoOnExpo })).status, 403, path);
+  }
+  const found = (await call('GET', '/api/costs/search?q=soda', { cookies: ownerSession })).json;
+  const sodaHit = found.recipes.find((r: any) => r.name === 'House Soda');
+  assert.ok(sodaHit);
+  const sodaCost = (await call('GET', `/api/costs/recipe/${encodeURIComponent(sodaHit.id)}`, { cookies: ownerSession })).json;
+  const syrupLine = sodaCost.lines.find((l: any) => l.name === 'Simple Syrup 1:1');
+  assert.equal(syrupLine.kind, 'recipe');
+  const syrupCost = (await call('GET', `/api/costs/recipe/${encodeURIComponent(syrupLine.id)}?amount=${syrupLine.amount}&unit=${encodeURIComponent(syrupLine.unit)}`, { cookies: ownerSession })).json;
+  assert.deepEqual([syrupCost.name, syrupCost.asked, syrupCost.usedIn.map((u: any) => u.name)], ['Simple Syrup 1:1', { amount: syrupLine.amount, unit: syrupLine.unit }, ['House Soda']]);
+  assert.equal((await call('GET', '/api/costs/recipe/no-such-thing', { cookies: ownerSession })).status, 404);
+  assert.equal((await call('GET', '/api/costs/product/no-such-thing', { cookies: ownerSession })).status, 404);
+  assert.deepEqual(Object.keys((await call('GET', '/api/costs/movers?area=bar', { cookies: ownerSession })).json).sort(), ['area', 'down', 'up']);
+  // Prime cost and the hours: labor from timecards (a shift spread over the hours it was worked), sales by hour.
+  await db!.query(`INSERT INTO pos_timecards (restaurant_id, team_member_id, day, job_title, clock_in, clock_out, hourly_wage, hours, labor_cost) VALUES
+    ($1, 'TM1', '2026-10-03', 'Server', '2026-10-03 17:00:00', '2026-10-03 19:30:00', 12, 2.5, 30)`, [restaurantId]);
+  await db!.query(`INSERT INTO pos_sales_hourly (restaurant_id, day, hour, orders, covers, net_sales) VALUES ($1, '2026-10-03', 18, 2, 4, 160)`, [restaurantId]);
+  const prime = (await call('GET', '/api/reports/prime?from=2026-09-28&to=2026-10-04', { cookies: ownerSession })).json;
+  assert.deepEqual([prime.total.sales, prime.total.labor, prime.byJob.map((j: any) => j.job)], [160, 30, ['Server']]);
+  const hours = (await call('GET', '/api/reports/hours?from=2026-09-28&to=2026-10-04', { cookies: ownerSession })).json;
+  const sat6 = hours.cells.find((c: any) => c.weekday === 6 && c.hour === 18);
+  assert.deepEqual([hours.hasLabor, sat6.sales, sat6.laborHours, hours.hours], [true, 160, 1, [17, 18, 19]]);
+  const usage = (await call('GET', '/api/reports/usage?from=2026-09-28&to=2026-10-04&area=kitchen', { cookies: ownerSession })).json;
+  assert.deepEqual([usage.days, Array.isArray(usage.rows), typeof usage.totals.gap], [7, true, 'number']);
+
   // Nothing secret is stored in the clear.
   const stored = await db!.query<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = $1', [cookId]);
   assert.match(stored.rows[0]!.pin_hash, /^scrypt\$/);

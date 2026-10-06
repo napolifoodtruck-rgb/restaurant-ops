@@ -9,7 +9,7 @@ import { migrate } from '../src/server/db.ts';
 import { startTestDb } from './support/psqlDb.ts';
 
 /** A pretend Square account. Records every call. */
-function fakeSquare(state: { team: any[]; items: any[]; modifiers: any[]; orders?: any[]; orderLines?: any[] }) {
+function fakeSquare(state: { team: any[]; items: any[]; modifiers: any[]; orders?: any[]; orderLines?: any[]; timecards?: any[]; hourly?: any[] }) {
   const calls: { method: string; path: string; body?: any }[] = [];
   let waited = false;
   const json = (status: number, data: unknown) => ({ ok: status < 400, status, json: async () => data, text: async () => JSON.stringify(data) });
@@ -34,7 +34,9 @@ function fakeSquare(state: { team: any[]; items: any[]; modifiers: any[]; orders
       // Orders and order lines answer for the dates asked, like Square does.
       const [from, to] = body.query.timeDimensions?.[0]?.dateRange ?? [];
       const inRange = (rows: any[], cube: string) => rows.filter((x) => { const d = String(x[`${cube}.reporting_day.day`]).slice(0, 10); return (!from || d >= from) && (!to || d <= to); });
-      const all = body.query.measures.includes('Orders.cover_count') ? inRange(state.orders ?? [], 'Orders')
+      const all = body.query.measures.includes('Labor.total_hours_worked') ? (state.timecards ?? []).filter((x) => { const d = String(x['Labor.clockin_timestamp']).slice(0, 10); return d >= from && d <= to; })
+        : body.query.dimensions?.includes('Orders.local_hour') ? inRange(state.hourly ?? [], 'Orders')
+        : body.query.measures.includes('Orders.cover_count') ? inRange(state.orders ?? [], 'Orders')
         : body.query.dimensions?.includes('ItemSales.order_id') ? inRange(state.orderLines ?? [], 'ItemSales')
         : isModifiers ? state.modifiers : state.items;
       return json(200, { data: all.slice(body.query.offset, body.query.offset + body.query.limit) });
@@ -105,6 +107,8 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
       { 'Orders.reporting_day.day': '2026-10-04T00:00:00.000', 'Orders.order_id': 'O1', 'Orders.cover_count': 0, 'Orders.net_sales_minus_auto_gratuity': 10, 'Orders.tips_amount': 2, 'Orders.auto_gratuity_amount': 0 },
       { 'Orders.reporting_day.day': '2025-10-10T00:00:00.000', 'Orders.order_id': 'O0', 'Orders.order_source': 'Square Online', 'Orders.cover_count': 0, 'Orders.net_sales_minus_auto_gratuity': 30, 'Orders.tips_amount': 3, 'Orders.auto_gratuity_amount': 0 },
     ],
+    timecards: [{ 'Labor.team_member_id': 'T-MARCO', 'Labor.job_title': 'Pizza Maker', 'Labor.clockin_timestamp': '2026-10-04T15:00:00.000', 'Labor.clockout_timestamp': '2026-10-04T22:30:00.000', 'Labor.hourly_wage': 12, 'Labor.total_hours_worked': 7.5, 'Labor.total_labor_cost': 90 }],
+    hourly: [{ 'Orders.reporting_day.day': '2026-10-04T00:00:00.000', 'Orders.local_hour': 18, 'Orders.count': 9, 'Orders.cover_count': 20, 'Orders.net_sales_minus_auto_gratuity': 700 }],
     orderLines: [{ 'ItemSales.reporting_day.day': '2026-10-04T00:00:00.000', 'ItemSales.order_id': 'O1', 'ItemSales.item_variation_id': 'V1', 'ItemSales.item_name': 'Margherita', 'ItemSales.item_variation_name': 'Regular', 'ItemSales.category_name': 'Pizza', 'ItemSales.items_sold_count': 2, 'ItemSales.item_net_sales': 30 }],
   };
   const square = fakeSquare(state);
@@ -121,6 +125,10 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
   const stored = (await db!.query<{ order_id: string; table_name: string | null; covers: number; net_sales: string; tips: string }>('SELECT order_id, table_name, covers, net_sales, tips FROM pos_orders WHERE restaurant_id = $1 ORDER BY day', [restaurantId])).rows;
   assert.deepEqual(stored.map((o) => [o.order_id, o.table_name, o.covers, Number(o.net_sales), Number(o.tips)]), [['O0', null, 0, 30, 3], ['O1', 'T6', 4, 90, 18]]);
   assert.equal((await db!.query('SELECT 1 FROM pos_order_lines WHERE restaurant_id = $1', [restaurantId])).rows.length, 1);
+  // Timecards in local clock time, and sales by hour.
+  const card = (await db!.query<{ day: string; clock_in: string; hours: string; labor_cost: string }>("SELECT day::text AS day, to_char(clock_in, 'YYYY-MM-DD HH24:MI') AS clock_in, hours, labor_cost FROM pos_timecards WHERE restaurant_id = $1", [restaurantId])).rows;
+  assert.deepEqual(card.map((c) => [c.day, c.clock_in, Number(c.hours), Number(c.labor_cost)]), [['2026-10-04', '2026-10-04 15:00', 7.5, 90]]);
+  assert.equal(Number((await db!.query<{ net_sales: string }>('SELECT net_sales FROM pos_sales_hourly WHERE restaurant_id = $1 AND hour = 18', [restaurantId])).rows[0]!.net_sales), 700);
 
   const staff = (await db!.query<{ display_name: string; job_title: string | null; pos_team_member_id: string; email: string | null }>('SELECT display_name, job_title, pos_team_member_id, email FROM staff WHERE restaurant_id = $1 ORDER BY display_name', [restaurantId])).rows;
   assert.deepEqual(staff.map((s) => [s.display_name, s.job_title, s.pos_team_member_id]), [['Jess L.', 'Sous Chef', 'T-JESS'], ['Marco R.', 'Line Cook', 'T-MARCO'], ['Owner', 'Owner', 'T-OWNER'], ['Sam', null, 'T-NEW']]);

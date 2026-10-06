@@ -600,3 +600,45 @@ select.tool-select { height: 40px; max-width: 300px; font-size: 14px; }
 .rrow.head .sort.num { text-align: right; }
 .rrow.head .sort:hover, .rrow.head .sort.on { color: var(--ink); }
 @media (max-width: 700px) { .toolbar.one-row .tool-end { margin-left: 0; } }
+
+/* Prime cost, recipes vs. purchases, hours */
+.rrow.prime { grid-template-columns: minmax(96px, 1.2fr) 84px repeat(3, 84px) 56px 64px; }
+.rrow.usage { grid-template-columns: minmax(140px, 1.6fr) 90px 100px 90px 96px; }
+.chart-svg .strong-tick { fill: var(--ink); font-weight: 600; }
+.good-text { color: var(--green); }
+.heat { display: grid; gap: 2px; font-size: 12px; }
+.heat-head { font-weight: 600; color: var(--muted); text-align: center; padding-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.heat-hour { color: var(--muted); text-align: right; padding-right: 8px; align-self: center; white-space: nowrap; }
+.heat-cell { height: 30px; display: flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; color: var(--ink); overflow: hidden; white-space: nowrap; }
+.heat-cell.dark { color: #fff; }
+@container main (max-width: 640px) { .heat-cell { font-size: 0; } .heat-head { font-size: 11px; } }
+
+/* Ingredient prices: the trail, the cost lines, the price chart */
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.crumb { background: #fff; border: 1px solid var(--line); padding: 8px 12px; font: inherit; font-size: 14px; cursor: pointer; display: inline-flex; gap: 8px; align-items: baseline; min-height: 40px; }
+.crumb b { font-weight: 600; }
+.crumb:hover { border-color: #000; }
+.crumb.on { background: #000; color: #fff; border-color: #000; }
+.crumb-sep { color: var(--muted); font-size: 18px; }
+button.rrow { background: none; border: 0; border-top: 1px solid var(--soft); font: inherit; color: inherit; text-align: left; width: 100%; cursor: pointer; }
+button.rrow.clickable:hover, button.rrow.clickable:focus-visible { background: #F7F7F5; }
+.chev { color: var(--muted); font-size: 18px; text-align: right; }
+.rrow.dishcost { grid-template-columns: minmax(140px, 1fr) 90px 80px 76px 20px; }
+.rrow.costline { grid-template-columns: minmax(140px, 1.4fr) 90px 80px minmax(110px, 1fr) 20px; }
+.rrow.proddish { grid-template-columns: minmax(140px, 1.4fr) 96px 72px 84px 64px 20px; }
+.list.compact > .lrow, .lrow { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 0; border-top: 1px solid var(--soft); font-size: 14px; }
+.lrow:hover .grow { text-decoration: underline; }
+.search-hits:empty { display: none; }
+.page-side input[type=search] { width: 100%; box-sizing: border-box; }
+.chart-svg .switch-line { stroke: #8A8F96; stroke-width: 1; stroke-dasharray: 2 3; }
+.switches { display: grid; gap: 4px; }
+@container main (max-width: 640px) {
+  .rrow.dishcost, .rrow.costline { grid-template-columns: 1fr 1fr 1fr; }
+  /* These two keep their columns and headings, just tighter: they read across. */
+  .rrow.prime { grid-template-columns: minmax(64px, 1fr) repeat(4, minmax(56px, auto)) 40px 50px; gap: 8px; font-size: 13px; }
+  .rrow.usage { grid-template-columns: minmax(100px, 1.4fr) repeat(4, minmax(58px, auto)); gap: 8px; font-size: 13px; }
+  .rrow.head.prime, .rrow.head.usage { display: grid; }
+  .rrow.prime > :first-child, .rrow.usage > :first-child { grid-column: auto; }
+  .rrow.dishcost > .chev, .rrow.costline > .chev, .rrow.proddish > .chev { display: none; }
+  .rrow.proddish { grid-template-columns: repeat(4, 1fr); }
+}

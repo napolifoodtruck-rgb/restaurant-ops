@@ -156,7 +156,8 @@ async function sync(db: Db, api: SquareApi, restaurantId: string, options: Squar
   await insertMany(db, 'pos_item_sales_daily', ['restaurant_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'category', 'quantity', 'net_sales'], items.map((r) => [...r.cols, r.values.quantity, Math.round(r.values.sales * 100) / 100]));
   await insertMany(db, 'pos_modifier_sales_daily', ['restaurant_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'modifier_list', 'modifier_name', 'quantity', 'gross_sales'], modifiers.map((r) => [...r.cols, r.values.quantity, Math.round(r.values.sales * 100) / 100]));
 
-  const orders = await syncOrders(db, api, restaurantId, location.id, today, options);
+  const tz = location.timezone ?? (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+  const orders = await syncOrders(db, api, restaurantId, location.id, today, options, tz);
 
   return {
     locationName: location.name,
@@ -177,34 +178,63 @@ const orderDay = (r: SquareItemSalesRow, cube: string) => text(r[`${cube}.report
  * Orders and what was on them, for reports. The first sync goes back about a year (so a period
  * can be set against the same one last year), a month at a time; later syncs redo the last few days.
  */
-async function syncOrders(db: Db, api: SquareApi, restaurantId: string, locationId: string, today: string, options: SquareSyncOptions): Promise<{ count: number; from: string }> {
-  const last = (await db.query<{ day: string | null }>('SELECT max(day)::text AS day FROM pos_orders WHERE restaurant_id = $1', [restaurantId])).rows[0]?.day;
-  const start = last ? minusDays(last < today ? last : today, (options.refreshDays ?? 4) - 1) : minusDays(today, (options.orderDays ?? 400) - 1);
+async function syncOrders(db: Db, api: SquareApi, restaurantId: string, locationId: string, today: string, options: SquareSyncOptions, tz: string): Promise<{ count: number; from: string }> {
+  // Each kind keeps its own window, so a kind added later still goes back a year the first time.
+  const startFor = async (table: string) => {
+    const last = (await db.query<{ day: string | null }>(`SELECT max(day)::text AS day FROM ${table} WHERE restaurant_id = $1`, [restaurantId])).rows[0]?.day;
+    return last ? minusDays(last < today ? last : today, (options.refreshDays ?? 4) - 1) : minusDays(today, (options.orderDays ?? 400) - 1);
+  };
+  const start = await startFor('pos_orders');
+  const laborStart = await startFor('pos_sales_hourly');
   let count = 0;
-  for (let from = start; from <= today; from = minusDays(from, -31)) {
+  for (let from = start < laborStart ? start : laborStart; from <= today; from = minusDays(from, -31)) {
     const to = minusDays(from, -30) < today ? minusDays(from, -30) : today;
-    const orders = (await api.ordersByDay(locationId, from, to)).filter((r) => text(r['Orders.order_id']) && orderDay(r, 'Orders'));
-    const lines = (await api.orderLinesByDay(locationId, from, to)).filter((r) => text(r['ItemSales.order_id']) && orderDay(r, 'ItemSales'));
-    await db.query('DELETE FROM pos_orders WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3', [restaurantId, from, to]);
-    await db.query('DELETE FROM pos_order_lines WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3', [restaurantId, from, to]);
-    // One row per order (Square can split one across rows).
-    type Row = { cols: (string | null)[]; covers: number; sales: number; tips: number; grat: number };
-    const byId = new Map<string, Row>();
-    for (const r of orders) {
-      const id = text(r['Orders.order_id']);
-      const row = byId.get(id) ?? { cols: [id, orderDay(r, 'Orders'), text(r['Orders.table_name']) || null, text(r['Orders.fulfillment_method']) || null, text(r['Orders.order_source']) || null,
-        text(r['Orders.team_member_attributed_to_id']) || null, text(r['Orders.team_member_attributed_to_name']) || null], covers: 0, sales: 0, tips: 0, grat: 0 };
-      row.covers += number(r['Orders.cover_count']); row.sales += number(r['Orders.net_sales_minus_auto_gratuity']);
-      row.tips += number(r['Orders.tips_amount']); row.grat += number(r['Orders.auto_gratuity_amount']);
-      byId.set(id, row);
-    }
     const cents = (x: number) => Math.round(x * 100) / 100;
-    await insertMany(db, 'pos_orders', ['restaurant_id', 'order_id', 'day', 'table_name', 'fulfillment', 'source', 'server_id', 'server_name', 'covers', 'net_sales', 'tips', 'auto_gratuity'],
-      [...byId.values()].map((o) => [restaurantId, ...o.cols, Math.round(o.covers), cents(o.sales), cents(o.tips), cents(o.grat)]));
-    await insertMany(db, 'pos_order_lines', ['restaurant_id', 'order_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'category', 'quantity', 'net_sales'],
-      lines.map((r) => [restaurantId, text(r['ItemSales.order_id']), orderDay(r, 'ItemSales'), text(r['ItemSales.item_variation_id']) || null, text(r['ItemSales.item_name']), text(r['ItemSales.item_variation_name']) || null,
-        text(r['ItemSales.category_name']) || null, number(r['ItemSales.items_sold_count']), Math.round(number(r['ItemSales.item_net_sales']) * 100) / 100]));
-    count += byId.size;
+    if (to >= start) {
+      const orders = (await api.ordersByDay(locationId, from, to)).filter((r) => text(r['Orders.order_id']) && orderDay(r, 'Orders'));
+      const lines = (await api.orderLinesByDay(locationId, from, to)).filter((r) => text(r['ItemSales.order_id']) && orderDay(r, 'ItemSales'));
+      await db.query('DELETE FROM pos_orders WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3', [restaurantId, from, to]);
+      await db.query('DELETE FROM pos_order_lines WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3', [restaurantId, from, to]);
+      // One row per order (Square can split one across rows).
+      type Row = { cols: (string | null)[]; covers: number; sales: number; tips: number; grat: number };
+      const byId = new Map<string, Row>();
+      for (const r of orders) {
+        const id = text(r['Orders.order_id']);
+        const row = byId.get(id) ?? { cols: [id, orderDay(r, 'Orders'), text(r['Orders.table_name']) || null, text(r['Orders.fulfillment_method']) || null, text(r['Orders.order_source']) || null,
+          text(r['Orders.team_member_attributed_to_id']) || null, text(r['Orders.team_member_attributed_to_name']) || null], covers: 0, sales: 0, tips: 0, grat: 0 };
+        row.covers += number(r['Orders.cover_count']); row.sales += number(r['Orders.net_sales_minus_auto_gratuity']);
+        row.tips += number(r['Orders.tips_amount']); row.grat += number(r['Orders.auto_gratuity_amount']);
+        byId.set(id, row);
+      }
+      await insertMany(db, 'pos_orders', ['restaurant_id', 'order_id', 'day', 'table_name', 'fulfillment', 'source', 'server_id', 'server_name', 'covers', 'net_sales', 'tips', 'auto_gratuity'],
+        [...byId.values()].map((o) => [restaurantId, ...o.cols, Math.round(o.covers), cents(o.sales), cents(o.tips), cents(o.grat)]));
+      await insertMany(db, 'pos_order_lines', ['restaurant_id', 'order_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'category', 'quantity', 'net_sales'],
+        lines.map((r) => [restaurantId, text(r['ItemSales.order_id']), orderDay(r, 'ItemSales'), text(r['ItemSales.item_variation_id']) || null, text(r['ItemSales.item_name']), text(r['ItemSales.item_variation_name']) || null,
+          text(r['ItemSales.category_name']) || null, number(r['ItemSales.items_sold_count']), Math.round(number(r['ItemSales.item_net_sales']) * 100) / 100]));
+      count += byId.size;
+    }
+
+    if (to < laborStart) continue;
+    // Timecards (clocked in on these days) and sales by hour, for labor and the day-and-hour view.
+    const local = (v: unknown) => text(v).replace('T', ' ').slice(0, 19);
+    const cards = (await api.timecards(locationId, from, to, tz)).filter((r) => text(r['Labor.clockin_timestamp']) && text(r['Labor.clockout_timestamp']));
+    await db.query('DELETE FROM pos_timecards WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3', [restaurantId, from, to]);
+    const seenCard = new Set<string>();
+    await insertMany(db, 'pos_timecards', ['restaurant_id', 'team_member_id', 'day', 'job_title', 'clock_in', 'clock_out', 'hourly_wage', 'hours', 'labor_cost'],
+      cards.filter((r) => { const k = `${text(r['Labor.team_member_id'])}|${local(r['Labor.clockin_timestamp'])}`; if (seenCard.has(k)) return false; seenCard.add(k); return true; })
+        .map((r) => [restaurantId, text(r['Labor.team_member_id']), local(r['Labor.clockin_timestamp']).slice(0, 10), text(r['Labor.job_title']) || null, local(r['Labor.clockin_timestamp']), local(r['Labor.clockout_timestamp']),
+          r['Labor.hourly_wage'] === null || r['Labor.hourly_wage'] === undefined ? null : number(r['Labor.hourly_wage']), Math.round(number(r['Labor.total_hours_worked']) * 1000) / 1000, cents(number(r['Labor.total_labor_cost']))]));
+    const hourly = new Map<string, { day: string; hour: number; orders: number; covers: number; sales: number }>();
+    for (const r of await api.salesByHour(locationId, from, to)) {
+      const day = orderDay(r, 'Orders'), hour = Number(r['Orders.local_hour']);
+      if (!day || !(hour >= 0 && hour <= 23)) continue;
+      const k = `${day}|${hour}`;
+      const x = hourly.get(k) ?? { day, hour, orders: 0, covers: 0, sales: 0 };
+      x.orders += number(r['Orders.count']); x.covers += number(r['Orders.cover_count']); x.sales += number(r['Orders.net_sales_minus_auto_gratuity']);
+      hourly.set(k, x);
+    }
+    await db.query('DELETE FROM pos_sales_hourly WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3', [restaurantId, from, to]);
+    await insertMany(db, 'pos_sales_hourly', ['restaurant_id', 'day', 'hour', 'orders', 'covers', 'net_sales'], [...hourly.values()].map((x) => [restaurantId, x.day, x.hour, Math.round(x.orders), Math.round(x.covers), cents(x.sales)]));
   }
   return { count, from: start };
 }

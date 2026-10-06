@@ -3,6 +3,9 @@
  *
  *   GET /api/reports/sales?from=&to=        how the money came in, tables, servers
  *   GET /api/reports/menu?from=&to=&area=   every item by how it was ordered, by category
+ *   GET /api/reports/prime?from=&to=        prime cost by week: food and bar bought, labor, sales
+ *   GET /api/reports/hours?from=&to=        sales and labor by weekday and hour
+ *   GET /api/reports/usage?from=&to=&area=  what the recipes say was used against what was bought
  *
  * Each comes with the period before and the same weekdays last year, when there are orders
  * for them. Built from the orders the nightly Square sync keeps (see squareSync.ts).
@@ -14,6 +17,8 @@ import { HttpError, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { areaFor, loadAreas } from './areas.ts';
 import { lastYearRange, menuReport, previousRange, salesReport, discountWineDays, type Line, type Order } from '../core/reports.ts';
+import { hoursGrid, primeCost, purchaseKind, usageGaps, type Purchase, type PurchaseKind } from '../core/costReports.ts';
+import { getModel, type Model } from './model.ts';
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -28,13 +33,78 @@ async function load(db: Db, restaurantId: string, from: string, to: string): Pro
   return { orders, lines };
 }
 
+/** What was bought, line by line from the invoices, sorted into food, bar and everything else. */
+export function purchasesOf(model: Model, from: string, to: string): Purchase[] {
+  const kindOf = new Map(model.imported.products.map((p) => [p.externalId, purchaseKind(p.categoryType)]));
+  const out: Purchase[] = [];
+  for (const inv of model.imported.invoices) {
+    if (!inv.invoiceDate || inv.invoiceDate < from || inv.invoiceDate > to) continue;
+    // Lines with no product take the kind most of the invoice's lines have (a vendor sells one sort of thing).
+    const kinds = inv.lines.map((l) => (l.productExternalId ? kindOf.get(l.productExternalId) : undefined)).filter((k): k is PurchaseKind => Boolean(k));
+    const usual = (['food', 'bar', 'other'] as const).map((k) => [k, kinds.filter((x) => x === k).length] as const).sort((a, b) => b[1] - a[1])[0];
+    for (const l of inv.lines) {
+      const kind = (l.productExternalId && kindOf.get(l.productExternalId)) || (usual && usual[1] > 0 ? usual[0] : 'other');
+      out.push({ date: inv.invoiceDate, amount: inv.isCredit ? -Math.abs(l.lineTotal) : l.lineTotal, kind, ...(l.productExternalId ? { productId: l.productExternalId } : {}), ...(inv.vendorName ? { vendor: inv.vendorName } : {}) });
+    }
+  }
+  return out;
+}
+
+async function costReports(db: Db, res: ServerResponse, url: URL, who: SignedIn, today: string, from: string, to: string): Promise<boolean> {
+  const path = url.pathname;
+  const model = await getModel(db, who.restaurantId, to, { from, to });
+  if (path === '/api/reports/prime') {
+    const weekStart = (d: string) => { const x = new Date(`${d}T12:00:00Z`); x.setUTCDate(x.getUTCDate() - ((x.getUTCDay() + 6) % 7)); return x.toISOString().slice(0, 10); };
+    const load = async (f: string, t: string) => {
+      const sales = (await db.query<{ day: string; sales: string }>('SELECT day::text AS day, sum(net_sales) AS sales FROM pos_orders WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3 GROUP BY day', [who.restaurantId, f, t])).rows.map((r) => ({ day: r.day, sales: Number(r.sales) }));
+      const labor = (await db.query<{ day: string; cost: string; hours: string; job: string | null }>('SELECT day::text AS day, sum(labor_cost) AS cost, sum(hours) AS hours, job_title AS job FROM pos_timecards WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3 GROUP BY day, job_title', [who.restaurantId, f, t])).rows
+        .map((r) => ({ day: r.day, cost: Number(r.cost), hours: Number(r.hours), ...(r.job ? { job: r.job } : {}) }));
+      return primeCost(sales, purchasesOf(f === from ? model : await getModel(db, who.restaurantId, t, { from: f, to: t }), f, t), labor);
+    };
+    const now = await load(from, to);
+    const prev = previousRange(from, to), ly = lastYearRange(from, to);
+    const firsts = (await db.query<{ orders: string | null; labor: string | null }>('SELECT (SELECT min(day)::text FROM pos_orders WHERE restaurant_id = $1) AS orders, (SELECT min(day)::text FROM pos_timecards WHERE restaurant_id = $1) AS labor', [who.restaurantId])).rows[0]!;
+    const invoicesFrom = model.imported.invoices.map((i) => i.invoiceDate).filter(Boolean).sort()[0];
+    const covered = (f: string) => Boolean(firsts.orders && firsts.labor && invoicesFrom && f >= firsts.orders && f >= firsts.labor && f >= invoicesFrom);
+    return send(res, 200, {
+      from, to, previous: prev, lastYear: ly, weekStart: weekStart(from),
+      dataFrom: { orders: firsts.orders, labor: firsts.labor, invoices: invoicesFrom },
+      ...now,
+      ...(covered(prev.from) ? { before: (await load(prev.from, prev.to)).total } : {}),
+      ...(covered(ly.from) ? { lastYearTotal: (await load(ly.from, ly.to)).total } : {}),
+    }), true;
+  }
+  if (path === '/api/reports/hours') {
+    const sales = (await db.query<{ day: string; hour: number; sales: string; orders: number; covers: number }>('SELECT day::text AS day, hour, net_sales AS sales, orders, covers FROM pos_sales_hourly WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3', [who.restaurantId, from, to])).rows
+      .map((r) => ({ day: r.day, hour: Number(r.hour), sales: Number(r.sales), orders: Number(r.orders), covers: Number(r.covers) }));
+    const shifts = (await db.query<{ day: string; clock_in: string; clock_out: string; cost: string; job: string | null }>(
+      "SELECT day::text AS day, to_char(clock_in, 'YYYY-MM-DD HH24:MI:SS') AS clock_in, to_char(clock_out, 'YYYY-MM-DD HH24:MI:SS') AS clock_out, labor_cost AS cost, job_title AS job FROM pos_timecards WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3", [who.restaurantId, from, to])).rows
+      .map((r) => ({ day: r.day, clockIn: r.clock_in, clockOut: r.clock_out, cost: Number(r.cost), ...(r.job ? { job: r.job } : {}) }));
+    const dataFrom = (await db.query<{ day: string | null }>('SELECT min(day)::text AS day FROM pos_sales_hourly WHERE restaurant_id = $1', [who.restaurantId])).rows[0]?.day ?? undefined;
+    return send(res, 200, { from, to, ...(dataFrom ? { dataFrom } : {}), hasLabor: shifts.length > 0, ...hoursGrid(sales, shifts) }), true;
+  }
+  // Usage: each dish sold × its recipe at today's prices, against what was bought, one side at a time.
+  const area = areaFor(who, url.searchParams.get('area'));
+  const areaOf = await loadAreas(db, who.restaurantId);
+  const expected = model.margins.dishes.filter((d) => areaOf(d.category) === area)
+    .flatMap((d) => d.cost.lines.filter((l) => l.cost !== undefined).map((l) => ({ productId: l.productId, name: l.productName, dollars: l.cost! * d.quantity })));
+  const want: PurchaseKind = area === 'bar' ? 'bar' : 'food';
+  const purchases = purchasesOf(model, from, to).filter((p) => p.kind === want);
+  const names = new Map(model.imported.products.map((p) => [p.externalId, p.name]));
+  const kinds = new Map(model.imported.products.map((p) => [p.externalId, purchaseKind(p.categoryType)]));
+  const invoicesFrom = model.imported.invoices.map((i) => i.invoiceDate).filter(Boolean).sort()[0];
+  const noRecipe = model.margins.unlinked.filter((u) => areaOf(u.category) === area && u.netSales > 0).reduce((a, u) => a + u.netSales, 0);
+  return send(res, 200, { from, to, area, ...(invoicesFrom ? { invoicesFrom } : {}), days: Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1, noRecipeSales: Math.round(noRecipe), ...usageGaps(expected, purchases, names, kinds) }), true;
+}
+
 export async function reportRoutes(db: Db, res: ServerResponse, url: URL, who: SignedIn, today: string): Promise<boolean> {
   const path = url.pathname;
-  if (path !== '/api/reports/sales' && path !== '/api/reports/menu') return false;
+  if (!['/api/reports/sales', '/api/reports/menu', '/api/reports/prime', '/api/reports/hours', '/api/reports/usage'].includes(path)) return false;
   if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
   const from = url.searchParams.get('from') ?? '', to = url.searchParams.get('to') ?? '';
   if (!DATE.test(from) || !DATE.test(to) || from > to) throw new HttpError(400, 'Pick a period: from and to dates.');
   if (to > today) throw new HttpError(400, 'That period hasn’t happened yet.');
+  if (path === '/api/reports/prime' || path === '/api/reports/hours' || path === '/api/reports/usage') return costReports(db, res, url, who, today, from, to);
   const range = await db.query<{ first: string | null; last: string | null }>('SELECT min(day)::text AS first, max(day)::text AS last FROM pos_orders WHERE restaurant_id = $1', [who.restaurantId]);
   const dataFrom = range.rows[0]?.first ?? undefined, dataTo = range.rows[0]?.last ?? undefined;
   const prev = previousRange(from, to), ly = lastYearRange(from, to);

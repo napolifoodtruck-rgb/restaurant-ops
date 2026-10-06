@@ -283,6 +283,8 @@ function loadingScreen(me, active, title) {
 
 const dollars = (v, opts = {}) => (Math.abs(v) >= 10000 && !opts.exact ? `$${(v / 1000).toFixed(1)}k` : `$${v.toLocaleString(undefined, { minimumFractionDigits: opts.cents ? 2 : 0, maximumFractionDigits: opts.cents ? 2 : 0 })}`);
 const pct = (v) => (v === undefined || v === null ? '–' : `${(v * 100).toFixed(1)}%`);
+/** A date, with its year when it isn't this year. */
+const dateWithYear = (d) => (d.slice(0, 4) === String(new Date().getFullYear()) ? shortDate(d) : new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }));
 const shortDate = (d) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 
 function missingNote(missing) {
@@ -2045,14 +2047,18 @@ function versusCell(now, then, opts = {}) {
   const cls = flat ? 'muted' : (d > 0) !== Boolean(opts.lowerIsBetter) ? 'trend-up' : 'trend-down';
   return h('span', { class: `small vs ${cls}`, title: opts.title ?? '', text: flat ? 'even' : `${d > 0 ? '▲' : '▼'} ${Math.abs(d).toFixed(opts.points ? 1 : 0)}${opts.points ? ' pts' : '%'}` });
 }
+/** Whole dollars with a real minus sign; anything that rounds to nothing is $0. */
+const signedDollars = (v) => { const r = Math.round(v); return r === 0 ? '$0' : `${r < 0 ? '−' : ''}${dollars(Math.abs(r), { exact: true })}`; };
 const pct0 = (v) => (v === undefined || v === null ? '–' : `${(v * 100).toFixed(1)}%`);
 
 async function reportsScreen(me, state = {}) {
   const presets = reportPresets();
   state = { report: 'sales', preset: 'two', compare: 'previous', sorts: {}, ...state };
   const range = state.range ?? presets.find(([k]) => k === state.preset)?.[2] ?? presets[1][2];
+  if (state.report === 'prices') return pricesScreen(me, state, presets, range);
   loadingScreen(me, 'reports', 'Reports');
-  const path = state.report === 'menu' ? `/api/reports/menu?area=${sideOf(me)}&` : '/api/reports/sales?';
+  const side = sideOf(me);
+  const path = { sales: '/api/reports/sales?', menu: `/api/reports/menu?area=${side}&`, prime: '/api/reports/prime?', usage: `/api/reports/usage?area=${side}&`, hours: '/api/reports/hours?' }[state.report] ?? '/api/reports/sales?';
   const r = await api('GET', `${path}from=${range.from}&to=${range.to}`);
   if (!r.ok) return show(shell(me, 'reports', [h('header', {}, h('h1', { text: 'Reports' })), reportToolbar(me, state, range, presets, (c) => reportsScreen(me, { ...state, ...c })), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   renderReports(me, state, r.data, presets, range);
@@ -2065,14 +2071,19 @@ function renderReports(me, state, d, presets, range) {
   const side = sideOf(me);
   const lastYear = state.compare === 'lastYear';
   const base = lastYear ? d.lastYear : d.previous;
-  const has = lastYear ? d.hasLastYear : d.hasPrevious;
+  const has = state.report === 'prime' ? (lastYear ? d.lastYearTotal : d.before) !== undefined : lastYear ? d.hasLastYear : d.hasPrevious;
+  const compares = ['sales', 'menu', 'prime'].includes(state.report);
+  const info = REPORTS[state.report];
   const header = h('header', { class: 'row wrap' },
     h('div', { class: 'grow' },
-      h('div', { class: 'kicker', text: `${shortDate(d.from)} – ${shortDate(d.to)} · ${has ? `against ${lastYear ? 'last year' : 'the period before'}, ${shortDate(base.from)} – ${shortDate(base.to)}` : 'nothing to set it against yet'}` }),
-      h('h1', { text: state.report === 'menu' ? `Menu items · ${AREA_NAMES[side]}` : 'Team and sales' }),
-      h('div', { class: 'sub', text: state.report === 'menu' ? 'Every item, ranked within its category, by how it was ordered. Specials are judged by what they sold a day while they were on. Click a column title to sort.' : 'How the money came in, each server on table orders, and every table. Automatic gratuity counts as tips, not sales. Click a column title to sort.' })),
+      h('div', { class: 'kicker', text: `${shortDate(d.from)} – ${shortDate(d.to)}${compares ? ` · ${has ? `against ${lastYear ? 'last year' : 'the period before'}, ${shortDate(base.from)} – ${shortDate(base.to)}` : 'nothing to set it against yet'}` : ''}` }),
+      h('h1', { text: info.sided ? `${info.title} · ${AREA_NAMES[side]}` : info.title }),
+      h('div', { class: 'sub', text: info.sub })),
     h('button', { class: 'btn', text: 'Print', onclick: () => window.print() }));
   const toolbar = reportToolbar(me, state, range, presets, again);
+  if (state.report === 'prime') return show(shell(me, 'reports', [header, toolbar, primeView(d, lastYear)]));
+  if (state.report === 'usage') return show(shell(me, 'reports', [header, toolbar, usageView(me, d, sortBy, state, presets, range)]));
+  if (state.report === 'hours') return show(shell(me, 'reports', [header, toolbar, hoursView(d, state, (metric) => renderReports(me, { ...state, metric }, d, presets, range))]));
   if (!d.dataFrom) {
     return show(shell(me, 'reports', [header, toolbar, page(h('div', { class: 'card' }, h('h2', { text: 'Waiting for orders from Square' }),
       h('div', { class: 'small muted', text: 'Reports are built from each order: its table, covers, server and how it was placed. They come with the nightly Square sync, about a year back the first time, so a period can be set against last year. Sync now from Settings to start sooner.' }),
@@ -2111,14 +2122,32 @@ function reportToolbar(me, state, range, presets, again) {
   const seg = (label, options) => h('div', { class: 'seg', role: 'group', 'aria-label': label },
     options.map(([text, on, go]) => h('button', { class: on ? 'on' : '', 'aria-pressed': String(on), text, onclick: go })));
   const custom = Boolean(state.range);
+  const report = h('select', { class: 'tool-select', 'aria-label': 'Report' }, Object.entries(REPORTS).map(([k, r]) => h('option', { value: k, text: r.title, selected: k === state.report ? true : undefined })));
+  report.addEventListener('change', () => {
+    // Prime cost and recipes vs. purchases read wrong over a week or two (deliveries are lumpy): start them on last month.
+    const days = (Date.parse(range.to) - Date.parse(range.from)) / 86_400_000 + 1;
+    const longer = ['prime', 'usage'].includes(report.value) && days < 28 ? { preset: 'month', range: undefined } : {};
+    again({ report: report.value, sorts: {}, ...longer });
+  });
+  const info = REPORTS[state.report];
   return h('section', { class: 'card toolbar one-row' },
-    seg('Report', [['Team and sales', state.report === 'sales', () => again({ report: 'sales' })], ['Menu items', state.report === 'menu', () => again({ report: 'menu' })]]),
-    periodPicker(presets, custom ? 'custom' : state.preset, range, (key, r) => again(key === 'custom' ? { range: r, preset: undefined } : { preset: key, range: undefined })),
-    h('div', { class: 'tool-field' }, h('span', { class: 'tool-label', text: 'Against' }),
-      seg('Against', [['Period before', !lastYearOf(state), () => again({ compare: 'previous' })], ['Last year', lastYearOf(state), () => again({ compare: 'lastYear' })]])),
-    state.report === 'menu' ? h('div', { class: 'tool-end' }, sideSwitch(me, () => again({}))) : null);
+    h('div', { class: 'tool-field' }, h('span', { class: 'tool-label', text: 'Report' }), report),
+    info.period ? periodPicker(presets, custom ? 'custom' : state.preset, range, (key, r) => again(key === 'custom' ? { range: r, preset: undefined } : { preset: key, range: undefined })) : null,
+    info.compares ? h('div', { class: 'tool-field' }, h('span', { class: 'tool-label', text: 'Against' }),
+      seg('Against', [['Period before', !lastYearOf(state), () => again({ compare: 'previous' })], ['Last year', lastYearOf(state), () => again({ compare: 'lastYear' })]])) : null,
+    info.sided ? h('div', { class: 'tool-end' }, sideSwitch(me, () => again({}))) : null);
 }
 const lastYearOf = (state) => state.compare === 'lastYear';
+
+/** The reports, in the order they're offered. */
+const REPORTS = {
+  sales: { title: 'Team and sales', period: true, compares: true, sub: 'How the money came in, each server on table orders, and every table. Automatic gratuity counts as tips, not sales. Click a column title to sort.' },
+  menu: { title: 'Menu items', period: true, compares: true, sided: true, sub: 'Every item, ranked within its category, by how it was ordered. Specials are judged by what they sold a day while they were on. Click a column title to sort.' },
+  prime: { title: 'Prime cost', period: true, compares: true, sub: 'Food and bar bought, plus hourly labor, as a share of sales, week by week. Weeks run Monday to Sunday.' },
+  usage: { title: 'Recipes vs. purchases', period: true, sided: true, sub: 'What every dish sold should have used by its recipe, against what was bought. Over a month or more, the gap is waste, portions, comps and anything without a recipe.' },
+  hours: { title: 'Sales and labor by hour', period: true, sub: 'An average open day for each weekday: sales, covers and the hours worked, spread over each shift.' },
+  prices: { title: 'Ingredient prices', sided: true, sub: 'Follow a dish down to its ingredients, or search for one. Each ingredient shows what you’ve paid over time, and from which vendor.' },
+};
 
 /** A period dropdown: the presets with their dates, and custom dates that open beside it. */
 function periodPicker(presets, current, range, pick) {
@@ -2238,6 +2267,361 @@ function menuReportView(d, lastYear, has, early, sortBy) {
       h('div', { class: 'small muted', text: 'Sold per day on the menu, for items selling at least one a day.' })) : null,
   ];
   return h('div', { class: 'report-print' }, page([early, ...cards], side, { label: 'Summary' }));
+}
+
+/** Prime cost: weeks as stacked bars (food, bar, labor as a share of sales), the weeks as a table, the totals beside. */
+function primeView(d, lastYear) {
+  const parts = [['food', 'Food', SERIES[0]], ['bar', 'Bar', SERIES[1]], ['labor', 'Labor', SERIES[2]]];
+  const weeks = d.weeks.filter((w) => w.sales > 0);
+  const then = lastYear ? d.lastYearTotal : d.before;
+  const word = lastYear ? 'last year' : 'the period before';
+  const W = 760, H = 260, L = 44, R = 12, T = 18, B = 30;
+  const top = Math.max(0.5, Math.ceil(Math.max(...weeks.map((w) => w.primeShare ?? 0), 0.3) * 10) / 10);
+  const band = (W - L - R) / Math.max(weeks.length, 1), bw = Math.min(46, band * 0.66);
+  const y = (v) => T + (1 - v / top) * (H - T - B);
+  const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart-svg', role: 'img', 'aria-label': weeks.map((w) => `Week of ${shortDate(w.week)}: prime cost ${pct0(w.primeShare)}`).join('; ') });
+  for (let k = 0; k <= 4; k++) { const v = (top / 4) * k; svg.append(s('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: k ? 'grid' : 'axis' }), s('text', { x: L - 8, y: y(v) + 4, class: 'tick', 'text-anchor': 'end' }, document.createTextNode(`${Math.round(v * 100)}%`))); }
+  const wrap = h('div', { class: 'chart' }, svg);
+  const tip = tooltipBox(wrap);
+  weeks.forEach((w, i) => {
+    const cx = L + band * i + band / 2;
+    svg.append(s('text', { x: cx, y: H - 10, class: 'tick', 'text-anchor': 'middle' }, document.createTextNode(shortDate(w.week))));
+    let base = 0;
+    const segs = parts.map(([k, label, color]) => ({ k, label, color, v: w[`${k}Share`] ?? 0 })).filter((x) => x.v > 0);
+    segs.forEach((g, j) => {
+      const y0 = y(base), y1 = y(base + g.v), hgt = Math.max(0, y0 - y1 - (j ? 2 : 0));
+      const rect = s(j === segs.length - 1 ? 'path' : 'rect', j === segs.length - 1 ? { d: roundedTop(cx - bw / 2, y1, bw, hgt, Math.min(4, hgt)), fill: g.color, class: 'seg', tabindex: 0 } : { x: cx - bw / 2, y: y1, width: bw, height: hgt, fill: g.color, class: 'seg', tabindex: 0 });
+      const showTip = () => { const box = svg.getBoundingClientRect(), wb = wrap.getBoundingClientRect(); tip.show((cx / W) * box.width + box.left - wb.left, (y1 / H) * box.height, `Week of ${shortDate(w.week)} · prime ${pct0(w.primeShare)}`, parts.map(([k, label, color]) => [color, `${pct0(w[`${k}Share`])} · ${dollars(w[k], { exact: true })}`, label])); };
+      rect.addEventListener('pointerenter', showTip); rect.addEventListener('focus', showTip); rect.addEventListener('pointerleave', () => tip.hide()); rect.addEventListener('blur', () => tip.hide());
+      svg.append(rect);
+      base += g.v;
+    });
+    svg.append(s('text', { x: cx, y: y(base) - 5, class: 'tick strong-tick', 'text-anchor': 'middle' }, document.createTextNode(`${Math.round((w.primeShare ?? 0) * 100)}%`)));
+  });
+  const chart = h('section', { class: 'card' }, h('h2', { text: 'Prime cost, week by week' }),
+    legend(parts.map(([, label, color]) => ({ name: label, color, on: true, fixed: true }))), weeks.length ? wrap : h('div', { class: 'small muted', text: 'No sales in this period.' }),
+    h('div', { class: 'small muted', text: 'Each bar is a share of that week’s sales; the number on top is prime cost. Hover a block for its dollars.' }));
+  const table = h('section', { class: 'card' }, h('h2', { text: 'The weeks' }),
+    h('div', { class: 'rtable' },
+      h('div', { class: 'rrow head prime' }, ['Week', 'Sales', 'Food', 'Bar', 'Labor', 'Hours', 'Prime'].map((t, i) => h('div', { class: i ? 'num' : '', text: t }))),
+      d.weeks.map((w) => h('div', { class: 'rrow prime' }, h('div', { class: 'strong', text: `${shortDate(w.week)}${w.days < 5 ? ` (${w.days} days)` : ''}` }),
+        h('div', { class: 'num', text: dollars(w.sales, { exact: true }) }),
+        ...['food', 'bar', 'labor'].map((k) => h('div', { class: 'num' }, h('div', { text: dollars(w[k], { exact: true }) }), h('div', { class: 'small muted', text: pct0(w[`${k}Share`]) }))),
+        h('div', { class: 'num', text: qty(w.laborHours) }),
+        h('div', { class: 'num strong', text: pct0(w.primeShare) })))),
+    h('div', { class: 'small muted', text: `Food and bar are what was bought that week, by invoice date: a big delivery lands in one week, so read a month at a time. Labor is clocked hours × base wage from Square: no overtime premiums, payroll taxes or salaried pay. Invoices from ${d.dataFrom.invoices ? dateWithYear(d.dataFrom.invoices) : '–'}, timecards from ${d.dataFrom.labor ? dateWithYear(d.dataFrom.labor) : '–'}.` }));
+  const t = d.total;
+  const stat = (title, key) => statBox(title, pct0(t[key]), h('div', { class: 'row tight' }, versusCell(t[key], then?.[key], { points: true, lowerIsBetter: true }), h('span', { class: 'small muted', text: then ? `vs ${word}` : '' })));
+  const side = [
+    statBox('Prime cost', pct0(t.primeShare), h('div', { class: 'small muted', text: `${dollars(t.prime, { exact: true })} on ${dollars(t.sales, { exact: true })} of sales` }), h('div', { class: 'row tight' }, versusCell(t.primeShare, then?.primeShare, { points: true, lowerIsBetter: true }), h('span', { class: 'small muted', text: then ? `vs ${word}` : '' }))),
+    stat('Food', 'foodShare'), stat('Bar', 'barShare'), stat('Labor', 'laborShare'),
+    d.byJob.length ? sideBox('Labor by job', h('div', { class: 'list compact' }, d.byJob.slice(0, 10).map((j) => h('div', {}, h('span', { class: 'grow', text: j.job }), h('span', { class: 'small muted', text: `${qty(j.hours)} h` }), h('b', { text: dollars(j.cost, { exact: true }) }))))) : null,
+  ];
+  return h('div', { class: 'report-print' }, page([chart, table], side, { label: 'Summary' }));
+}
+
+/** Recipes vs. purchases: product by product, sortable; what's bought with no recipe; the totals. */
+function usageView(me, d, sortBy, state, presets, range) {
+  const open = (r) => pricesScreen(me, { ...state, report: 'prices', trail: [{ kind: 'product', id: r.productId, name: r.name }] }, presets, range);
+  const rows = h('div', { class: 'rtable' }, sortableRows('usage', [
+    { key: 'name', label: 'Ingredient', value: (r) => r.name, cell: (r) => h('div', {}, h('button', { class: 'linkish strong', text: r.name, onclick: () => open(r) })) },
+    { key: 'bought', label: 'Bought', num: true, value: (r) => r.bought, cell: (r) => h('div', { class: 'num', text: dollars(r.bought, { exact: true }) }) },
+    { key: 'expected', label: 'Recipes used', num: true, value: (r) => r.expected, cell: (r) => h('div', { class: 'num', text: dollars(r.expected, { exact: true }) }) },
+    { key: 'gap', label: 'Gap', num: true, value: (r) => r.gap, cell: (r) => h('div', { class: `num strong ${r.gap >= 1 ? 'warn-text' : ''}`, text: signedDollars(r.gap) }) },
+    { key: 'share', label: 'Of what was bought', num: true, value: (r) => r.share, cell: (r) => h('div', { class: 'num small', text: r.share !== undefined ? `${r.share < 0 ? '−' : ''}${pct0(Math.abs(r.share))}` : '–' }) },
+  ], d.rows, sortBy('usage'), { key: 'gap', dir: 'desc' }));
+  const short = d.days < 28 ? h('div', { class: 'note', text: `${d.days} days is short for this: what's bought in a week isn't what's used that week. Four weeks or more reads truer.` }) : null;
+  const main = [short,
+    h('section', { class: 'card' }, h('h2', { text: 'Ingredient by ingredient' }),
+      h('div', { class: 'small muted', text: 'Bought is what the invoices charged. Recipes used is each dish sold × its recipe, at today’s prices. A gap above zero is money the recipes don’t explain. Click an ingredient for its price over time.' }), rows),
+    d.notOnRecipes.length ? h('section', { class: 'card' }, h('h2', { text: `Bought, but no recipe uses it (${d.notOnRecipes.length})` }),
+      h('div', { class: 'small muted', text: 'Either it goes into something without a recipe yet, or it’s not food (supplies filed as food).' }),
+      h('div', { class: 'list compact' }, d.notOnRecipes.slice(0, 25).map((r) => h('div', {}, h('button', { class: 'linkish grow', text: r.name, onclick: () => open(r) }), h('b', { text: dollars(r.bought, { exact: true }) }))))) : null];
+  const t = d.totals;
+  const side = [
+    t.gap >= 0
+      ? statBox('Not explained by recipes', dollars(t.gap, { exact: true }), h('div', { class: 'small muted', text: `${t.bought ? pct0(t.gap / t.bought) : '–'} of the ${dollars(t.bought, { exact: true })} bought for ingredients the recipes use (${dollars(t.expected, { exact: true })} accounted for).` }))
+      : statBox('Recipes used more than was bought', dollars(-t.gap, { exact: true }), h('div', { class: 'small muted', text: `Recipes account for ${dollars(t.expected, { exact: true })}, but only ${dollars(t.bought, { exact: true })} was bought: the shelves ran down, or some invoices aren’t in MarginEdge yet. Common over a short period.` })),
+    t.boughtOff ? statBox('Bought with no recipe', dollars(t.boughtOff, { exact: true }), h('div', { class: 'small muted', text: 'Ingredients no recipe uses yet.' })) : null,
+    d.noRecipeSales ? sideBox('Selling with no recipe', h('div', { class: 'small', text: `${dollars(d.noRecipeSales, { exact: true })} of sales have no recipe, so what they used shows as a gap here.` }), sideActions(h('button', { class: 'btn small-btn', text: 'See what’s missing', onclick: () => coverageScreen(me) }))) : null,
+    sideBox('How to read it', h('div', { class: 'small muted', text: 'There are no stock counts, so this assumes the shelves end the period about where they started. The biggest gaps are where to look: portions, waste, comps, or a recipe that’s missing an amount.' })),
+  ];
+  return h('div', { class: 'report-print' }, page(main, side, { label: 'Summary' }));
+}
+
+const HOUR_METRICS = [['sales', 'Sales'], ['covers', 'Covers'], ['laborHours', 'Labor hours'], ['perLaborHour', 'Sales per labor hour']];
+const hourLabel = (h24) => `${((h24 + 11) % 12) + 1}${h24 < 12 ? 'am' : 'pm'}`;
+const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/** Sales and labor by weekday and hour: a grid shaded by the chosen measure, darker for more. */
+function hoursView(d, state, pickMetric) {
+  const metric = state.metric ?? 'sales';
+  const fmt = { sales: (v) => dollars(v), covers: (v) => qty(v), laborHours: (v) => qty(v), perLaborHour: (v) => dollars(v) }[metric];
+  const cell = new Map(d.cells.map((c) => [`${c.weekday}|${c.hour}`, c]));
+  const values = d.cells.map((c) => c[metric]).filter((v) => v !== undefined && v > 0);
+  const max = Math.max(...values, 1);
+  const seg = h('div', { class: 'seg wrap-seg', role: 'group', 'aria-label': 'Show' }, HOUR_METRICS.map(([k, label]) => h('button', { class: k === metric ? 'on' : '', 'aria-pressed': String(k === metric), text: label, onclick: () => pickMetric(k) })));
+  const grid = h('div', { class: 'heat' },
+    h('div'), d.weekdays.map((w) => h('div', { class: 'heat-head', text: `${DAY_SHORT[w]} (${d.days[w]})` })),
+    d.hours.map((hr) => [h('div', { class: 'heat-hour', text: hourLabel(hr) }), d.weekdays.map((w) => {
+      const c = cell.get(`${w}|${hr}`);
+      const v = c?.[metric];
+      const box = h('div', { class: 'heat-cell', title: c ? `${DAY_SHORT[w]} ${hourLabel(hr)}: ${dollars(c.sales)} sales, ${qty(c.covers)} covers, ${qty(c.laborHours)} labor hours${c.perLaborHour ? `, ${dollars(c.perLaborHour)} per labor hour` : ''}` : '' }, v ? fmt(v) : '');
+      // One hue, light to dark: more is darker.
+      const k = v ? Math.max(0.06, v / max) : 0;
+      box.style.background = k ? `rgba(31, 79, 143, ${(0.08 + k * 0.82).toFixed(3)})` : 'var(--soft)';
+      if (k > 0.55) box.classList.add('dark');
+      return box;
+    })]));
+  grid.style.gridTemplateColumns = `56px repeat(${d.weekdays.length}, minmax(0, 1fr))`;
+  const ranked = d.cells.filter((c) => c.perLaborHour !== undefined && c.laborHours >= 1 && c.sales > 0);
+  const low = [...ranked].sort((a, b) => a.perLaborHour - b.perLaborHour).slice(0, 4);
+  const busiest = [...d.cells].sort((a, b) => b.sales - a.sales).slice(0, 4);
+  const totals = d.weekdays.map((w) => ({ w, sales: d.cells.filter((c) => c.weekday === w).reduce((a, c) => a + c.sales, 0), hours: d.cells.filter((c) => c.weekday === w).reduce((a, c) => a + c.laborHours, 0) }));
+  const main = h('section', { class: 'card' }, h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: 'An average day, hour by hour' }), seg),
+    d.hasLabor ? null : h('div', { class: 'note', text: 'No timecards in this period yet, so labor is empty. They come with the next Square sync.' }),
+    d.hours.length ? grid : h('div', { class: 'small muted', text: 'No sales by hour in this period yet. They come with the next Square sync.' }),
+    h('div', { class: 'small muted', text: 'Each cell is the average for that weekday’s open days in the period (the number of days is in brackets). Labor counts each shift in the hours it was worked. Hover a cell for all of it.' }));
+  const side = [
+    sideBox('A usual day', h('div', { class: 'list compact' }, totals.map((t) => h('div', {}, h('span', { class: 'grow', text: DAY_SHORT[t.w] }), h('span', { class: 'small muted', text: `${qty(Math.round(t.hours))} h` }), h('b', { text: dollars(t.sales) }))))),
+    busiest.length ? sideBox('Busiest hours', h('div', { class: 'list compact' }, busiest.map((c) => h('div', {}, h('span', { class: 'grow', text: `${DAY_SHORT[c.weekday]} ${hourLabel(c.hour)}` }), h('b', { text: dollars(c.sales) }))))) : null,
+    low.length ? sideBox('Most hours for the sales', h('div', { class: 'list compact' }, low.map((c) => h('div', {}, h('span', { class: 'grow', text: `${DAY_SHORT[c.weekday]} ${hourLabel(c.hour)}` }), h('span', { class: 'small muted', text: `${qty(c.laborHours)} h` }), h('b', { text: `${dollars(c.perLaborHour)}/h` })))),
+      h('div', { class: 'small muted', text: 'Sales per labor hour, lowest first: where a shift might start later or end sooner. Prep before opening shows here too.' })) : null,
+  ];
+  return h('div', { class: 'report-print' }, page(main, side, { label: 'Summary' }));
+}
+
+// ------------------------------------------------------------------ ingredient prices
+
+/** Answers already fetched this visit, so stepping back up the trail is instant. */
+const costCache = new Map();
+async function costGet(path) {
+  if (costCache.has(path)) return costCache.get(path);
+  const r = await api('GET', path);
+  if (r.ok) costCache.set(path, r);
+  return r;
+}
+/** A price per unit, with enough decimals that small units still show a difference. */
+const perUnitText = (v, unit) => (v === undefined || v === null ? '–' : `$${v >= 10 ? v.toFixed(2) : v >= 0.1 ? v.toFixed(3) : v.toFixed(4)}${unit ? `/${unit}` : ''}`);
+const unitAmount = (a, unit) => `${qty(Math.round(a * 1000) / 1000)} ${unit}`;
+const changeText = (v) => (v === undefined || v === null ? '–' : `${v > 0 ? '▲' : v < 0 ? '▼' : ''} ${Math.abs(v * 100).toFixed(1)}%`);
+const changeClass = (v) => (v === undefined || v === null || Math.abs(v) < 0.02 ? 'muted' : v > 0 ? 'warn-text' : 'good-text');
+
+/**
+ * Ingredient prices: start at the menu, step down a dish to its recipes and ingredients
+ * (margherita → dough → flour), each step showing what that much of it costs; or search.
+ * An ingredient shows every price paid, colored by vendor, with the switches between vendors.
+ */
+async function pricesScreen(me, state, presets, range) {
+  const trail = state.trail ?? [];
+  const node = trail[trail.length - 1];
+  const side = sideOf(me);
+  const go = (nextTrail) => pricesScreen(me, { ...state, trail: nextTrail }, presets, range);
+  const again = (changes) => reportsScreen(me, { ...state, ...changes });
+  const q = (n) => (n.amount ? `?amount=${n.amount}&unit=${encodeURIComponent(n.unit)}` : '');
+  const path = !node ? `/api/costs/dishes?area=${side}` : node.kind === 'recipe' ? `/api/costs/recipe/${encodeURIComponent(node.id)}${q(node)}` : `/api/costs/product/${encodeURIComponent(node.id)}${q(node)}`;
+  if (!costCache.has(path)) loadingScreen(me, 'reports', 'Ingredient prices');
+  const [r, movers] = await Promise.all([costGet(path), costGet(`/api/costs/movers?area=${side}`)]);
+  const info = REPORTS.prices;
+  const header = h('header', { class: 'row wrap' },
+    h('div', { class: 'grow' }, h('div', { class: 'kicker', text: 'Prices from MarginEdge invoices' }),
+      h('h1', { text: `${info.title} · ${AREA_NAMES[side]}` }), h('div', { class: 'sub', text: info.sub })),
+    h('button', { class: 'btn', text: 'Print', onclick: () => window.print() }));
+  const toolbar = reportToolbar(me, state, range, presets, (c) => again({ ...c, trail: c.report && c.report !== 'prices' ? undefined : [] }));
+  if (!r.ok) return show(shell(me, 'reports', [header, toolbar, h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const d = r.data;
+
+  // The trail: Menu › Margherita $1.68 › Pizza Dough $0.33 › Flour $0.32. Each step goes back there.
+  const crumbs = h('nav', { class: 'crumbs', 'aria-label': 'Where you are' },
+    h('button', { class: `crumb${node ? '' : ' on'}`, onclick: () => go([]) }, h('span', { text: `${AREA_NAMES[side]} menu` })),
+    trail.map((n, i) => [h('span', { class: 'crumb-sep', 'aria-hidden': 'true', text: '›' }),
+      h('button', { class: `crumb${i === trail.length - 1 ? ' on' : ''}`, 'aria-current': i === trail.length - 1 ? 'page' : undefined, onclick: () => go(trail.slice(0, i + 1)) },
+        h('span', { text: n.name }), n.cost !== undefined ? h('b', { text: dollars(n.cost, { cents: true }) }) : null)]));
+
+  const search = searchBox((hit) => go([hit]));
+  const moverBox = (title, rows, note) => (rows?.length ? sideBox(title, h('div', { class: 'list compact' }, rows.map((m) =>
+    h('button', { class: 'linkish lrow', onclick: () => go([{ kind: 'product', id: m.id, name: m.name }]) },
+      h('span', { class: 'grow', text: m.name }), h('span', { class: `small nowrap ${changeClass(m.change90)}`, text: changeText(m.change90) }), h('b', { class: 'nowrap', text: `${m.impact > 0 ? '+' : '−'}${dollars(Math.abs(m.impact))}` })))),
+    h('div', { class: 'small muted', text: note })) : null);
+  const moversSide = movers.ok ? [
+    moverBox('Gone up in the last 90 days', movers.data.up, 'The dollar figure is what the rise cost on the last 90 days of buying.'),
+    moverBox('Gone down', movers.data.down, 'What the drop saved, the same way.')] : [];
+
+  let main, sideBoxes;
+  if (!node) [main, sideBoxes] = menuNode(d, (dish) => go([{ kind: 'recipe', id: dish.id, name: dish.name, cost: dish.plateCost }]));
+  else if (node.kind === 'recipe') [main, sideBoxes] = recipeNode(d, node, (line) => go([...trail, { kind: line.kind, id: line.id, name: line.name, amount: line.amount, unit: line.unit, cost: line.cost }]), go);
+  else [main, sideBoxes] = productNode(d, node, go);
+  show(shell(me, 'reports', [header, toolbar, page([crumbs, main].flat(), [search, ...sideBoxes, ...moversSide], { label: 'Prices' })]));
+}
+
+/** Search recipes and ingredients by name, as you type. */
+function searchBox(pick) {
+  const input = h('input', { type: 'search', placeholder: 'Flour, mozzarella, dough…', 'aria-label': 'Find an ingredient or recipe' });
+  const out = h('div', { class: 'list compact search-hits' });
+  let timer, asked = '';
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const q = input.value.trim();
+      asked = q;
+      if (q.length < 2) return fill(out);
+      const r = await costGet(`/api/costs/search?q=${encodeURIComponent(q)}`);
+      if (asked !== q || !r.ok) return;
+      const hits = [...r.data.products.map((p) => ({ ...p, kind: 'product' })), ...r.data.recipes.map((x) => ({ ...x, kind: 'recipe', recipeKind: x.kind }))];
+      fill(out, hits.length ? hits.slice(0, 14).map((x) => h('button', { class: 'linkish lrow', onclick: () => pick({ kind: x.kind, id: x.id, name: x.name }) },
+        h('span', { class: 'grow', text: x.name }),
+        h('span', { class: 'small muted', text: x.kind === 'product' ? perUnitText(x.perUnit, x.unit) : x.recipeKind === 'prep' ? 'prep recipe' : 'recipe' }))) : h('div', { class: 'small muted', text: 'Nothing by that name.' }));
+    }, 180);
+  });
+  return sideBox('Find an ingredient or recipe', input, out);
+}
+
+/** The top: every dish sold, by category, with what a plate costs. */
+function menuNode(d, open) {
+  const cats = new Map();
+  for (const x of d.dishes) cats.set(x.category ?? 'Other', [...(cats.get(x.category ?? 'Other') ?? []), x]);
+  const main = d.dishes.length ? [...cats].map(([cat, xs]) => h('section', { class: 'card' }, h('h2', { text: cat }),
+    h('div', { class: 'rtable' }, h('div', { class: 'rrow head dishcost' }, ['Dish', 'Plate cost', 'Price', 'Food cost'].map((t, i) => h('div', { class: i ? 'num' : '', text: t }))),
+      xs.sort((a, b) => b.plateCost - a.plateCost).map((x) => h('button', { class: 'rrow dishcost clickable', onclick: () => open(x) },
+        h('div', { class: 'strong', text: x.name }),
+        h('div', { class: 'num' }, h('span', { text: dollars(x.plateCost, { cents: true }) }), x.complete ? null : h('span', { class: 'small warn-text', title: 'Some ingredients have no price yet', text: ' *' })),
+        h('div', { class: 'num', text: dollars(x.price, { cents: true }) }),
+        h('div', { class: 'num', text: x.share !== undefined ? `${Math.round(x.share * 100)}%` : '–' }),
+        h('div', { class: 'chev', 'aria-hidden': 'true', text: '›' }))))))
+    : [h('section', { class: 'card' }, h('div', { class: 'small muted', text: 'No dishes with recipes have sold here yet.' }))];
+  const incomplete = d.dishes.filter((x) => !x.complete).length;
+  return [[h('div', { class: 'small muted', text: 'Click a dish to see what goes into it and what each part costs, down to the ingredients.' }), ...main],
+    [incomplete ? sideBox('Missing prices', h('div', { class: 'small', text: `${incomplete} dish${incomplete === 1 ? ' has' : 'es have'} an ingredient with no price yet (marked *), so the plate cost is low.` })) : null]];
+}
+
+/** A recipe: what this much of it costs, and each line, biggest first. Lines with a recipe or ingredient behind them go down a step. */
+function recipeNode(d, node, down, go) {
+  const forWhat = d.asked ? `for ${unitAmount(d.asked.amount, d.asked.unit)}` : d.kind === 'dish' || d.price !== undefined ? 'a plate' : `a batch (${unitAmount(d.yield.amount, d.yield.unit)})`;
+  const max = Math.max(...d.lines.map((l) => l.cost), 0.0001);
+  const lines = h('div', { class: 'rtable' }, h('div', { class: 'rrow head costline' }, ['Goes in', 'Amount', 'Cost', 'Share'].map((t, i) => h('div', { class: i && i < 3 ? 'num' : '', text: t }))),
+    d.lines.map((l) => {
+      const can = l.kind === 'recipe' || l.kind === 'product';
+      const bar = h('span', { class: 'hbar-track' }, h('span', { class: 'hbar-fill' }));
+      bar.firstChild.style.width = `${(l.cost / max) * 100}%`;
+      const cells = [h('div', { class: 'strong' }, l.name, l.kind === 'recipe' ? h('span', { class: 'small muted', text: ' · recipe' }) : null),
+        h('div', { class: 'num small', text: unitAmount(l.amount, l.unit) }),
+        h('div', { class: 'num' }, l.complete ? dollars(l.cost, { cents: true }) : h('span', { class: 'warn-text small', text: l.cost ? `${dollars(l.cost, { cents: true })} *` : 'no price' })),
+        h('div', { class: 'row tight' }, bar, h('span', { class: 'small muted', text: `${Math.round(l.share * 100)}%` })),
+        h('div', { class: 'chev', 'aria-hidden': 'true', text: can ? '›' : '' })];
+      return can ? h('button', { class: 'rrow costline clickable', onclick: () => down(l) }, cells) : h('div', { class: 'rrow costline' }, cells);
+    }));
+  const main = [h('section', { class: 'card' },
+    h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: d.name }), h('div', { class: 'big', text: dollars(d.total, { cents: true }) })),
+    h('div', { class: 'small muted', text: `${forWhat[0].toUpperCase()}${forWhat.slice(1)}${d.asked && d.perBatch ? ` · ${dollars(d.perBatch, { cents: true })} for a whole batch of ${unitAmount(d.yield.amount, d.yield.unit)}` : ''}${d.complete ? '' : ' · * some ingredients have no price yet'}. Click a line to go down a step.` }),
+    lines)];
+  const donut = shareDonut(d.lines.map((l) => ({ name: l.name, value: l.cost })), { format: (v) => dollars(v, { cents: true }), total: forWhat });
+  const sideBoxes = [
+    d.price !== undefined ? statBox('Food cost', d.price ? `${Math.round((d.total / d.price) * 100)}%` : '–', h('div', { class: 'small muted', text: `${dollars(d.total, { cents: true })} of an average ${dollars(d.price, { cents: true })} paid · ${d.sold.toLocaleString()} sold lately` })) : null,
+    donut ? sideBox('Where the cost goes', donut) : null,
+    d.usedIn.length ? sideBox('Goes into', h('div', { class: 'list compact' }, d.usedIn.map((u) => h('button', { class: 'linkish lrow', onclick: () => go([{ kind: 'recipe', id: u.id, name: u.name }]) }, h('span', { class: 'grow', text: u.name }), h('span', { class: 'chev', text: '›' }))))) : null,
+  ];
+  return [main, sideBoxes];
+}
+
+/** An ingredient: what the step above uses of it, its price over time by vendor, and the dishes it's in. */
+function productNode(d, node, go) {
+  const hist = d.history;
+  const vendors = hist.vendors.map((v) => v.vendor);
+  // Colors go to vendors by who sold it first, so a vendor keeps its color when another arrives.
+  const order = [...new Set(hist.points.map((p) => p.vendor ?? 'Unknown vendor'))];
+  const colorOf = new Map(order.map((v, i) => [v, SERIES[i] ?? OTHER]));
+  const main = [h('section', { class: 'card' },
+    h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: d.name }),
+      h('div', { class: 'big', text: d.total !== undefined ? dollars(d.total, { cents: true }) : perUnitText(d.perUnit, d.unit) })),
+    h('div', { class: 'small muted', text: [d.asked ? `${unitAmount(d.asked.amount, d.asked.unit)} at ${perUnitText(d.perUnit, d.unit)}` : 'Today’s price, from the latest invoices', d.category].filter(Boolean).join(' · ') }),
+    hist.points.length ? priceChart(hist, d.unit, colorOf) : h('div', { class: 'small muted', text: 'No invoices for this yet.' }),
+    hist.switches.length ? h('div', { class: 'switches' }, h('div', { class: 'small muted strong', text: 'Vendor changes' }),
+      hist.switches.slice(-8).reverse().map((sw) => h('div', { class: 'small' }, h('span', { class: 'muted', text: `${dateWithYear(sw.date)}: ` }),
+        `${sw.from ?? 'Unknown'} → `, h('b', { text: sw.to ?? 'Unknown' })))) : null),
+    d.dishes.length ? h('section', { class: 'card' }, h('h2', { text: 'The dishes it’s in' }),
+      h('div', { class: 'rtable' }, h('div', { class: 'rrow head proddish' }, ['Dish', 'A plate uses', 'Costs', 'Of the plate', 'Sold'].map((t, i) => h('div', { class: i ? 'num' : '', text: t }))),
+        d.dishes.map((x) => h('button', { class: 'rrow proddish clickable', onclick: () => go([{ kind: 'recipe', id: x.id, name: x.name }]) },
+          h('div', { class: 'strong', text: x.name }), h('div', { class: 'num small', text: unitAmount(x.perPlate, x.unit) }),
+          h('div', { class: 'num', text: dollars(x.costPerPlate, { cents: true }) }), h('div', { class: 'num', text: `${Math.round(x.share * 100)}%` }),
+          h('div', { class: 'num', text: x.plates.toLocaleString() }), h('div', { class: 'chev', 'aria-hidden': 'true', text: '›' })))),
+      d.tenPercent ? h('div', { class: 'small muted', text: `If it went up 10%, those plates would cost ${dollars(d.tenPercent, { cents: true })} more over the same stretch.` }) : null) : null];
+  const sideBoxes = [
+    statBox('Price now', perUnitText(hist.latest ?? d.perUnit, d.unit),
+      h('div', { class: 'row tight' }, h('span', { class: `small ${changeClass(hist.change90)}`, text: changeText(hist.change90) }), h('span', { class: 'small muted', text: 'in 90 days' })),
+      h('div', { class: 'row tight' }, h('span', { class: `small ${changeClass(hist.change365)}`, text: changeText(hist.change365) }), h('span', { class: 'small muted', text: 'in a year' }))),
+    vendors.length ? sideBox('Vendors', h('div', { class: 'list compact' }, hist.vendors.map((v) => {
+      const key = h('span', { class: 'lkey' }); key.style.background = colorOf.get(v.vendor) ?? OTHER; key.style.borderColor = colorOf.get(v.vendor) ?? OTHER;
+      return h('div', {}, key, h('span', { class: 'grow' }, h('div', { text: v.vendor }), h('div', { class: 'small muted', text: `${v.purchases} invoice${v.purchases === 1 ? '' : 's'} · last ${shortDate(v.last)}` })), h('b', { text: dollars(v.spent) }));
+    }))) : null,
+    d.usedIn.length ? sideBox('Recipes that use it', h('div', { class: 'list compact' }, d.usedIn.map((u) => h('button', { class: 'linkish lrow', onclick: () => go([{ kind: 'recipe', id: u.id, name: u.name }]) }, h('span', { class: 'grow', text: u.name }), h('span', { class: 'chev', text: '›' }))))) : null,
+  ];
+  return [main, sideBoxes];
+}
+
+/** Price per unit over time: a dot per purchase in its vendor's color, and a strip below showing who supplied it when. */
+function priceChart(hist, unit, colorOf) {
+  const pts = hist.points;
+  const W = 760, H = 250, L = 64, R = 16, T = 14, B = 46;
+  const t = (p) => Date.parse(`${p.date}T12:00:00Z`);
+  const t0 = t(pts[0]), t1 = Math.max(t(pts[pts.length - 1]), t0 + 86_400_000 * 14);
+  const vals = pts.map((p) => p.perUnit).sort((a, b) => a - b);
+  // Ignore a stray price far off the rest (a pack logged in the wrong unit) when setting the scale.
+  const lo = vals[Math.floor(vals.length * 0.02)], hi = vals[Math.ceil(vals.length * 0.98) - 1];
+  const pad = Math.max((hi - lo) * 0.15, hi * 0.05);
+  const yMin = Math.max(0, lo - pad), yMax = hi + pad;
+  const x = (p) => L + ((t(p) - t0) / (t1 - t0)) * (W - L - R);
+  const y = (v) => T + (1 - (Math.min(Math.max(v, yMin), yMax) - yMin) / (yMax - yMin)) * (H - T - B);
+  const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart-svg', role: 'img', 'aria-label': `Price per ${unit} from ${shortDate(pts[0].date)} to ${shortDate(pts[pts.length - 1].date)}` });
+  for (let k = 0; k <= 4; k++) {
+    const v = yMin + ((yMax - yMin) / 4) * k;
+    svg.append(s('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: k ? 'grid' : 'axis' }), s('text', { x: L - 8, y: y(v) + 4, class: 'tick', 'text-anchor': 'end' }, document.createTextNode(perUnitText(v))));
+  }
+  // Month ticks.
+  const months = [];
+  for (let m = new Date(t0); m.getTime() <= t1; m = new Date(Date.UTC(m.getUTCFullYear(), m.getUTCMonth() + 1, 1))) months.push(Date.UTC(m.getUTCFullYear(), m.getUTCMonth() + 1, 1));
+  const every = Math.max(1, Math.ceil(months.length / 8));
+  months.filter((m, i) => m <= t1 && i % every === 0).forEach((m) => {
+    const mx = L + ((m - t0) / (t1 - t0)) * (W - L - R);
+    const dd = new Date(m);
+    svg.append(s('text', { x: mx, y: H - B + 16, class: 'tick', 'text-anchor': 'middle' }, document.createTextNode(dd.toLocaleDateString(undefined, { month: 'short', timeZone: 'UTC' }) + (dd.getUTCMonth() === 0 ? ` ${dd.getUTCFullYear()}` : ''))));
+  });
+  svg.append(s('polyline', { points: pts.map((p) => `${x(p).toFixed(1)},${y(p.perUnit).toFixed(1)}`).join(' '), fill: 'none', stroke: OTHER, 'stroke-width': 1.5, 'stroke-linejoin': 'round' }));
+  // Who supplied it when: a band per stretch with one vendor.
+  const stripY = H - B + 26, stripH = 10;
+  let start = 0;
+  for (let i = 1; i <= pts.length; i++) {
+    if (i < pts.length && (pts[i].vendor ?? '') === (pts[start].vendor ?? '')) continue;
+    const x0 = x(pts[start]), x1 = i < pts.length ? x(pts[i]) : W - R;
+    svg.append(s('rect', { x: x0, y: stripY, width: Math.max(2, x1 - x0 - 1), height: stripH, fill: colorOf.get(pts[start].vendor ?? 'Unknown vendor') ?? OTHER }));
+    if (i < pts.length && hist.switches.length <= 6) svg.append(s('line', { x1: x1, x2: x1, y1: T, y2: stripY + stripH, class: 'switch-line' }));
+    start = i;
+  }
+  for (const p of pts) svg.append(s('circle', { cx: x(p), cy: y(p.perUnit), r: 4, fill: colorOf.get(p.vendor ?? 'Unknown vendor') ?? OTHER, stroke: '#fff', 'stroke-width': 1.5 }));
+  const ring = s('circle', { r: 7, fill: 'none', stroke: '#000', 'stroke-width': 1.5, visibility: 'hidden' });
+  svg.append(ring);
+  const wrap = h('div', { class: 'chart' }, svg);
+  const tip = tooltipBox(wrap);
+  let at = pts.length - 1;
+  const showAt = (i) => {
+    const p = pts[i];
+    ring.setAttribute('cx', x(p)); ring.setAttribute('cy', y(p.perUnit)); ring.setAttribute('visibility', 'visible');
+    const box = svg.getBoundingClientRect(), wb = wrap.getBoundingClientRect();
+    tip.show((x(p) / W) * box.width + box.left - wb.left, (y(p.perUnit) / H) * box.height, new Date(`${p.date}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
+      [[colorOf.get(p.vendor ?? 'Unknown vendor'), perUnitText(p.perUnit, unit), p.vendor ?? 'Unknown vendor'], [null, dollars(p.packPrice, { cents: true }), `for ${p.pack}${p.quantity !== 1 ? ` · bought ${qty(p.quantity)}` : ''}`]]);
+  };
+  const hide = () => { ring.setAttribute('visibility', 'hidden'); tip.hide(); };
+  const hit = s('rect', { x: L, y: T, width: W - L - R, height: H - T - B + 40, fill: 'transparent', tabindex: 0, 'aria-label': 'Prices paid: use the arrow keys' });
+  hit.addEventListener('pointermove', (e) => {
+    const box = svg.getBoundingClientRect(), px = ((e.clientX - box.left) / box.width) * W;
+    let best = 0; pts.forEach((p, i) => { if (Math.abs(x(p) - px) < Math.abs(x(pts[best]) - px)) best = i; });
+    showAt((at = best));
+  });
+  hit.addEventListener('pointerleave', hide); hit.addEventListener('blur', hide);
+  hit.addEventListener('focus', () => showAt(at));
+  hit.addEventListener('keydown', (e) => { if (e.key === 'ArrowLeft') showAt((at = Math.max(0, at - 1))); if (e.key === 'ArrowRight') showAt((at = Math.min(pts.length - 1, at + 1))); });
+  svg.append(hit);
+  const key = legend([...colorOf].map(([name, color]) => ({ name, color, on: true, fixed: true })));
+  return h('div', {}, key, wrap, h('div', { class: 'small muted', text: `Each dot is an invoice, per ${unit} so packs of different sizes compare; its color is the vendor. The strip underneath shows who it came from when${hist.switches.length <= 6 ? ', with a line at each change' : ''}.` }));
 }
 
 // ------------------------------------------------------------------ orders

@@ -156,6 +156,29 @@ export class SquareApi {
     });
   }
 
+  /** Closed timecards clocked in on these days, clock times in the restaurant's time zone. */
+  timecards(locationId: string, from: string, to: string, timezone: string): Promise<SquareItemSalesRow[]> {
+    return this.report({
+      measures: ['Labor.total_hours_worked', 'Labor.total_labor_cost'],
+      dimensions: ['Labor.team_member_id', 'Labor.job_title', 'Labor.clockin_timestamp', 'Labor.clockout_timestamp', 'Labor.hourly_wage'],
+      timeDimensions: [{ dimension: 'Labor.clockin_timestamp', dateRange: [from, to] }],
+      segments: ['Labor.closed_shifts'],
+      filters: [{ member: 'Labor.location_id', operator: 'equals', values: [locationId] }],
+      timezone,
+    });
+  }
+
+  /** Sales, orders and covers by day and local hour. */
+  salesByHour(locationId: string, from: string, to: string): Promise<SquareItemSalesRow[]> {
+    return this.report({
+      measures: ['Orders.net_sales_minus_auto_gratuity', 'Orders.cover_count', 'Orders.count'],
+      dimensions: ['Orders.local_hour'],
+      timeDimensions: [{ dimension: 'Orders.reporting_day', dateRange: [from, to], granularity: 'day' }],
+      segments: ['Orders.closed_checks'],
+      filters: [{ member: 'Orders.location_id', operator: 'equals', values: [locationId] }],
+    });
+  }
+
   /** What was on each order: item, variation, category, quantity and net sales. */
   orderLinesByDay(locationId: string, from: string, to: string): Promise<SquareItemSalesRow[]> {
     return this.report({
