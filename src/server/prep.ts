@@ -372,6 +372,8 @@ export async function prepTiming(db: Db, restaurantId: string, today: string, tz
     slowItems: [...usuals.values()].sort((a, b) => b.minutes - a.minutes).slice(0, 6)
       .map((u) => ({ name: u.name, stationId: stationOfItem.get(u.itemId), minutes: Math.round(u.minutes), times: u.times, ...(u.amount ? { amount: u.amount } : {}), ...(u.unit ? { unit: u.unit } : {}) })),
     cooks: cookPace(times, usuals).map((c) => ({ name: c.name, items: c.items, ratio: c.ratio, hours: c.hours })),
+    /** Every timed item, for the Ideas page. */
+    times,
   };
 }
 

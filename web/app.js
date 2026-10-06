@@ -24,6 +24,7 @@ const ICONS = {
   margins: 'M4 20V4 M4 20h16 M8 16v-4 M12 16V8 M16 16v-6',
   orders: 'M3 7h11v9H3z M14 10h4l3 3v3h-7',
   reports: 'M6 3h9l4 4v14H6z M14 3v5h5 M9 12h7 M9 16h5',
+  ideas: 'M9 18h6 M10 21h4 M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z',
   settings: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M19 12h2 M3 12h2 M12 3v2 M12 19v2 M17 7l1.5-1.5 M5.5 18.5L7 17 M17 17l1.5 1.5 M5.5 5.5L7 7',
 };
 function icon(name) {
@@ -330,7 +331,7 @@ function pinPad(person, device) {
 function shell(me, active, content) {
   const manager = atLeast(me.roleLevel, 'manager');
   const nav = [
-    ['today', 'Today', todayScreen], ['prep', 'Prep', prepHome], ['recipes', 'Recipes', recipesScreen], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['reports', 'Reports', manager && reportsScreen], ['orders', 'Orders', manager && ordersScreen],
+    ['today', 'Today', todayScreen], ['ideas', 'Ideas', manager && ideasScreen], ['prep', 'Prep', prepHome], ['recipes', 'Recipes', recipesScreen], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['reports', 'Reports', manager && reportsScreen], ['orders', 'Orders', manager && ordersScreen],
   ];
   return h('div', { class: 'shell', 'data-active': active },
     h('nav', { class: 'rail', 'aria-label': 'Main' },
@@ -347,12 +348,13 @@ function shell(me, active, content) {
 const LEVEL_NAMES = { line: 'Line', lead: 'Lead', sous: 'Sous chef', chef: 'Chef', manager: 'Manager', owner: 'Owner' };
 const initialsOf = (name) => (name ?? '?').trim().split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
 /**
- * Who's signed in, always at the bottom of the left bar: initials and level. One tap signs out (on a
- * station's iPad, "Switch person": the iPad stays set up and goes back to the names for the next cook).
+ * Who's signed in, always at the bottom of the left bar: initials and level. One tap logs out (on a
+ * station's iPad, the iPad stays set up and goes back to the names for the next cook).
  */
 function whoAmI(me) {
   const level = LEVEL_NAMES[me.roleLevel] ?? me.roleLevel;
-  const word = me.device ? 'Switch person' : 'Sign out';
+  // One word that fits the bar; on a station's iPad it goes back to the names for the next cook.
+  const word = 'Logout';
   const chip = h('button', { class: 'me-chip', title: `${me.name} · ${level}${me.device ? ` · ${me.device.name ?? 'this iPad'}` : ''}. Tap to ${word.toLowerCase()}.`, 'aria-label': `${word} (${me.name}, ${level})`,
     onclick: async () => { busy(chip, true); await api('POST', '/api/logout'); start(); } },
     h('span', { class: 'me-dot', text: initialsOf(me.name) }), h('span', { class: 'me-level', text: level }), h('span', { class: 'me-out', text: word }));
@@ -2431,6 +2433,7 @@ const TODO_TABS = {
   recipes: { name: 'Recipes', color: '#0E7470', go: (me) => recipesScreen(me) },
   performance: { name: 'Performance', color: '#7A3E9D', go: (me) => marginsScreen(me) },
   reports: { name: 'Reports', color: '#3D3D3D', go: (me) => reportsScreen(me) },
+  ideas: { name: 'Ideas', color: '#8C6A00', go: (me) => ideasScreen(me) },
   setup: { name: 'Settings', color: '#6B6B6B', go: (me) => home(me) },
 };
 const todoTab = (i) => ({ count: 'prep', review: 'prep', work: 'prep', order: 'orders', orders: 'orders', menu: 'menu', cards: 'recipes', drafts: 'recipes', performance: 'performance', settings: 'setup' })[i.go?.to] ?? (i.group === 'costs' ? 'performance' : i.group === 'setup' ? 'setup' : i.group);
@@ -2482,14 +2485,25 @@ function homeTiles(me, t, side, items) {
     ['recipes', g?.coverage ? `${Math.round((g.coverage.complete / Math.max(g.coverage.complete + g.coverage.gaps + g.coverage.noCard, 1e-9)) * 100)}% costed` : `${count('recipes')} to do`, g?.coverage ? `${g.coverage.noCardCount ?? 0} items without a recipe` : 'Recipes and costs'],
     ['reports', g?.weekToDate ? dollars(g.weekToDate.netSales, { exact: true }) : g?.lastWeek ? dollars(g.lastWeek.netSales, { exact: true }) : '–', g?.weekToDate ? `This week, through ${weekdayName(g.weekToDate.to)}` : 'Last week'],
   ];
-  return h('nav', { class: 'home-tiles', 'aria-label': 'Each tab at a glance' }, tiles.map(([key, big, line]) => {
+  // Ideas take a moment to work out: the tile fills in once they're ready.
+  tiles.unshift(['ideas', '…', 'Working out what the numbers suggest']);
+  const nav = h('nav', { class: 'home-tiles', 'aria-label': 'Each tab at a glance' }, tiles.map(([key, big, line]) => {
     const tab = TODO_TABS[key];
     const tile = h('button', { class: 'home-tile', onclick: () => tab.go(me) },
       h('span', { class: 'tile-name' }, icon(key === 'performance' ? 'margins' : key), tab.name),
       h('span', { class: 'tile-big', text: big }), h('span', { class: 'tile-line small muted', text: line }));
     tile.style.setProperty('--tab', tab.color);
+    tile.dataset.tile = key;
     return tile;
   }));
+  api('GET', '/api/ideas').then((r) => {
+    const tile = nav.querySelector('[data-tile="ideas"]');
+    if (!tile) return;
+    if (!r.ok) return tile.remove();
+    tile.querySelector('.tile-big').textContent = r.data.ideas.length ? `${dollars(r.data.monthly)}/mo` : 'Nothing new';
+    tile.querySelector('.tile-line').textContent = r.data.ideas.length ? `${r.data.ideas.length} idea${r.data.ideas.length === 1 ? '' : 's'}, the biggest ${dollars(r.data.ideas[0].monthly)} a month` : 'No ideas right now';
+  });
+  return nav;
 }
 
 function glanceCards(me, t, side, opts = {}) {
@@ -2535,6 +2549,81 @@ function glanceCards(me, t, side, opts = {}) {
     h('div', { class: 'small', text: g.noCard.map((d) => d.name).join(' · ') }),
     h('div', { class: 'small muted', text: 'Their food cost isn’t counted until a recipe is in.' })));
   return cards;
+}
+
+// ------------------------------------------------------------------ ideas
+// What the numbers suggest doing, biggest money first: each worth a figure a month, with the numbers
+// behind it and where to act. Managers and owners only.
+
+const IDEA_KINDS = {
+  waste: ['Waste', 'reports'], unused: ['Not in a recipe', 'recipes'], price: ['Price up', 'reports'], vendor: ['Cheaper vendor', 'orders'],
+  dish: ['Selling less', 'menu'], foodcost: ['Food cost', 'performance'], labor: ['Labor', 'reports'], prep: ['Prep training', 'prep'],
+};
+const IDEA_GO = {
+  usage: ['See it in Reports', (me, g) => { if (g.area) me.side = g.area; reportsScreen(me, { report: 'usage', preset: 'month' }); }],
+  prices: ['Price chart', (me, g) => reportsScreen(me, { report: 'prices', trail: g.productId ? [{ kind: 'product', id: g.productId, name: g.name }] : [] })],
+  performance: ['Performance', (me, g) => { if (g.area) me.side = g.area; marginsScreen(me); }],
+  menu: ['Menu', (me) => menuScreen(me)],
+  hours: ['Sales and labor by hour', (me) => reportsScreen(me, { report: 'hours', preset: 'month' })],
+  prep: ['Prep', (me) => prepHome(me)],
+  recipes: ['Recipes', (me) => recipesScreen(me)],
+};
+
+async function ideasScreen(me, state = {}) {
+  loadingScreen(me, 'ideas', 'Ideas');
+  const r = await api('GET', '/api/ideas');
+  if (!r.ok) return show(shell(me, 'ideas', [h('h1', { text: 'Ideas' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const d = r.data;
+  let kind = state.kind ?? 'all';
+  const again = () => refreshInPlace(() => ideasScreen(me, { kind }));
+  const setAside = (el, idea, status) => pageAction(async () => {
+    pressed = null; busy(el, true);
+    const res = await api('POST', '/api/ideas/dismiss', { key: idea.key, status });
+    if (!res.ok) { busy(el, false); return el.parentNode.append(h('div', { class: 'error small', text: res.data.error ?? 'Not saved.' })); }
+    await foldAway(el.closest('.idea'));
+    again();
+  });
+  const card = (i) => {
+    const [label, tab] = IDEA_KINDS[i.kind] ?? [i.kind, 'reports'];
+    const go = i.go && IDEA_GO[i.go.to];
+    const el = h('article', { class: 'idea card' },
+      h('div', { class: 'idea-top' },
+        h('div', { class: 'grow' }, h('div', { class: 'tab-tag', text: `${label}${i.area ? ` · ${AREA_NAMES[i.area]}` : ''}` }), h('h3', { class: 'idea-title', text: i.title })),
+        h('div', { class: 'idea-money' }, h('b', { text: dollars(i.monthly, { exact: true }) }), h('span', { class: 'small muted', text: 'a month' }))),
+      h('ul', { class: 'idea-why small' }, i.why.map((w) => h('li', { text: w }))),
+      h('div', { class: 'idea-try' }, h('span', { class: 'small muted strong', text: 'Try: ' }), i.suggestion),
+      h('div', { class: 'row wrap idea-actions' },
+        go ? h('button', { class: 'btn small-btn dark', text: go[0], onclick: () => go[1](me, i.go) }) : null,
+        h('button', { class: 'btn small-btn', text: 'Not now', title: 'Back in two weeks', onclick: (e) => setAside(e.currentTarget, i, 'later') }),
+        h('button', { class: 'btn small-btn', text: 'Done', title: 'Comes back only if it gets clearly bigger', onclick: (e) => setAside(e.currentTarget, i, 'done') })));
+    el.style.setProperty('--tab', TODO_TABS[tab]?.color ?? '#000');
+    return el;
+  };
+  const kinds = Object.keys(IDEA_KINDS).filter((k) => d.ideas.some((i) => i.kind === k));
+  function draw() {
+    const shown = d.ideas.filter((i) => kind === 'all' || i.kind === kind);
+    const chips = h('div', { class: 'chips-row', role: 'tablist', 'aria-label': 'Show' },
+      h('button', { class: `chip${kind === 'all' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(kind === 'all'), onclick: () => { kind = 'all'; draw(); } }, 'All', h('span', { class: 'chip-count', text: String(d.ideas.length) })),
+      kinds.map((k) => h('button', { class: `chip${kind === k ? ' on' : ''}`, role: 'tab', 'aria-selected': String(kind === k), onclick: () => { kind = k; draw(); } },
+        IDEA_KINDS[k][0], h('span', { class: 'chip-count', text: dollars(d.totals[k] ?? 0) }))));
+    const pie = drillDonut({ title: 'a month', format: dollars, items: kinds.map((k) => ({ name: IDEA_KINDS[k][0], value: d.totals[k] ?? 0, go: () => { kind = k; draw(); } })) });
+    const asideBox = d.setAside.length ? sideBox('Set aside', h('div', { class: 'list compact' }, d.setAside.map((x) => h('div', {},
+      h('span', { class: 'grow' }, h('div', { class: 'small', text: x.title || x.key }), h('div', { class: 'small muted', text: `${x.status === 'done' ? 'Done' : `Not now, back ${shortDate(x.until.slice(0, 10))}`}${x.by ? ` · ${x.by}` : ''}` })),
+      h('button', { class: 'link', text: 'Bring back', onclick: (e) => pageAction(async () => { busy(e.currentTarget, true); await api('POST', '/api/ideas/dismiss', { key: x.key, status: 'back' }); again(); }) }))))) : null;
+    show(shell(me, 'ideas', [
+      h('header', { class: 'row wrap' }, h('div', { class: 'grow' },
+        h('div', { class: 'kicker', text: d.ideas.length ? `${dollars(d.monthly, { exact: true })} a month across ${d.ideas.length} idea${d.ideas.length === 1 ? '' : 's'}` : 'Nothing new right now' }),
+        h('h1', { text: 'Ideas' }),
+        h('div', { class: 'sub', text: 'What the numbers suggest doing, the most money first. Each one has held for weeks, not a single day, and says why.' }))),
+      d.ideas.length ? chips : null,
+      page([...(d.notes ?? []).map((n) => h('div', { class: 'note small', text: n })),
+        shown.length ? shown.map(card) : h('section', { class: 'card small muted', text: 'Nothing here right now. As invoices, sales and prep come in, ideas show up when something holds for a few weeks.' })],
+        [pie ? sideBox('Where the money is', pie) : null,
+          sideBox('How these work', h('div', { class: 'small muted', text: 'Dollars a month at your current buying and sales. Waste compares what was bought against what every dish sold should have used, over two 4-week stretches, so one big delivery doesn’t count. Not now hides one for two weeks; Done hides it unless it gets half again bigger. Only managers and owners see this page.' })),
+          asideBox]),
+    ]));
+  }
+  draw();
 }
 
 // ------------------------------------------------------------------ reports

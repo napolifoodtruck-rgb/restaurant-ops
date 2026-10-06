@@ -31,7 +31,7 @@ function quantityAsked(url: URL) {
 }
 
 /** Every purchase of a product: per base unit (so packs and vendors compare), with the vendor. */
-function pricesOf(model: Model, productId: string) {
+export function pricesOf(model: Model, productId: string) {
   const vendors = new Map(model.imported.vendors.map((v) => [v.externalId, v.name]));
   return model.imported.prices.filter((p) => p.productExternalId === productId).map((p) => ({
     date: p.date, ...(p.vendorExternalId && vendors.get(p.vendorExternalId) ? { vendor: vendors.get(p.vendorExternalId)! } : {}),

@@ -433,6 +433,16 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.equal((await call('GET', '/api/costs/breakdown', { cookies: ownerSession })).status, 400);
   assert.ok(Array.isArray((await call('GET', '/api/costs/spend?area=bar', { cookies: ownerSession })).json.vendors));
 
+  // Ideas: managers and owners only; Done sets one aside (listed), Bring back undoes it.
+  assert.equal((await call('GET', '/api/ideas', { cookies: marcoOnExpo })).status, 403);
+  const ideas = (await call('GET', '/api/ideas', { cookies: ownerSession })).json;
+  assert.ok(Array.isArray(ideas.ideas) && typeof ideas.monthly === 'number');
+  assert.equal((await call('POST', '/api/ideas/dismiss', { body: { key: 'waste:kitchen:x', status: 'maybe' }, cookies: ownerSession })).status, 400);
+  assert.equal((await call('POST', '/api/ideas/dismiss', { body: { key: 'waste:kitchen:x', status: 'done', title: 'Mozzarella gap' }, cookies: ownerSession })).status, 200);
+  assert.deepEqual((await call('GET', '/api/ideas', { cookies: ownerSession })).json.setAside.map((x: any) => [x.key, x.status, x.title]), [['waste:kitchen:x', 'done', 'Mozzarella gap']]);
+  assert.equal((await call('POST', '/api/ideas/dismiss', { body: { key: 'waste:kitchen:x', status: 'back' }, cookies: ownerSession })).status, 200);
+  assert.deepEqual((await call('GET', '/api/ideas', { cookies: ownerSession })).json.setAside, []);
+
   // Nothing secret is stored in the clear.
   const stored = await db!.query<{ pin_hash: string }>('SELECT pin_hash FROM staff WHERE id = $1', [cookId]);
   assert.match(stored.rows[0]!.pin_hash, /^scrypt\$/);

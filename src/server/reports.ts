@@ -86,15 +86,20 @@ async function costReports(db: Db, res: ServerResponse, url: URL, who: SignedIn,
   // Usage: each dish sold × its recipe at today's prices, against what was bought, one side at a time.
   const area = areaFor(who, url.searchParams.get('area'));
   const areaOf = await loadAreas(db, who.restaurantId);
+  const invoicesFrom = model.imported.invoices.map((i) => i.invoiceDate).filter(Boolean).sort()[0];
+  const noRecipe = model.margins.unlinked.filter((u) => areaOf(u.category) === area && u.netSales > 0).reduce((a, u) => a + u.netSales, 0);
+  return send(res, 200, { from, to, area, ...(invoicesFrom ? { invoicesFrom } : {}), days: Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1, noRecipeSales: Math.round(noRecipe), ...usageFor(model, area, areaOf, from, to) }), true;
+}
+
+/** Recipes against purchases for one side over the model's period: each dish sold × its recipe, at today's prices. */
+export function usageFor(model: Model, area: 'kitchen' | 'bar', areaOf: (category: string) => string, from: string, to: string) {
   const expected = model.margins.dishes.filter((d) => areaOf(d.category) === area)
     .flatMap((d) => d.cost.lines.filter((l) => l.cost !== undefined).map((l) => ({ productId: l.productId, name: l.productName, dollars: l.cost! * d.quantity })));
   const want: PurchaseKind = area === 'bar' ? 'bar' : 'food';
   const purchases = purchasesOf(model, from, to).filter((p) => p.kind === want);
   const names = new Map(model.imported.products.map((p) => [p.externalId, p.name]));
   const kinds = new Map(model.imported.products.map((p) => [p.externalId, purchaseKind(p.categoryType)]));
-  const invoicesFrom = model.imported.invoices.map((i) => i.invoiceDate).filter(Boolean).sort()[0];
-  const noRecipe = model.margins.unlinked.filter((u) => areaOf(u.category) === area && u.netSales > 0).reduce((a, u) => a + u.netSales, 0);
-  return send(res, 200, { from, to, area, ...(invoicesFrom ? { invoicesFrom } : {}), days: Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1, noRecipeSales: Math.round(noRecipe), ...usageGaps(expected, purchases, names, kinds) }), true;
+  return usageGaps(expected, purchases, names, kinds);
 }
 
 export async function reportRoutes(db: Db, res: ServerResponse, url: URL, who: SignedIn, today: string): Promise<boolean> {

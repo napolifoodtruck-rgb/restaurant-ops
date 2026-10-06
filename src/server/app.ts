@@ -56,6 +56,7 @@ import { cardRoutes } from './cards.ts';
 import { orderRoutes } from './orders.ts';
 import { reportRoutes } from './reports.ts';
 import { costRoutes } from './costs.ts';
+import { ideaRoutes } from './ideas.ts';
 import { recipeRoutes } from './recipes.ts';
 import { areaFor, areaRoutes, loadAreas } from './areas.ts';
 
@@ -582,6 +583,12 @@ export function createApp(config: AppConfig) {
       const who = await signedIn(req);
       const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
       if (await costRoutes(db, res, url, who, localDateHour(tz).date)) return;
+    }
+
+    if (path.startsWith('/api/ideas')) {
+      const who = await signedIn(req);
+      const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+      if (await ideaRoutes(db, req, res, url, who, localDateHour(tz).date, tz)) return;
     }
 
     if (path.startsWith('/api/reports') && method === 'GET') {
