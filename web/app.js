@@ -76,15 +76,34 @@ async function api(method, path, body) {
 function fill(el, ...kids) { el.replaceChildren(...kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false)); }
 // A screen redrawn after something done on it (an answer, a check-off) stays where you were:
 // no fading, no bar, the same scroll position.
-let inPlace = false;
+// Several can be saving at once (answer one line, then the next, without waiting): the page
+// refreshes once, after the last of them, so nothing still saving is redrawn under you.
+let inPlace = false, actionsOut = 0, lastRefresh = null, waitingRefresh = null;
 function show(...nodes) {
   const y = window.scrollY, keep = inPlace;
   inPlace = false;
+  if (keep && actionsOut > 0) { waitingRefresh = lastRefresh; return; }
   fill(app, ...nodes);
   if (keep) window.scrollTo(0, y);
 }
 /** Redraws a screen in place: call it after an action on that screen succeeds. */
-function refreshInPlace(draw) { inPlace = true; return draw(); }
+function refreshInPlace(draw) {
+  lastRefresh = draw;
+  if (actionsOut > 0) { waitingRefresh = draw; return; }
+  inPlace = true;
+  return draw();
+}
+/** An action on the page (a save): while any are out, refreshes wait; the last one to finish runs the latest. */
+const tabNow = () => app.querySelector('.shell')?.dataset.active;
+async function pageAction(fn) {
+  const tab = tabNow();
+  actionsOut++;
+  try { return await fn(); } finally {
+    actionsOut--;
+    // Gone to another tab meanwhile: the save still counts, but don't pull them back to redraw this one.
+    if (!actionsOut && waitingRefresh) { const r = waitingRefresh; waitingRefresh = null; if (tabNow() === tab) refreshInPlace(r); }
+  }
+}
 /** The line someone just answered folds away; the rest of the page stays put. */
 function foldAway(row) {
   if (!row) return Promise.resolve();
@@ -1437,14 +1456,14 @@ async function menuScreen(me) {
   };
   // Any change saves, then the page comes back with fresh numbers (staying on the same chip).
   // The spinner stays on the button until it's saved; then that line folds away and the page refreshes where it is.
-  const save = async (el, path, body, row) => {
+  const save = (el, path, body, row) => pageAction(async () => {
     pressed = null;
     busy(el, true);
     const res = await api('POST', path, body);
     if (!res.ok) { busy(el, false); return (row ?? el.parentNode).append(h('div', { class: 'error small', text: res.data.error ?? 'Not saved.' })); }
     await foldAway(row === undefined ? el.closest('.ask, .list > div') : row);
     refreshInPlace(() => menuScreen(me));
-  };
+  });
   // Same drink, different price: discount buttons folded in show under the drink, each can be kept apart;
   // a button the name doesn't give away can be folded into another variation of the same item by hand.
   const priceVariation = (el, body) => save(el, '/api/menu/price-variation', body, null);
@@ -1466,7 +1485,7 @@ async function menuScreen(me) {
     h('span', { class: 'small muted nowrap', text: right }));
 
   // Questions: about what's selling, and quiet dishes (still on, or came off?).
-  const answer = async (body, row, el) => {
+  const answer = (body, row, el) => pageAction(async () => {
     pressed = null;
     row.querySelectorAll('button, select').forEach((b) => (b.disabled = true));
     busy(el, true);
@@ -1478,7 +1497,7 @@ async function menuScreen(me) {
     }
     await foldAway(row);
     refreshInPlace(() => menuScreen(me));
-  };
+  });
   const choices = (row, buttons) => h('div', { class: 'row wrap' }, buttons.map(([label, body, cls]) => h('button', { class: `btn small-btn${cls ? ' ' + cls : ''}`, text: label, onclick: (e) => answer(body, row, e.currentTarget) })));
   const otherCard = (row, item) => {
     const select = h('select', { 'aria-label': 'Another recipe', onchange: () => select.value && answer({ type: 'link', ...item, recipe: select.value }, row, select) },
@@ -1625,13 +1644,13 @@ function answersBox(me, redraw) {
       const undo = h('button', { class: 'link', text: 'Undo', 'aria-label': `Undo: ${a.name}` });
       const row = h('div', {}, h('div', { class: 'grow' }, h('div', { class: 'small' }, answerText(a)),
         a.at || a.by ? h('div', { class: 'small muted', text: [a.at ? shortDate(a.at.slice(0, 10)) : '', a.by ?? ''].filter(Boolean).join(' · ') }) : null), undo);
-      undo.addEventListener('click', async () => {
+      undo.addEventListener('click', () => pageAction(async () => {
         busy(undo, true);
         const res = await api('POST', '/api/answers/undo', { target: a.target });
         if (!res.ok) { busy(undo, false); return row.append(h('div', { class: 'error small', text: res.data.error ?? 'Not undone.' })); }
         await foldAway(row);
         redraw();
-      });
+      }));
       return row;
     }));
     fill(more, r.data.total > r.data.answers.length ? h('button', { class: 'btn small-btn', text: `Show all ${r.data.total}`, onclick: (e) => { busy(e.currentTarget, true); load(500); } }) : null);
@@ -2182,10 +2201,10 @@ async function todayScreen(me, filter = 'all') {
   const done = new Map();
   const here = () => seq === todaySeq && app.querySelector('.shell[data-active="today"]');
   // Fetches again quietly and redraws: the page never goes blank for it.
-  const refresh = async () => {
+  const refresh = () => refreshInPlace(async () => {
     const again = await api('GET', '/api/today');
     if (again.ok && here()) { t = again.data; inPlace = true; draw(); }
-  };
+  });
   const go = (g) => ({
     count: () => prepCount(me, g.stationId, g.date), review: () => prepReview(me, g.stationId, g.date), work: () => prepWork(me, g.stationId, g.date),
     menu: () => menuScreen(me), performance: () => marginsScreen(me), settings: () => home(me),
@@ -2215,12 +2234,12 @@ async function todayScreen(me, filter = 'all') {
     });
     return row;
   };
-  const answer = async (row, i, a) => {
+  const answer = (row, i, a) => pageAction(async () => {
     foldUp(row, i, `Answered: ${a.label}`, () => api('POST', '/api/answers/undo', { target: targetOf(a.body) }));
     const res = await api('POST', '/api/answers', a.body);
     if (!res.ok) { done.delete(i.key); if (here()) draw(); return showError(res.data.error ?? 'That didn’t save.', i.key); }
     refresh();
-  };
+  });
   // Snoozing: set a line aside for a while (just for you), or bring it back.
   const snooze = async (keys, choice, row) => {
     row?.querySelectorAll('button').forEach((b) => (b.disabled = true));
@@ -2231,12 +2250,12 @@ async function todayScreen(me, filter = 'all') {
     }
     refresh();
   };
-  const snoozeOne = async (row, i, c) => {
+  const snoozeOne = (row, i, c) => pageAction(async () => {
     foldUp(row, i, `Snoozed ${c.label.toLowerCase()}`, () => api('POST', '/api/today/snooze', { keys: [i.key], wake: true }));
     const res = await api('POST', '/api/today/snooze', { keys: [i.key], ...(c.hours ? { hours: c.hours } : { day: c.day }) });
     if (!res.ok) { done.delete(i.key); if (here()) draw(); return showError(res.data.error ?? 'That didn’t save.', i.key); }
     refresh();
-  };
+  });
   let errorFor = null;
   const showError = (text, key) => { errorFor = { text, key }; if (here()) draw(); };
   const itemRow = (i) => {
