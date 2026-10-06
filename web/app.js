@@ -1452,6 +1452,10 @@ async function menuScreen(me) {
   const since = (d) => (d <= m.from ? `before ${shortDate(m.from)}` : `since ${shortDate(d)}`);
   const baseOf = (section) => section.replace(/ add-ons$/, '');
   const sections = [...new Set(m.current.map((x) => baseOf(x.section)))];
+  // When it came on: its real first sale from the order history, when it predates the 90 days the numbers cover.
+  const monthYear = (d) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+  const onText = (x) => x.onBefore ? ((Date.now() - Date.parse(`${x.onBefore}T12:00:00`)) / 86_400_000 > 355 ? 'On over a year' : `On before ${monthYear(x.onBefore)}`)
+    : x.onSince ? `On since ${dateWithYear(x.onSince)}` : `On ${since(x.since)}`;
   // "Needs card" opens a new card already named and linked to the button that sells it.
   const writeCard = async (x) => {
     const d = (await api('GET', `/api/cards?area=${side}`)).data;
@@ -1512,7 +1516,7 @@ async function menuScreen(me) {
           x.hasCard || !flagCards ? null : h('button', { class: 'tag warn tag-button', text: 'needs recipe', title: `Write the recipe for ${x.name}`, onclick: () => writeCard(x) }),
           sameAs(x)),
         includesLine(x),
-        h('div', { class: 'small muted', text: `On ${since(x.since)}` })),
+        h('div', { class: 'small muted', text: onText(x) })),
       right);
     fill(right, cells(x, row, right));
     return row;

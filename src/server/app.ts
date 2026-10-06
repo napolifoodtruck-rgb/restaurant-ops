@@ -48,7 +48,7 @@ import {
 import { localDateHour, marginEdgeApiFrom, runSync, squareApiFrom, type SyncSettings } from './scheduler.ts';
 import { posName } from '../core/menuLinks.ts';
 import { BOOK_KEYS, PRODUCT_ANSWERS, answerProblem, bookProblem, getModel, loadBook, saveBook, withAnswer, withoutAnswer, recentAnswers, withProductAnswer, type Answer } from './model.ts';
-import { marginsView, menuView } from './views.ts';
+import { marginsView, menuView, posItemOf } from './views.ts';
 import { prepRoutes } from './prep.ts';
 import { planRoutes } from './plans.ts';
 import { SNOOZE_MORNING, todayView } from './today.ts';
@@ -506,7 +506,29 @@ export function createApp(config: AppConfig) {
           ...(links.priceSplit ?? []).filter(inSide).flatMap((id) => (named(id) ? [{ catalogId: id, name: named(id)!, kind: 'split' }] : [])),
           ...(links.priceMerge ?? []).filter((x) => inSide(x.catalogId)).flatMap((x) => (named(x.catalogId) && named(x.into) ? [{ catalogId: x.catalogId, name: named(x.catalogId)!, into: named(x.into)!, kind: 'merge' }] : [])),
         ];
-        return send(res, 200, { ...menuView(model, { area, areaOf }), priceKept });
+        // "On since": the numbers stay on the last 90 days, but a dish already selling when they start
+        // gets its real first day from the order history (about 13 months).
+        const view = menuView(model, { area, areaOf });
+        const firsts = new Map((await db.query<{ item_name: string; first: string }>('SELECT item_name, min(day)::text AS first FROM pos_order_lines WHERE restaurant_id = $1 GROUP BY item_name', [who.restaurantId])).rows.map((r) => [r.item_name, r.first]));
+        const historyFrom = (await db.query<{ first: string | null }>('SELECT min(day)::text AS first FROM pos_orders WHERE restaurant_id = $1', [who.restaurantId])).rows[0]?.first ?? undefined;
+        if (historyFrom) {
+          const posItem = posItemOf(model);
+          const namesOf = new Map<string, Set<string>>();
+          for (const sp of model.spans) {
+            const id = model.lookup(sp.catalogId, sp.name, sp.last)?.recipeId;
+            if (id) namesOf.set(id, (namesOf.get(id) ?? new Set()).add(posItem(sp.catalogId, sp.name).itemName));
+          }
+          for (const x of view.current as (Record<string, unknown> & { since: string })[]) {
+            if (x.since > model.from) continue;
+            const names = typeof x.menuKey === 'string' && namesOf.has(x.menuKey) ? [...namesOf.get(x.menuKey)!] : x.pos ? [(x.pos as { itemName: string }).itemName] : [];
+            const first = names.map((n) => firsts.get(n)).filter((d): d is string => Boolean(d)).sort()[0];
+            if (!first) continue;
+            // Selling from the first days of the history: it was on before the history starts.
+            if (first <= new Date(Date.parse(`${historyFrom}T12:00:00Z`) + 6 * 86_400_000).toISOString().slice(0, 10)) Object.assign(x, { onBefore: historyFrom });
+            else Object.assign(x, { onSince: first });
+          }
+        }
+        return send(res, 200, { ...view, priceKept });
       }
 
       // What's on the menu, in a manager's words: came off (on a day), still on, or put back on. One answer per dish.
