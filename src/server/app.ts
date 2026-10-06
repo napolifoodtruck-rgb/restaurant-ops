@@ -50,7 +50,7 @@ import { BOOK_KEYS, PRODUCT_ANSWERS, answerProblem, bookProblem, getModel, loadB
 import { marginsView, menuView } from './views.ts';
 import { prepRoutes } from './prep.ts';
 import { planRoutes } from './plans.ts';
-import { todayView } from './today.ts';
+import { SNOOZE_MORNING, todayView } from './today.ts';
 import { cardRoutes } from './cards.ts';
 import { orderRoutes } from './orders.ts';
 import { recipeRoutes } from './recipes.ts';
@@ -500,6 +500,36 @@ export function createApp(config: AppConfig) {
       // Staff on a station's iPad see that station; managers see the whole kitchen.
       const device = atLeast(who.roleLevel, 'manager') ? undefined : await deviceFor(db, cookies(req)[DEVICE_COOKIE]);
       return send(res, 200, await todayView(db, who, local.date, local.hour, device?.restaurantId === who.restaurantId ? device.stationId ?? undefined : undefined));
+    }
+
+    // Set Today's lines aside for a while (just for this person), or bring them back.
+    if (method === 'POST' && path === '/api/today/snooze') {
+      const who = await signedIn(req);
+      const b = await body(req);
+      const keys = Array.isArray(b.keys) ? b.keys.filter((k: unknown): k is string => typeof k === 'string' && k.length > 0 && k.length <= 300) : [];
+      if (!keys.length || keys.length > 200) throw new HttpError(400, 'Say which lines to snooze.');
+      if (b.wake === true) {
+        await db.query('DELETE FROM today_snoozes WHERE restaurant_id = $1 AND staff_id = $2 AND item_key IN (SELECT jsonb_array_elements_text($3::jsonb))', [who.restaurantId, who.staffId, JSON.stringify(keys)]);
+        return send(res, 200, { ok: true });
+      }
+      const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+      const local = localDateHour(tz);
+      const hours = Number(b.hours);
+      const day = typeof b.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.day) ? b.day : undefined;
+      let until: string;
+      if (b.hours !== undefined) {
+        if (!(hours >= 1 && hours <= 12)) throw new HttpError(400, 'Snooze for 1 to 12 hours.');
+        until = (await db.query<{ t: string }>("SELECT (now() + make_interval(hours => $1::int))::text AS t", [Math.round(hours)])).rows[0]!.t;
+      } else if (day) {
+        const later = (await db.query<{ ok: boolean }>("SELECT $1::date > $2::date AND $1::date <= $2::date + 14 AS ok", [day, local.date])).rows[0]!.ok;
+        if (!later) throw new HttpError(400, 'Snooze until a day in the next two weeks.');
+        until = (await db.query<{ t: string }>(`SELECT (($1::date + time '${SNOOZE_MORNING}') AT TIME ZONE $2)::text AS t`, [day, tz])).rows[0]!.t;
+      } else throw new HttpError(400, 'Say how long to snooze for.');
+      await db.query('DELETE FROM today_snoozes WHERE restaurant_id = $1 AND until < now()', [who.restaurantId]);
+      await db.query(`INSERT INTO today_snoozes (restaurant_id, staff_id, item_key, until)
+        SELECT DISTINCT $1::uuid, $2::uuid, k, $4::timestamptz FROM jsonb_array_elements_text($3::jsonb) AS k
+        ON CONFLICT (restaurant_id, staff_id, item_key) DO UPDATE SET until = EXCLUDED.until, snoozed_at = now()`, [who.restaurantId, who.staffId, JSON.stringify(keys), until]);
+      return send(res, 200, { ok: true, until: new Date(until).toISOString() });
     }
 
     if (path.startsWith('/api/prep')) {

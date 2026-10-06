@@ -9,7 +9,10 @@
  * short "at a glance" of the last service, the week so far and the dishes earning most.
  *
  * Nothing here is stored: it's worked out from the prep lists, the model and the syncs on
- * each look, so an answered question or a finished list simply drops off.
+ * each look, so an answered question or a finished list simply drops off. The one thing kept
+ * is who snoozed what (POST /api/today/snooze): a snoozed line is set aside for that person
+ * until it comes back. Deadlines can't be snoozed past their day, and anything due today
+ * always shows.
  */
 
 import type { Db } from './db.ts';
@@ -39,6 +42,26 @@ export interface TodayItem {
   side?: 'kitchen' | 'bar';
   /** Answers that can be given right here (POST /api/answers), the likeliest first. */
   answers?: { label: string; body: Record<string, unknown> }[];
+  /** How long it can be set aside for (POST /api/today/snooze); none when it's due today. */
+  snooze?: SnoozeChoice[];
+  /** Set aside by this person until then (ISO time). */
+  snoozedUntil?: string;
+}
+
+export type SnoozeChoice = { label: string; hours: number } | { label: string; day: string };
+
+/** Snoozes end at 6 in the morning, before anyone's in. */
+export const SNOOZE_MORNING = '06:00';
+
+/** What a line can be snoozed for: anything that can wait, never past the day it's due. */
+export function snoozeChoices(i: Pick<TodayItem, 'due'>, today: string): SnoozeChoice[] {
+  const tomorrow = addDays(today, 1);
+  if (i.due && i.due <= today) return [];
+  if (i.due) {
+    const day = DAYS[weekday(i.due)]!;
+    return i.due === tomorrow ? [{ label: 'Until tomorrow', day: tomorrow }] : [{ label: 'Until tomorrow', day: tomorrow }, { label: `Until ${day}`, day: i.due }];
+  }
+  return [{ label: 'For 3 hours', hours: 3 }, { label: 'Until tomorrow', day: tomorrow }, { label: 'For a week', day: addDays(today, 7) }];
 }
 
 const clock = (t: string) => { const [hh, mm] = t.split(':').map(Number); return `${((hh! + 11) % 12) + 1}${mm ? `:${String(mm).padStart(2, '0')}` : ''} ${hh! < 12 ? 'am' : 'pm'}`; };
@@ -307,6 +330,15 @@ export async function todayView(db: Db, who: SignedIn, today: string, hour: numb
     || (a.tone === 'alert' && a.group === 'setup' ? -1 : 0) - (b.tone === 'alert' && b.group === 'setup' ? -1 : 0)
     || (b.dollars ?? 0) - (a.dollars ?? 0)
     || rank(a) - rank(b));
+  // Snoozed by this person and not back yet; anything due today shows regardless.
+  const snoozed = new Map((await db.query<{ item_key: string; until: Date }>(
+    'SELECT item_key, until FROM today_snoozes WHERE restaurant_id = $1 AND staff_id = $2 AND until > now()', [who.restaurantId, who.staffId])).rows.map((r) => [r.item_key, new Date(r.until).toISOString()]));
+  for (const i of items) {
+    const choices = snoozeChoices(i, today);
+    if (choices.length) i.snooze = choices;
+    const until = snoozed.get(i.key);
+    if (until && choices.length) i.snoozedUntil = until;
+  }
   return {
     today, hour, openToday, nextOpen,
     // Where this person's Today opens: their side, or both.

@@ -451,3 +451,13 @@ button.cov-card:hover { border-color: #000; }
 .lchip, .lkey { border-radius: 0; }
 .page-main > .error:empty { display: none; }
 @media (max-width: 700px) { .rail button { width: auto; min-width: 64px; padding: 8px 8px 6px; flex: none; } }
+
+/* Snoozing on Today */
+.snooze-link { color: var(--muted); font-size: 13px; letter-spacing: .04em; }
+.snooze-link:hover { color: var(--ink); }
+details.snoozed summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; gap: 4px; }
+details.snoozed[open] summary { margin-bottom: -1px; }
+.snoozed-row { display: flex; align-items: center; gap: 12px; }
+.snoozed-row .grow { flex: 1; min-width: 0; }
+.todo.choosing .todo-actions { grid-column: 2 / -1; justify-content: flex-start; align-items: center; }
+@media (max-width: 1000px) { .todo.choosing .todo-actions { grid-column: auto; } }

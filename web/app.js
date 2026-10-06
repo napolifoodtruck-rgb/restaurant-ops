@@ -1686,22 +1686,61 @@ async function todayScreen(me, filter = 'all') {
     }
     todayScreen(me, filter);
   };
+  // Snoozing: set a line aside for a while (just for you), or bring it back.
+  const snooze = async (keys, choice, row) => {
+    row?.querySelectorAll('button').forEach((b) => (b.disabled = true));
+    const res = await api('POST', '/api/today/snooze', { keys, ...(choice.hours ? { hours: choice.hours } : choice.day ? { day: choice.day } : { wake: true }) });
+    if (!res.ok) {
+      row?.querySelectorAll('button').forEach((b) => (b.disabled = false));
+      return row?.append(h('div', { class: 'error', text: res.data.error ?? 'That didn’t save.' }));
+    }
+    todayScreen(me, filter);
+  };
   const itemRow = (i) => {
     const row = h('article', { class: `todo ${TONE_CLASS[i.tone] ?? ''}${i.answers?.length ? ' has-answers' : ''}` });
+    const actions = h('div', { class: 'todo-actions' });
+    const normal = () => { row.classList.remove('choosing'); fillNormal(); };
+    const fillNormal = () => fill(actions,
+      (i.answers ?? []).map((a, n) => h('button', { class: `btn small-btn${n === 0 ? ' blue' : ''}`, text: a.label, onclick: () => answer(row, a.body) })),
+      i.answers?.length ? h('button', { class: 'link', text: `More on ${i.go.to === 'menu' ? 'Menu' : 'its screen'}`, onclick: () => go(i.go) })
+        : h('button', { class: 'btn small-btn dark', text: i.button, onclick: () => go(i.go) }),
+      i.snooze?.length ? h('button', { class: 'link snooze-link', text: 'Snooze', title: 'Set it aside for a while, just for you', onclick: choose }) : null);
+    // The choices replace the buttons in place: no pop-ups over the list.
+    function choose() {
+      row.classList.add('choosing');
+      fill(actions, h('span', { class: 'small muted', text: 'Snooze:' }),
+        i.snooze.map((c) => h('button', { class: 'btn small-btn', text: c.label, onclick: () => snooze([i.key], c, row) })),
+        h('button', { class: 'link', text: 'Cancel', onclick: normal }));
+      actions.querySelector('.btn')?.focus();
+    }
+    normal();
     fill(row,
       h('div', { class: 'todo-label', text: i.label }),
       h('div', { class: 'todo-body' }, h('div', { class: 'todo-title', text: i.title }), i.detail ? h('div', { class: 'small muted', text: i.detail }) : null),
-      h('div', { class: 'todo-actions' },
-        (i.answers ?? []).map((a, n) => h('button', { class: `btn small-btn${n === 0 ? ' blue' : ''}`, text: a.label, onclick: () => answer(row, a.body) })),
-        i.answers?.length ? h('button', { class: 'link', text: `More on ${i.go.to === 'menu' ? 'Menu' : 'its screen'}`, onclick: () => go(i.go) })
-          : h('button', { class: 'btn small-btn dark', text: i.button, onclick: () => go(i.go) })));
+      actions);
     return row;
   };
+  const snoozedRow = (i) => h('div', { class: 'snoozed-row' },
+    h('div', { class: 'grow' }, h('div', { class: 'strong', text: i.title }), h('div', { class: 'small muted', text: `${i.label} · back ${when(i.snoozedUntil)}` })),
+    h('button', { class: 'btn small-btn', text: 'Bring back', onclick: (e) => snooze([i.key], {}, e.target.closest('.snoozed-row')) }));
   // Kitchen, bar or both: where this person works, until they switch.
   // (On a station's iPad, that station is the side.)
   const side = me.device?.stationId && !t.glance ? 'all' : me.todaySide ?? t.side ?? 'all';
-  const onSide = t.items.filter((i) => side === 'all' || !i.side || i.side === side);
+  const sideItems = t.items.filter((i) => side === 'all' || !i.side || i.side === side);
+  const onSide = sideItems.filter((i) => !i.snoozedUntil);
+  const asleep = sideItems.filter((i) => i.snoozedUntil).sort((a, b) => a.snoozedUntil.localeCompare(b.snoozedUntil));
   const shown = onSide.filter((i) => filter === 'all' || i.group === filter || (filter === 'costs' && i.group === 'setup'));
+  // Everything showing that has no deadline can be set aside until tomorrow in one go.
+  const canWait = shown.filter((i) => !i.due && i.snooze?.some((c) => c.day));
+  const tomorrow = canWait[0]?.snooze.find((c) => c.day && c.label === 'Until tomorrow');
+  const quiet = canWait.length >= 3 && tomorrow ? sideBox('Too much at once?',
+    h('div', { class: 'small', text: `${canWait.length} of these have no deadline. Snooze them until tomorrow morning; deadlines stay.` }),
+    sideActions(h('button', { class: 'btn small-btn dark', text: `Snooze ${canWait.length} until tomorrow`, onclick: (e) => snooze(canWait.map((i) => i.key), tomorrow, e.target.closest('section')) })),
+    h('div', { class: 'small muted', text: 'Just for you: the rest of the team still sees them.' })) : null;
+  const asleepBox = asleep.length ? h('details', { class: 'card snoozed' },
+    h('summary', {}, h('span', { class: 'strong', text: `${asleep.length} snoozed` }), h('span', { class: 'small muted', text: ` · first back ${when(asleep[0].snoozedUntil)}` })),
+    h('div', { class: 'list' }, asleep.map(snoozedRow)),
+    asleep.length > 1 ? h('div', {}, h('button', { class: 'link', text: 'Bring them all back', onclick: (e) => snooze(asleep.map((i) => i.key), {}, e.target.closest('details')) })) : null) : null;
   const groups = new Set(onSide.map((i) => (i.group === 'setup' ? 'costs' : i.group)));
   const sides = t.glance ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Kitchen or bar' },
     [['all', 'Both'], ['kitchen', 'Kitchen'], ['bar', 'Bar']].map(([k, label]) => h('button', { class: side === k ? 'on' : '', 'aria-pressed': String(side === k), text: label, onclick: () => { me.todaySide = k; todayScreen(me, filter); } }))) : null;
@@ -1712,14 +1751,15 @@ async function todayScreen(me, filter = 'all') {
   const sub = [
     t.openToday ? null : `Closed today. Next service ${weekdayName(t.nextOpen)}.`,
     need ? `${need} thing${need === 1 ? '' : 's'} need${need === 1 ? 's' : ''} someone: deadlines first, then by dollars.` : 'Nothing needs anyone right now.',
+    asleep.length ? `${asleep.length} snoozed.` : null,
   ].filter(Boolean).join(' ');
 
   show(shell(me, 'today', [
     h('header', { class: 'row wrap' },
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${longDay(t.today)} · ${me.restaurantName}` }), h('h1', { text: 'Today' }), h('div', { class: 'sub', text: sub })),
       h('div', { class: 'row wrap' }, sides, chips)),
-    page(h('section', { class: 'todos', 'aria-label': 'To do' }, shown.length ? shown.map(itemRow) : h('div', { class: 'card small muted', text: 'All clear.' })),
-      glanceCards(me, t, side)),
+    page(h('section', { class: 'todos', 'aria-label': 'To do' }, shown.length ? shown.map(itemRow) : h('div', { class: 'card small muted', text: asleep.length ? 'All clear, apart from what’s snoozed.' : 'All clear.' }), asleepBox),
+      [quiet, glanceCards(me, t, side)]),
   ]));
 }
 

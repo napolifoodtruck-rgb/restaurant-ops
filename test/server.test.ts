@@ -233,6 +233,23 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.deepEqual(cookToday.prep.map((p: any) => p.station), ['Expo']);
   assert.ok(cookToday.items.every((i: any) => i.group === 'prep'));
 
+  // Snoozing a line: set aside for whoever snoozed it, never past its day; deadlines today can't be.
+  const waits = ownerToday.items.find((i: any) => i.snooze?.length && !i.due);
+  const dueToday = ownerToday.items.find((i: any) => i.due && i.due <= ownerToday.today);
+  if (dueToday) assert.equal(dueToday.snooze, undefined);
+  if (waits) {
+    assert.deepEqual(waits.snooze.map((c: any) => c.label), ['For 3 hours', 'Until tomorrow', 'For a week']);
+    assert.equal((await call('POST', '/api/today/snooze', { body: { keys: [waits.key], day: waits.snooze[1].day }, cookies: ownerSession })).status, 200);
+    const later = (await call('GET', '/api/today', { cookies: ownerSession })).json.items.find((i: any) => i.key === waits.key);
+    assert.ok(later.snoozedUntil > new Date().toISOString());
+    assert.equal((await call('POST', '/api/today/snooze', { body: { keys: [waits.key], wake: true }, cookies: ownerSession })).status, 200);
+    assert.equal((await call('GET', '/api/today', { cookies: ownerSession })).json.items.find((i: any) => i.key === waits.key).snoozedUntil, undefined);
+  }
+  assert.equal((await call('POST', '/api/today/snooze', { body: { keys: ['x'], day: '2001-01-01' }, cookies: ownerSession })).status, 400); // not in the past
+  assert.equal((await call('POST', '/api/today/snooze', { body: { keys: ['x'], hours: 48 }, cookies: ownerSession })).status, 400);
+  assert.equal((await call('POST', '/api/today/snooze', { body: { keys: [], hours: 3 }, cookies: ownerSession })).status, 400);
+  assert.equal((await call('POST', '/api/today/snooze', { body: { keys: ['prep:x'], hours: 2 }, cookies: marcoOnExpo })).status, 200); // anyone can tidy their own Today
+
   // Kitchen and bar: categories guessed by name, changed by an admin; people work one side or both.
   assert.equal((await call('POST', '/api/areas', { body: { category: 'Gelato', area: 'bar' }, cookies: marcoOnExpo })).status, 403);
   assert.equal((await call('POST', '/api/areas', { body: { category: 'Gelato', area: 'bar' }, cookies: ownerSession })).status, 200);
