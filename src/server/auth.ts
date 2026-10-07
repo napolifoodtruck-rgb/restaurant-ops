@@ -116,12 +116,22 @@ async function attempt(db: Db, row: StaffRow | undefined, secret: string, method
     return { ok: false, reason: 'wrong' };
   }
   if (row.locked_until && new Date(row.locked_until) > now) return { ok: false, reason: 'locked', lockedUntil: new Date(row.locked_until) };
+  // The try is counted before the secret is checked, in one statement: many guesses sent at once each
+  // take a turn at the counter, and once the fifth locks the account the rest are turned away unchecked.
+  const lockAt = new Date(now.getTime() + LOCK_MINUTES * 60_000);
+  const counted = await db.query<{ locked_until: string | null }>(
+    `UPDATE staff SET failed_logins = CASE WHEN failed_logins + 1 >= $2 THEN 0 ELSE failed_logins + 1 END,
+       locked_until = CASE WHEN failed_logins + 1 >= $2 THEN $3::timestamptz ELSE NULL END
+     WHERE id = $1 AND (locked_until IS NULL OR locked_until <= $4::timestamptz) RETURNING locked_until`,
+    [row.id, MAX_FAILED, lockAt.toISOString(), now.toISOString()]);
+  if (!counted.rows.length) {
+    const until = (await db.query<{ locked_until: string | null }>('SELECT locked_until FROM staff WHERE id = $1', [row.id])).rows[0]?.locked_until;
+    return { ok: false, reason: 'locked', lockedUntil: until ? new Date(until) : lockAt };
+  }
   const good = await verifySecret(secret, method === 'pin' ? row.pin_hash : row.password_hash);
   if (!good) {
-    const failed = row.failed_logins + 1;
-    const lockedUntil = failed >= MAX_FAILED ? new Date(now.getTime() + LOCK_MINUTES * 60_000) : null;
-    await db.query('UPDATE staff SET failed_logins = $1, locked_until = $2 WHERE id = $3', [lockedUntil ? 0 : failed, lockedUntil, row.id]);
-    return lockedUntil ? { ok: false, reason: 'locked', lockedUntil } : { ok: false, reason: 'wrong' };
+    const lockedUntil = counted.rows[0]!.locked_until;
+    return lockedUntil ? { ok: false, reason: 'locked', lockedUntil: new Date(lockedUntil) } : { ok: false, reason: 'wrong' };
   }
   await db.query('UPDATE staff SET failed_logins = 0, locked_until = NULL WHERE id = $1', [row.id]);
   const { token, hash } = newToken();

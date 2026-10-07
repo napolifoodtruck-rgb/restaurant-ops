@@ -14,6 +14,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from './db.ts';
+import { inTurn } from './turns.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { getModel } from './model.ts';
@@ -216,10 +217,16 @@ export async function orderRoutes(db: Db, req: IncomingMessage, res: ServerRespo
       return { productId: c.productId, name: c.name, packs, packLabel: c.packLabel, packSize: c.packSize, unit: c.unit, packPrice: c.packPrice, ...(onHand !== undefined && onHand >= 0 ? { onHand, onHandEstimated: false } : {}), ...(l.suggested !== undefined ? { suggested: Number(l.suggested) } : {}) };
     });
     const total = money(lines.reduce((s: number, l: any) => s + l.packs * (l.packPrice ?? 0), 0));
-    const existing = await orderFor(db, who, vendorId, b.delivery);
-    if (existing && existing.status !== 'draft') throw new HttpError(409, existing.status === 'sent' ? 'This order was already sent.' : 'This order is approved. Reopen it to change it.');
-    if (existing) await db.query('UPDATE orders SET lines = $1, total = $2, note = $3, updated_at = now() WHERE id = $4', [JSON.stringify(lines), total, typeof b.note === 'string' ? b.note : existing.note, existing.id]);
-    else await db.query('INSERT INTO orders (restaurant_id, vendor_id, vendor_name, delivery, lines, total, note, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)', [who.restaurantId, vendorId, vendorName(data, vendorId), b.delivery, JSON.stringify(lines), total, typeof b.note === 'string' ? b.note : null, who.staffId]);
+    // One save of a vendor's order at a time, and only while it's still a draft (approved meanwhile: it stays as approved).
+    const delivery = b.delivery as string;
+    await inTurn(`order:${who.restaurantId}:${vendorId}:${delivery}`, async () => {
+      const existing = await orderFor(db, who, vendorId, delivery);
+      if (existing && existing.status !== 'draft') throw new HttpError(409, existing.status === 'sent' ? 'This order was already sent.' : 'This order is approved. Reopen it to change it.');
+      if (existing) {
+        const r = await db.query("UPDATE orders SET lines = $1, total = $2, note = $3, updated_at = now() WHERE id = $4 AND status = 'draft' RETURNING id", [JSON.stringify(lines), total, typeof b.note === 'string' ? b.note : existing.note, existing.id]);
+        if (!r.rows.length) throw new HttpError(409, 'This order was approved a moment ago. Reopen it to change it.');
+      } else await db.query('INSERT INTO orders (restaurant_id, vendor_id, vendor_name, delivery, lines, total, note, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)', [who.restaurantId, vendorId, vendorName(data, vendorId), delivery, JSON.stringify(lines), total, typeof b.note === 'string' ? b.note : null, who.staffId]);
+    });
     return send(res, 200, { order: orderView((await orderFor(db, who, vendorId, b.delivery))!) }), true;
   }
 
@@ -247,20 +254,25 @@ export async function orderRoutes(db: Db, req: IncomingMessage, res: ServerRespo
     if (!o) throw new HttpError(404, 'No such order.');
     const lines = (typeof o.lines === 'string' ? JSON.parse(o.lines) : o.lines) as any[];
     const action = m[2];
+    // Each change only from the state it was seen in: approve and cancel at the same moment can't both win.
+    const moved = async (sql: string, params: unknown[], changed: string) => {
+      const r = await db.query(`${sql} RETURNING id`, params);
+      if (!r.rows.length) throw new HttpError(409, changed);
+    };
     if (action === 'approve') {
       if (o.status !== 'draft') throw new HttpError(409, 'Only a draft can be approved.');
       if (!lines.some((l) => l.packs > 0)) throw new HttpError(400, 'Nothing to order.');
-      await db.query("UPDATE orders SET status = 'approved', approved_by = $1, approved_at = now(), updated_at = now() WHERE id = $2", [who.staffId, o.id]);
+      await moved("UPDATE orders SET status = 'approved', approved_by = $1, approved_at = now(), updated_at = now() WHERE id = $2 AND status = 'draft'", [who.staffId, o.id], 'Someone changed this order a moment ago. Reload it.');
     } else if (action === 'sent') {
       // Never sent without approval.
       if (o.status !== 'approved') throw new HttpError(409, 'A manager approves an order before it’s sent.');
-      await db.query("UPDATE orders SET status = 'sent', sent_by = $1, sent_at = now(), updated_at = now() WHERE id = $2", [who.staffId, o.id]);
+      await moved("UPDATE orders SET status = 'sent', sent_by = $1, sent_at = now(), updated_at = now() WHERE id = $2 AND status = 'approved'", [who.staffId, o.id], 'Someone changed this order a moment ago. Reload it.');
     } else if (action === 'reopen') {
       if (o.status !== 'approved') throw new HttpError(409, o.status === 'sent' ? 'It was already sent; call the vendor to change it.' : 'It’s already a draft.');
-      await db.query("UPDATE orders SET status = 'draft', approved_by = NULL, approved_at = NULL, updated_at = now() WHERE id = $1", [o.id]);
+      await moved("UPDATE orders SET status = 'draft', approved_by = NULL, approved_at = NULL, updated_at = now() WHERE id = $1 AND status = 'approved'", [o.id], 'Someone changed this order a moment ago. Reload it.');
     } else {
       if (o.status === 'sent') throw new HttpError(409, 'It was already sent; call the vendor to cancel it.');
-      await db.query("UPDATE orders SET status = 'cancelled', updated_at = now() WHERE id = $1", [o.id]);
+      await moved("UPDATE orders SET status = 'cancelled', updated_at = now() WHERE id = $1 AND status IN ('draft', 'approved')", [o.id], 'It was sent a moment ago; call the vendor to cancel it.');
     }
     return send(res, 200, { ok: true }), true;
   }

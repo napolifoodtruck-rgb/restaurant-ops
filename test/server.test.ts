@@ -140,6 +140,23 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   const cleaned = (await call('POST', `/api/prep/${expo}/${day}/check`, { body: { checklistId: worked.checklist[0].id, done: true }, cookies: cookAgain })).json;
   assert.equal(cleaned.checklist[0].doneBy, 'Marco');
 
+  // Two things at once (quick taps, or two iPads): each one sticks, nothing errors.
+  const expoItems = async () => (await call('GET', `/api/prep/${expo}/setup`, { cookies: ownerSession })).json.items;
+  const salads = (await expoItems()).find((x: any) => x.name === 'To-go salads');
+  await Promise.all([1, 3].map((n) => call('POST', `/api/prep/items/${salads.id}`, { body: { weekdayOn: n }, cookies: ownerSession })));
+  assert.deepEqual((await expoItems()).find((x: any) => x.id === salads.id).weekdays, [1, 3, 5]);
+  await Promise.all([1, 3].map((n) => call('POST', `/api/prep/items/${salads.id}`, { body: { weekdayOff: n }, cookies: ownerSession })));
+  assert.deepEqual((await expoItems()).find((x: any) => x.id === salads.id).weekdays, [5]);
+  const moved = await Promise.all([0, 1].map(() => call('POST', `/api/prep/${expo}/order`, { body: { move: { id: salads.id, by: -1, list: 'items' } }, cookies: ownerSession })));
+  assert.deepEqual(moved.map((r) => r.status), [200, 200]);
+  assert.deepEqual((await expoItems()).map((x: any) => x.name), ['To-go salads', 'House dressing', 'Ready the ham']); // up two, not up one twice
+  for (let k = 0; k < 2; k++) await call('POST', `/api/prep/${expo}/order`, { body: { move: { id: salads.id, by: 1, list: 'items' } }, cookies: ownerSession });
+  assert.deepEqual((await expoItems()).map((x: any) => x.name), ['House dressing', 'Ready the ham', 'To-go salads']);
+  const ham = worked.lines.find((l: any) => l.name === 'Ready the ham').id;
+  const twoIpads = await Promise.all([cookAgain, ownerSession].map((c) => call('POST', `/api/prep/${expo}/${day}/done`, { body: { itemId: ham, state: 'done' }, cookies: c })));
+  assert.deepEqual(twoIpads.map((r) => r.status), [200, 200]);
+  assert.ok((await call('POST', `/api/prep/${expo}/${day}/done`, { body: { itemId: ham, state: 'undo' }, cookies: ownerSession })).json.lines.find((l: any) => l.id === ham).doneAt === undefined);
+
   // Bulk prep as inventory: a count sets it, a station fill draws it down, the bulk list suggests batches.
   const bulkFile = { format: 'prep-lists', stations: [
     { name: 'Pizza', items: [{ name: 'Spinach Panna', unit: '1/6 pan', kind: 'count', par: 4 }] },
@@ -188,7 +205,11 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   const planId = (await call('POST', '/api/plans', { body: { name: 'Winter Funghi', startsOn: '2026-10-20' }, cookies: ownerSession })).json.id;
   const plans = (await call('GET', '/api/plans', { cookies: ownerSession })).json.plans;
   assert.deepEqual(plans.map((x: any) => [x.name, x.status]), [['Winter Funghi', 'planned']]);
-  assert.deepEqual((await call('POST', `/api/plans/${planId}/apply`, { body: { add: [{ recipeName: 'Mushroom Blend', stationId: pizza, unit: '1/6 pan', par: 3 }], end: [pizzaItem.id] }, cookies: ownerSession })).json, { added: 1, ended: 1 });
+  // Applied twice at once (a double tap): one adds the prep, the other is told it's done.
+  const applyBody = { add: [{ recipeName: 'Mushroom Blend', stationId: pizza, unit: '1/6 pan', par: 3 }], end: [pizzaItem.id] };
+  const applied = await Promise.all([0, 1].map(() => call('POST', `/api/plans/${planId}/apply`, { body: applyBody, cookies: ownerSession })));
+  assert.deepEqual(applied.map((r) => r.status).sort(), [200, 409]);
+  assert.deepEqual(applied.find((r) => r.status === 200)!.json, { added: 1, ended: 1 });
   const pizzaList = async (d: string) => (await call('GET', `/api/prep/${pizza}/${d}`, { cookies: ownerSession })).json.lines.map((l: any) => l.name);
   assert.deepEqual(await pizzaList('2026-10-18'), ['Spinach Panna']);
   assert.deepEqual(await pizzaList('2026-10-19'), ['Spinach Panna', 'Mushroom Blend']); // the day before: both
@@ -237,6 +258,11 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.equal((await call('GET', '/api/me', { cookies: adminSession })).status, 401);
   assert.equal((await call('POST', '/api/login/password', { body: { email: 'marco@example.com', password: 'marco makes the dough' } })).status, 401);
   assert.equal((await call('POST', '/api/login/pin', { body: { staffId: cookId, pin: '8024' }, cookies: device })).status, 200);
+  // Ten wrong PINs sent at once still lock after five: no guess slips past the count.
+  const burst = await Promise.all(Array.from({ length: 10 }, () => call('POST', '/api/login/pin', { body: { staffId: cookId, pin: '1357' }, cookies: device })));
+  assert.deepEqual([burst.filter((r) => r.status === 401).length, burst.filter((r) => r.status === 423).length], [4, 6]);
+  assert.equal((await call('POST', '/api/login/pin', { body: { staffId: cookId, pin: '8024' }, cookies: device })).status, 423);
+  await db!.query('UPDATE staff SET locked_until = NULL, failed_logins = 0 WHERE id = $1', [cookId]);
 
   // A kitchen iPad can belong to a station; whoever signs in on it is told which.
   const devices = (await call('GET', '/api/devices', { cookies: [...ownerSession, ...device] })).json;
@@ -374,6 +400,11 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.equal((await call('POST', `/api/orders/${orderId}/approve`, { cookies: ownerSession })).status, 409);
   assert.equal((await call('POST', `/api/orders/${orderId}/sent`, { cookies: ownerSession })).status, 200);
   assert.equal((await call('POST', `/api/orders/${orderId}/reopen`, { cookies: ownerSession })).status, 409); // sent is final
+  // Two managers at once: only one approve counts, and "sent" and "reopen" can't both happen.
+  const order2 = (await db!.query<{ id: string }>("INSERT INTO orders (restaurant_id, vendor_id, vendor_name, delivery, lines) VALUES ($1, 'v1', 'Produce Co', '2026-10-15', '[{\"productId\":\"p\",\"packs\":1}]') RETURNING id", [restaurantId])).rows[0]!.id;
+  assert.deepEqual((await Promise.all([0, 1].map(() => call('POST', `/api/orders/${order2}/approve`, { cookies: ownerSession })))).map((r) => r.status).sort(), [200, 409]);
+  assert.deepEqual((await Promise.all(['sent', 'reopen'].map((a) => call('POST', `/api/orders/${order2}/${a}`, { cookies: ownerSession })))).map((r) => r.status).sort(), [200, 409]);
+  await db!.query('DELETE FROM orders WHERE id = $1', [order2]);
   assert.equal((await call('POST', '/api/orders/vendor/v1/settings', { body: { weekdays: [4], cutoffDaysBefore: 1, cutoffTime: '14:00', method: 'email', contact: 'orders@produce.example' }, cookies: ownerSession })).status, 200);
   const configured = (await call('GET', '/api/orders', { cookies: ownerSession })).json.vendors;
   assert.deepEqual(configured.map((v: any) => [v.vendorId, v.weekdays, v.cutoff, v.method]), [['v1', [4], { daysBefore: 1, time: '14:00' }, 'email']]);

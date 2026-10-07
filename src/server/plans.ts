@@ -108,6 +108,11 @@ export async function planRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     const b = await body(req);
     const add = Array.isArray(b.add) ? (b.add as Record<string, unknown>[]) : [];
     const end = Array.isArray(b.end) ? (b.end as unknown[]).map(String) : [];
+    for (const a of add) if (typeof a.recipeName !== 'string' || typeof a.stationId !== 'string') throw new HttpError(400, 'Each prep needs a recipe and a station.');
+    // Claimed first: applied from two devices at once, only one adds the preps.
+    const claimed = await db.query("UPDATE menu_plans SET status = 'applied' WHERE restaurant_id = $1 AND id = $2 AND status = 'planned' RETURNING id", [who.restaurantId, plan.id]);
+    if (!claimed.rows.length) throw new HttpError(409, 'This plan was already applied or cancelled.');
+    try {
     // New preps go on the list the day before the dish starts; the replaced dish's own preps are last made the day before.
     const from = addDays(plan.starts_on, -1);
     for (const a of add) {
@@ -120,7 +125,11 @@ export async function planRoutes(db: Db, req: IncomingMessage, res: ServerRespon
         [who.restaurantId, a.stationId, a.recipeName, typeof a.unit === 'string' && a.unit.trim() ? a.unit.trim() : null, par, from, `For ${plan.name}, from ${plan.starts_on}`]);
     }
     for (const id of end) await db.query('UPDATE station_items SET active_until = $1 WHERE restaurant_id = $2 AND id = $3', [from, who.restaurantId, id]);
-    await db.query("UPDATE menu_plans SET status = 'applied' WHERE id = $1", [plan.id]);
+    } catch (err) {
+      // It didn't go through: back to planned, to try again.
+      await db.query("UPDATE menu_plans SET status = 'planned' WHERE id = $1", [plan.id]);
+      throw err;
+    }
     return send(res, 200, { added: add.length, ended: end.length }), true;
   }
   return false;

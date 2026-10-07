@@ -1330,12 +1330,24 @@ async function prepCount(me, stationId, date) {
   const rows = countable.map((l) => {
     const isBatch = l.kind === 'batch';
     const need = h('span', { class: 'small muted nowrap', text: l.toMake !== undefined ? `make ${amountWithWeight(l.toMake, l.unit, l)}` : '' });
+    // Quick corrections (tap 3, then 2): one save at a time per line, and the last tap is what's sent, so a
+    // slow first save can't land after the fix and put back the wrong count.
+    let sending = null, latest;
     const save = async (val) => {
       l.counted = val === null ? undefined : val;
       tally();
-      const res = await api('POST', `/api/prep/${stationId}/${date}/count`, { itemId: l.id, counted: val });
-      if (res.ok) { const nl = res.data.lines.find((x) => x.id === l.id); need.textContent = nl?.toMake !== undefined ? `make ${amountWithWeight(nl.toMake, nl.unit, nl)}` : ''; }
-      else need.textContent = res.data.error ?? 'Not saved';
+      latest = { val };
+      if (sending) return sending;
+      sending = pageAction(async () => {
+        while (latest) {
+          const { val: v } = latest; latest = undefined;
+          const res = await api('POST', `/api/prep/${stationId}/${date}/count`, { itemId: l.id, counted: v });
+          if (latest) continue;
+          if (res.ok) { const nl = res.data.lines.find((x) => x.id === l.id); need.textContent = nl?.toMake !== undefined ? `make ${amountWithWeight(nl.toMake, nl.unit, nl)}` : ''; }
+          else need.textContent = res.data.error ?? 'Not saved';
+        }
+      }).finally(() => { sending = null; });
+      return sending;
     };
     if (!isBatch) return h('div', { class: 'countrow tapped' },
       h('div', { class: 'row tight wrap' },
@@ -1442,7 +1454,7 @@ async function prepWork(me, stationId, date) {
       pressed = null;
       btn.classList.toggle('on', state === 'done'); btn.textContent = state === 'done' ? '✓' : ''; row?.classList.toggle('done', state === 'done'); btn.disabled = true;
     }
-    const res = await api('POST', `/api/prep/${stationId}/${date}/done`, { itemId: l.id, state });
+    const res = await pageAction(() => api('POST', `/api/prep/${stationId}/${date}/done`, { itemId: l.id, state }));
     if (res.ok) return again();
     if (btn) { btn.classList.toggle('on', Boolean(l.doneAt)); btn.textContent = l.doneAt ? '✓' : ''; row?.classList.toggle('done', Boolean(l.doneAt)); btn.disabled = false; }
     row?.append(h('div', { class: 'error small', text: res.data.error ?? 'That didn’t save.' }));
@@ -1501,15 +1513,15 @@ async function prepEdit(me, stationId) {
   if (!r.ok) return show(shell(me, 'prep', [h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const s = r.data;
   const again = () => refreshInPlace(() => prepEdit(me, stationId));
-  const save = async (path, body) => { const res = await api('POST', path, body); if (!res.ok) alertLine.textContent = res.data.error ?? 'Not saved'; return res.ok; };
+  // Every save is a page action, so a refresh can't land mid-way and put back what was just changed.
+  const post = (path, body) => pageAction(async () => { const res = await api('POST', path, body); if (!res.ok) alertLine.textContent = res.data.error ?? 'Not saved'; return res; });
+  const save = async (path, body) => (await post(path, body)).ok;
   const alertLine = h('div', { class: 'error', role: 'alert' });
+  // One step up or down from wherever it is now on the server, so quick taps each count.
   const move = async (list, i, dir, key) => {
-    const ids = list.map((x) => x.id);
     const j = i + dir;
-    if (j < 0 || j >= ids.length) return;
-    [ids[i], ids[j]] = [ids[j], ids[i]];
-    await save(`/api/prep/${stationId}/order`, { [key]: ids });
-    again();
+    if (j < 0 || j >= list.length) return;
+    if (await save(`/api/prep/${stationId}/order`, { move: { id: list[i].id, by: dir, list: key } })) again();
   };
   const itemRow = (it, i) => {
     const name = h('input', { type: 'text', value: it.name, 'aria-label': 'Item name' });
@@ -1517,10 +1529,19 @@ async function prepEdit(me, stationId) {
     const par = h('input', { inputmode: 'decimal', class: 'amount', value: it.par ?? '', placeholder: 'par', 'aria-label': 'Par' });
     const kind = h('select', { 'aria-label': 'Kind' }, [['count', 'Count'], ['task', 'Daily task'], ['batch', 'Bulk, as needed']].map(([k, t]) => h('option', { value: k, text: t, selected: it.kind === k ? true : undefined })));
     const days = it.weekdays ?? [];
-    const dayChips = h('div', { class: 'row tight wrap' }, WEEKDAY.map((d, n) => h('button', { class: `lchip${days.includes(n) ? ' on' : ''}`, 'aria-pressed': days.includes(n) ? 'true' : 'false', text: d, onclick: async () => {
-        const next = days.includes(n) ? days.filter((x) => x !== n) : [...days, n].sort();
-        if (await save(`/api/prep/items/${it.id}`, { weekdays: next.length ? next : null })) again();
-      } })));
+    // Each tap turns its own day on or off, and the chip changes right away; quick taps on Mon then Tue both stick.
+    const dayChips = h('div', { class: 'row tight wrap' }, WEEKDAY.map((d, n) => {
+      const chip = h('button', { class: `lchip${days.includes(n) ? ' on' : ''}`, 'aria-pressed': days.includes(n) ? 'true' : 'false', text: d, onclick: async () => {
+        const on = chip.getAttribute('aria-pressed') !== 'true';
+        const paint = (v) => { chip.classList.toggle('on', v); chip.setAttribute('aria-pressed', v ? 'true' : 'false'); };
+        paint(on);
+        const res = await post(`/api/prep/items/${it.id}`, on ? { weekdayOn: n } : { weekdayOff: n });
+        if (!res.ok) return paint(!on);
+        it.weekdays = res.data.weekdays ?? null;
+        again();
+      } });
+      return chip;
+    }));
     const commit = () => save(`/api/prep/items/${it.id}`, { name: name.value, unit: unit.value, par: par.value.trim() === '' ? null : Number(par.value), kind: kind.value });
     for (const el of [name, unit, par, kind]) el.addEventListener('change', commit);
     const others = (s.batchItems ?? []).filter((b) => b.id !== it.id);
@@ -4032,6 +4053,8 @@ async function orderScreen(me, vendorId, delivery) {
   const body = () => ({ delivery: d.delivery, lines: lines.filter((l) => l.packs > 0 || l.onHandInput !== '').map((l) => ({ productId: l.productId, packs: l.packs, suggested: l.suggested, ...(l.onHandInput !== '' ? { onHand: l.onHandInput } : {}) })) });
   const save = async () => { const res = await api('POST', `/api/orders/vendor/${encodeURIComponent(vendorId)}`, body()); if (!res.ok) { err.textContent = res.data.error ?? 'Not saved.'; return null; } return res.data.order; };
   const act = async (action, id) => { const res = await api('POST', `/api/orders/${id}/${action}`); if (!res.ok) { err.textContent = res.data.error ?? 'That didn’t work.'; return false; } return true; };
+  // A button stays greyed until its whole job is done (save, then approve), so a second tap can't start it again.
+  const once = (fn) => async (e) => { const b = e.currentTarget; if (b.disabled) return; b.disabled = true; try { await fn(); } finally { b.disabled = false; } };
 
   const suggestedLines = lines.filter((l) => l.packs > 0 || l.suggested > 0);
   const otherLines = lines.filter((l) => !(l.packs > 0 || l.suggested > 0));
@@ -4050,11 +4073,11 @@ async function orderScreen(me, vendorId, delivery) {
     const pre = h('pre', { class: 'order-text', tabindex: '0', text });
     sendBox = h('section', { class: 'card' },
       h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: status === 'sent' ? `Sent ${when(order.sentAt)} by ${order.sentBy ?? ''}` : `Approved by ${order.approvedBy ?? ''}: ready to send` }),
-        status === 'approved' ? h('button', { class: 'link', text: 'Reopen to change', onclick: async () => { if (await act('reopen', order.id)) orderScreen(me, vendorId, d.delivery); } }) : null),
+        status === 'approved' ? h('button', { class: 'link', text: 'Reopen to change', onclick: once(async () => { if (await act('reopen', order.id)) orderScreen(me, vendorId, d.delivery); }) }) : null),
       h('div', { class: 'small muted', text: v.method ? `${v.name} takes orders by ${v.method}${v.contact ? `: ${v.contact}` : ''}.` : 'Add how this vendor takes orders under Vendor settings.' }),
       pre,
       h('div', { class: 'row wrap' }, email, textMsg, copy, h('button', { class: 'btn', text: 'Print', onclick: () => window.print() }),
-        status === 'approved' ? h('button', { class: 'btn dark', text: 'Mark as sent', onclick: async () => { if (await act('sent', order.id)) orderScreen(me, vendorId, d.delivery); } }) : null));
+        status === 'approved' ? h('button', { class: 'btn dark', text: 'Mark as sent', onclick: once(async () => { if (await act('sent', order.id)) orderScreen(me, vendorId, d.delivery); }) }) : null));
   }
 
   const settingsBox = vendorSettings(me, d, () => orderScreen(me, vendorId, d.delivery));
@@ -4065,9 +4088,9 @@ async function orderScreen(me, vendorId, delivery) {
     h('div', { class: 'row' }, h('div', { class: 'grow small muted strong', text: editable ? 'This order' : 'Ordered' }), h('span', { class: `tag ${cls}`, text: tag })),
     totalBox, err,
     sideActions(
-      editable ? h('button', { class: 'btn dark', text: 'Approve order', onclick: async () => { const o = await save(); if (o && await act('approve', o.id)) orderScreen(me, vendorId, d.delivery); } }) : null,
-      editable ? h('button', { class: 'btn', text: 'Save draft', onclick: async () => { if (await save()) orderScreen(me, vendorId, d.delivery); } }) : null,
-      editable ? h('button', { class: 'btn', text: 'Update suggestions', title: 'Saves the counts and works the suggestions out again', onclick: async () => { if (await save()) orderScreen(me, vendorId, d.delivery); } }) : null,
+      editable ? h('button', { class: 'btn dark', text: 'Approve order', onclick: once(async () => { const o = await save(); if (o && await act('approve', o.id)) orderScreen(me, vendorId, d.delivery); }) }) : null,
+      editable ? h('button', { class: 'btn', text: 'Save draft', onclick: once(async () => { if (await save()) orderScreen(me, vendorId, d.delivery); }) }) : null,
+      editable ? h('button', { class: 'btn', text: 'Update suggestions', title: 'Saves the counts and works the suggestions out again', onclick: once(async () => { if (await save()) orderScreen(me, vendorId, d.delivery); }) }) : null,
       order && status !== 'sent' ? h('button', { class: 'link danger', text: 'Cancel order', onclick: async () => { if (confirmText('Cancel this order?') && await act('cancel', order.id)) ordersScreen(me); } }) : null),
     editable ? h('div', { class: 'small muted', text: 'Nothing goes to the vendor until it’s approved and you send it.' }) : null);
   const whenBox = sideBox('Delivery', h('div', { class: 'row wrap' }, d.upcoming.map((x) => h('button', { class: `btn small-btn${x === d.delivery ? ' dark' : ''}`, text: `${WD[new Date(`${x}T12:00:00`).getDay()]} ${shortDate(x)}`, onclick: () => orderScreen(me, vendorId, x) }))),

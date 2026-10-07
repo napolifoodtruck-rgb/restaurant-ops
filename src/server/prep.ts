@@ -25,6 +25,7 @@ import { getModel, loadBook } from './model.ts';
 import { loadContainers } from './units.ts';
 import { recipeWeight, unitWeight, type RecipeWeight, type WeightSource } from '../core/containers.ts';
 import { tryConvert } from '../core/units.ts';
+import { inTurn } from './turns.ts';
 import { nameSimilarity } from '../core/menuLinks.ts';
 import { cookPace, itemTimes, itemUsuals, listSpan, median, minutesLeft, stationItemUsual, type ItemUsual, type Mark, type WorkedList } from '../core/prepTiming.ts';
 import { batchSuggestion, dayLines, dayShare, itemDayShare, onHandFrom, weekdayOf, type BulkOnHand, type DayScale, type ItemScale, type StationItem, type StationNeed } from '../core/stationLists.ts';
@@ -641,6 +642,17 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
   if ((m = path.match(new RegExp(`^/api/prep/(items|checklist)/(${UUID})$`))) && method === 'POST') {
     chef();
     const b = await body(req);
+    // A day on or off, on its own: two quick taps (Mon, then Tue) each add their day to what's there.
+    if (m[1] === 'items' && (b.weekdayOn !== undefined || b.weekdayOff !== undefined)) {
+      const day = Number(b.weekdayOn ?? b.weekdayOff);
+      if (!(Number.isInteger(day) && day >= 0 && day <= 6)) throw new HttpError(400, 'Day is 0 (Sunday) to 6.');
+      const r = await db.query<{ weekdays: number[] | null }>(
+        `UPDATE station_items SET weekdays = (SELECT CASE WHEN count(*) = 0 THEN NULL ELSE array_agg(d ORDER BY d) END
+           FROM (SELECT DISTINCT d FROM unnest(coalesce(weekdays, '{}') || ${b.weekdayOn !== undefined ? 'ARRAY[$3::int]' : "'{}'::int[]"}) d WHERE ${b.weekdayOff !== undefined ? 'd <> $3' : 'true'}) x)
+         WHERE restaurant_id = $1 AND id = $2 RETURNING weekdays`, [who.restaurantId, m[2], day]);
+      if (!r.rows.length) throw new HttpError(404, 'Not found.');
+      return send(res, 200, { ok: true, weekdays: arr(r.rows[0]!.weekdays) ?? null }), true;
+    }
     const f = m[1] === 'items' ? itemFields(b, true) : checklistFields(b, true);
     const keys = Object.keys(f);
     if (!keys.length) throw new HttpError(400, 'Nothing to change.');
@@ -689,6 +701,21 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     chef();
     const st = await station(db, who.restaurantId, m[1]!);
     const b = await body(req);
+    // A move: one item up or down from where it is now (quick taps, or two chefs, each move from the real order).
+    if (b.move && typeof b.move === 'object') {
+      const mv = b.move as { id?: unknown; by?: unknown; list?: unknown };
+      const table = mv.list === 'checklist' ? 'station_checklist' : 'station_items';
+      const by = Number(mv.by);
+      if (by !== 1 && by !== -1) throw new HttpError(400, 'Move up or down one.');
+      await inTurn(`order:${st.id}`, async () => {
+        const ids = (await db.query<{ id: string }>(`SELECT id FROM ${table} WHERE restaurant_id = $1 AND station_id = $2 AND active ORDER BY ${table === 'station_checklist' ? 'frequency, ' : ''}sort_order, name`, [who.restaurantId, st.id])).rows.map((r) => r.id);
+        const i = ids.indexOf(String(mv.id)), j = i + by;
+        if (i < 0 || j < 0 || j >= ids.length) return;
+        [ids[i], ids[j]] = [ids[j]!, ids[i]!];
+        for (const [k, id] of ids.entries()) await db.query(`UPDATE ${table} SET sort_order = $1 WHERE restaurant_id = $2 AND station_id = $3 AND id = $4`, [k, who.restaurantId, st.id, id]);
+      });
+      return send(res, 200, { ok: true }), true;
+    }
     for (const [table, ids] of [['station_items', b.items], ['station_checklist', b.checklist]] as const) {
       if (!Array.isArray(ids)) continue;
       for (const [i, id] of ids.entries()) await db.query(`UPDATE ${table} SET sort_order = $1 WHERE restaurant_id = $2 AND station_id = $3 AND id = $4`, [i, who.restaurantId, st.id, String(id)]);
@@ -701,6 +728,7 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     if (method === 'GET' && !action) return send(res, 200, await view(db, who, stationId, date)), true;
     if (method !== 'POST' || !action) return false;
     const b = await body(req);
+    return inTurn(`list:${stationId}:${date}`, async () => {
     const list = await listFor(db, who.restaurantId, stationId, date);
     if (action === 'count') {
       const kind = (await db.query<{ kind: string }>('SELECT kind FROM station_items WHERE restaurant_id = $1 AND id = $2', [who.restaurantId, String(b.itemId)])).rows[0]?.kind;
@@ -746,6 +774,7 @@ export async function prepRoutes(db: Db, req: IncomingMessage, res: ServerRespon
       else await db.query('INSERT INTO prep_list_checks (restaurant_id, list_id, checklist_id, done_by) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING', [who.restaurantId, list.id, String(b.checklistId), who.staffId]);
     }
     return send(res, 200, await view(db, who, stationId, date)), true;
+    });
   }
   return false;
 }
