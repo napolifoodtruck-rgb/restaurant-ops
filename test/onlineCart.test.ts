@@ -67,3 +67,25 @@ test('tips are whole cents, up to the order', () => {
   assert.ok(tipProblem(2.5, 1500));
   assert.ok(tipProblem('300', 1500));
 });
+
+test('an option Square labels "not available online" can never be ordered, whatever is set', () => {
+  const labelled: CatalogObject[] = [
+    { type: 'CATEGORY', id: 'cat-pizza', category_data: { name: 'Pizza' } },
+    { type: 'MODIFIER_LIST', id: 'ml-cook', modifier_list_data: { name: 'How would you like it cooked?', selection_type: 'SINGLE', modifiers: [
+      { id: 'm-full', modifier_data: { name: 'FULLY COOKED & SLICED (NOT AVAILABLE ONLINE)', ordinal: 0 } },
+      { id: 'm-part', modifier_data: { name: 'PARTIALLY COOKED (ONLY OPTION ONLINE)', ordinal: 1 } },
+    ] } },
+    { type: 'ITEM', id: 'item-apricot', item_data: { name: 'Apricot', reporting_category: { id: 'cat-pizza' }, variations: [{ id: 'var-apricot', item_variation_data: { name: 'Regular', price_money: { amount: 2000 } } }],
+      modifier_list_info: [{ modifier_list_id: 'ml-cook', min_selected_modifiers: 1, max_selected_modifiers: 1 }] } },
+  ];
+  // Nothing set by a manager: partially cooked goes on by itself.
+  const fresh = onlineMenu(labelled, [{ itemId: 'item-apricot', published: true }], {}, today);
+  assert.deepEqual(priceCart(fresh, [{ variationId: 'var-apricot', quantity: 1 }]).lines[0]!.modifiers.map((m) => m.id), ['m-part']);
+  assert.throws(() => priceCart(fresh, [{ variationId: 'var-apricot', quantity: 1, optionIds: ['m-full'] }]), CartError);
+  // Even set to shown or always by mistake, fully cooked stays off the order.
+  for (const mode of ['shown', 'always'] as const) {
+    const wrong = onlineMenu(labelled, [{ itemId: 'item-apricot', published: true }], { 'm-full': mode, 'm-part': 'shown' }, today);
+    assert.throws(() => priceCart(wrong, [{ variationId: 'var-apricot', quantity: 1, optionIds: ['m-full'] }]), CartError);
+    assert.ok(publicMenu(wrong)[0]!.optionLists.every((l) => l.options.every((o) => o.id !== 'm-full')));
+  }
+});
