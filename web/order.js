@@ -74,8 +74,8 @@ const fitting = (pizzas) => M.windows.filter((w) => w.open && w.left >= pizzas);
 
 /** Links in the header, next to the cart, to Napoli's other pages. An entry without a link isn't shown. */
 const NAV = [
-  { label: 'Dine-in menu', href: null },
-  { label: 'Bar menu', href: null },
+  { label: 'Dine-in menu', href: 'https://docs.google.com/document/d/e/2PACX-1vTmda2AyQrnn4pn80SmYODyAiAZI8RBrkf8KBrw0YRi0DhI3WScfMk0IpMqtAJe-Kme3rzV5EVxJf9w/pub' },
+  { label: 'Bar menu', href: 'https://docs.google.com/document/d/e/2PACX-1vTBHO8TAKIHUTjpcG9s6IV8OWiySw3W7g-XdMQl56ETFNibC6i_3b6Ri4-aqO3bwdRG6e_AXUdUIOvQ/pub' },
   // Square's own eGift card page for this account.
   { label: 'Gift cards', href: 'https://squareup.com/gift/7Y869N2QJ43W5/order' },
 ];
