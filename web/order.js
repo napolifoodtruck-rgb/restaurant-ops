@@ -9,6 +9,13 @@ const root = document.getElementById('order');
 // What every online customer is told. Change the words here.
 const PARTIAL_TITLE = 'Every online pizza is partially cooked.';
 const PARTIAL_BODY = 'You finish it in your own oven at home, just before eating, so it tastes the way it does here. True Neapolitan pizza is ruined within minutes in a closed box.';
+// Napoli's own instructions for finishing a partially cooked pizza at home.
+const FINISH_STEPS = [
+  'Preheat your oven to 450°F on convection, or higher.',
+  'Once it’s preheated, put the pizza directly on the rack.',
+  'Cook 3 to 6 minutes, depending on how crisp you like it.',
+  'Add any finishing toppings.',
+];
 const IN_PERSON = 'Fully cooked pizzas and gluten-sensitive crust are in person only: come by or call, usually under 8 minutes.';
 const TIPS = [0, 10, 15, 20];
 
@@ -64,6 +71,9 @@ function header() {
 }
 function partialNotice() {
   return h('div', { class: 'notice' }, h('b', { text: PARTIAL_TITLE }), ' ', PARTIAL_BODY, h('div', { class: 'small', style: 'margin-top:8px', text: IN_PERSON }));
+}
+function finishSteps() {
+  return h('div', { class: 'card finish' }, h('div', { class: 'strong', text: 'Finishing at home' }), h('ol', {}, FINISH_STEPS.map((t) => h('li', { text: t }))));
 }
 function pickupLine() {
   const pizzas = Math.max(1, cartPizzas());
@@ -228,6 +238,7 @@ function checkoutView() {
       h('label', { class: 'field' }, 'Phone', phone),
       h('label', { class: 'field' }, 'Email', email),
       h('div', { class: 'field strong small', style: 'margin-top:16px', text: 'Tip for the team' }), tipRow),
+    finishSteps(),
     h('label', { class: 'ack' }, understood, h('span', {}, h('b', { text: 'I understand my pizzas are partially cooked' }), ' and I’ll finish them in my oven at home.')),
     err, go));
 }
@@ -300,6 +311,7 @@ function doneView(order) {
       h('div', { class: 'big', text: 'Thank you' }),
       h('p', {}, `Your order is in. Pick it up tonight at `, h('b', { text: order.window.label }), ` under `, h('b', { text: order.name }), '.')),
     partialNotice(),
+    finishSteps(),
     h('div', { class: 'card' }, order.lines.map((l) => h('div', { class: 'line' },
       h('div', { class: 'row' }, h('span', { class: 'grow strong', text: `${l.quantity} × ${l.name}` }), h('span', { text: money2(l.total) })),
       l.modifiers.length ? h('div', { class: 'mods', text: l.modifiers.map((m) => m.name).join(', ') }) : null)),
