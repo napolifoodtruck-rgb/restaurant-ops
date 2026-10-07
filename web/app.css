@@ -912,5 +912,10 @@ button.donut-row { display: flex; min-width: 0; }
 .isrc span { white-space: nowrap; }
 .isrc.old { background: #FFF6E0; border-color: #EBD9A8; }
 .isrc.old b, .isrc.old span { color: #8A5A00; }
-@media (max-width: 1000px) { .irow { grid-template-columns: 58px 92px minmax(96px, 1fr) 104px 52px auto; gap: 5px; } }
+/* Not enough room for it all (iPad portrait, or landscape beside the cost box): the Price from box goes. */
+.ilist { container-type: inline-size; }
+@container (max-width: 640px) {
+  .irow { grid-template-columns: 58px 92px minmax(96px, 1fr) 52px auto; gap: 5px; }
+  .irow .isrc, .irow.head > :nth-child(4) { display: none; }
+}
 @media (max-width: 640px) { .irow { grid-template-columns: 64px 90px 1fr auto; } .isrc, .irow.head > :nth-child(4), .irow .icost, .irow.head > :nth-child(5) { display: none; } }
