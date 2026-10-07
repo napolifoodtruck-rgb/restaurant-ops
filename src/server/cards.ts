@@ -385,7 +385,9 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
       const product = productNamed(model, String(i.name ?? ''));
       const card = cardNamed(book.recipeCards ?? [], String(i.name ?? ''));
       const amount = Number(i.amount) / ((Number(i.yieldPercent) || 100) / 100);
-      if (!(amount > 0) || !i.unit) return {};
+      // Where the price comes from shows as soon as the line names something, before an amount.
+      const source = product ? model.priceSource.get(product.id) : card ? { from: 'recipe' as const } : undefined;
+      if (!(amount > 0) || !i.unit) return source ? { source } : {};
       const item = product ? { kind: 'product' as const, id: product.id } : card ? { kind: 'recipe' as const, id: recipeId(card.name) } : undefined;
       if (!item) return { problem: 'Not a product or recipe' };
       const r = model.book.costOf(item, { amount, unit: String(i.unit) });
@@ -397,7 +399,7 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
         ...(r.complete ? {} : { problem: [...new Set(r.issues.map(issueText))].join('; ') }),
         ...(product && own ? { needsPrice: { productId: product.id, name: product.name, unit: product.baseUnit } } : {}),
         ...(convert ? { cantConvert: true } : {}),
-        ...(product && model.olderPrices?.has(product.id) ? { olderPrice: true } : {}),
+        ...(source ? { source } : {}),
       };
     });
     const total = lines.reduce((s, l: any) => s + (l.cost ?? 0), 0);

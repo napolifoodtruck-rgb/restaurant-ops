@@ -2642,6 +2642,7 @@ function cardEditor(me, d, card, start = {}) {
       const res = await api('POST', '/api/cards/preview', { card: { ingredients: usable } });
       if (!res.ok) return;
       const hints = [...lines.querySelectorAll('.irow-hint')];
+      const srcs = [...lines.querySelectorAll('.isrc')];
       [...lines.querySelectorAll('.icost')].forEach((el, n) => {
         const i = c.ingredients[n];
         const l = res.data.lines[usable.indexOf(i)] ?? {};
@@ -2649,10 +2650,11 @@ function cardEditor(me, d, card, start = {}) {
         el.textContent = l.cost !== undefined && !l.problem ? money2(l.cost) : st && st !== 'ok' ? 'to finish' : l.problem ? 'no cost' : '';
         el.title = l.problem ?? '';
         el.classList.toggle('warn-text', Boolean(l.problem) || (st && st !== 'ok'));
+        if (srcs[n]) drawSource(srcs[n], l.source);
         // A finished line that still can't be costed says why, under it (a tooltip never shows on an iPad).
         const hint = hints[n];
         if (!hint || st !== 'ok') return;
-        if (st === 'ok' && (l.problem || l.olderPrice)) { hint.dataset.cost = '1'; fill(hint, costHint(i, l)); }
+        if (st === 'ok' && l.problem) { hint.dataset.cost = '1'; fill(hint, costHint(i, l)); }
         else if (hint.dataset.cost === '1') { delete hint.dataset.cost; fill(hint); }
       });
       total.textContent = `${money2(res.data.total)}${toFinish() ? '+' : ''}`;
@@ -2673,8 +2675,25 @@ function cardEditor(me, d, card, start = {}) {
     }
     if (l.cantConvert) return h('span', { class: 'warn-text', text: `No cost: ${l.problem}. Try another unit, or set how much one ${UNIT_LABEL(i.unit)} is.` });
     if (l.problem) return h('span', { class: 'warn-text', text: `No cost yet: ${l.problem}.` });
-    if (l.olderPrice) return h('span', { class: 'muted', text: 'Priced from MarginEdge’s last price: it isn’t on a recent invoice.' });
     return null;
+  };
+  // Where a line's price comes from, beside its cost: the vendor and invoice date, so a wrong or old
+  // price shows while the recipe is being written.
+  const drawSource = (el, src) => {
+    el.className = 'isrc';
+    if (!src) return fill(el);
+    if (src.from === 'invoice') {
+      const age = (Date.now() - Date.parse(`${src.date}T12:00:00`)) / 86_400_000, old = age > 90;
+      const when = age > 300 ? dateWithYear(src.date) : shortDate(src.date);
+      el.classList.toggle('old', old);
+      el.title = `${src.vendor ?? 'Invoice'}, ${when}${src.invoices > 1 ? `: the average of ${src.invoices} invoices in the last 60 days, latest shown` : ''}`;
+      const vendor = (src.vendor ?? 'Invoice').replace(/,?\s+(inc|llc|co|corp|ltd|company)\.?$/i, '').trim();
+      return fill(el, h('b', { text: vendor }), h('span', { text: `${when}${src.invoices > 1 ? ` · avg of ${src.invoices}` : ''}` }));
+    }
+    if (src.from === 'manual') { el.title = 'A price set by hand in the app'; return fill(el, h('b', { text: 'Set by hand' }), src.date ? h('span', { text: shortDate(src.date) }) : null); }
+    if (src.from === 'marginedge') { el.classList.add('old'); el.title = 'Not on an invoice we’ve read: MarginEdge’s last price, which may be old'; return fill(el, h('b', { text: 'MarginEdge' }), h('span', { text: 'last price' })); }
+    el.title = 'Costed from its own recipe’s lines';
+    return fill(el, h('span', { text: 'its recipe' }));
   };
   const priceForm = (slot, p, o) => {
     const price = h('input', { inputmode: 'decimal', class: 'short', placeholder: '0.00', 'aria-label': `Price of ${p.name}` });
@@ -2763,7 +2782,7 @@ function cardEditor(me, d, card, start = {}) {
     drawLines(); preview();
   };
   const drawLines = () => {
-    fill(lines, h('div', { class: 'irow head' }, h('div', { text: 'Amount' }), h('div', { text: 'Unit' }), h('div', { text: 'What goes in' }), h('div', { class: 'num', text: 'Cost' }), h('div')),
+    fill(lines, h('div', { class: 'irow head' }, h('div', { text: 'Amount' }), h('div', { text: 'Unit' }), h('div', { text: 'What goes in' }), h('div', { text: 'Price from' }), h('div', { class: 'num', text: 'Cost' }), h('div')),
       c.ingredients.map((i, n) => {
         const amount = h('input', { inputmode: 'decimal', value: i._amountText ?? (i.amount === '' || !(Number(i.amount) > 0) ? '' : String(i.amount)), 'aria-label': 'Amount', placeholder: '0' });
         const note = h('div', { class: 'irow-msg', role: 'alert', text: i._err?.msg ?? '' });
@@ -2795,7 +2814,7 @@ function cardEditor(me, d, card, start = {}) {
           else fill(hint);
         };
         drawHint();
-        row.append(amount, unitSlot, name, h('div', { class: 'num icost small' }),
+        row.append(amount, unitSlot, name, h('div', { class: 'isrc' }), h('div', { class: 'num icost small' }),
           h('div', { class: 'imove' },
             h('button', { class: 'btn small-btn', 'aria-label': `Move ${i.name || 'line'} up`, text: '↑', disabled: n === 0 ? true : undefined, onclick: () => move(n, -1) }),
             h('button', { class: 'btn small-btn', 'aria-label': `Move ${i.name || 'line'} down`, text: '↓', disabled: n === c.ingredients.length - 1 ? true : undefined, onclick: () => move(n, 1) }),
