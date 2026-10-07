@@ -25,6 +25,7 @@ import { normalizeName as cardKey, recipeId, yieldsToConversions, type RecipeCar
 import { tryConvert } from '../core/units.ts';
 import { posName, type PosMenuItem } from '../core/menuLinks.ts';
 import { draftDrinkCards, type BarItem } from '../core/drinkCards.ts';
+import { recipeChecks } from './recipeChecks.ts';
 
 export type CardKind = 'dish' | 'drink' | 'prep' | 'barPrep';
 export interface CardInput {
@@ -373,6 +374,53 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
       noCard: model.margins.unlinked.filter((u) => u.catalogId && u.netSales > 0 && !notFood.has(u.name) && (!area || areaOf(u.category) === area))
         .map((u) => ({ ...posItem(u.catalogId, u.name), name: u.name, category: u.category, sold: Math.round(u.quantity), netSales: Math.round(u.netSales) })),
     }), true;
+  }
+
+  // Recipe checks: what the menu uses but hasn't been bought in far too long, and what's bought but in no recipe.
+  if (method === 'GET' && path === '/api/cards/checks') {
+    const book = await loadBook(db, who.restaurantId);
+    const checks = recipeChecks(model, today, (book.linkAnswers?.dismissed ?? []).map((d) => d.dedupeKey));
+    const area = url.searchParams.get('area');
+    const mine = <T extends { side: string }>(xs: T[]) => (area === 'kitchen' || area === 'bar' ? xs.filter((x) => x.side === area) : xs);
+    return send(res, 200, {
+      notBought: mine(checks.notBought), notInRecipes: mine(checks.notInRecipes),
+      // To pick a replacement by hand: everything bought, newest first.
+      products: productsView(model).filter((p) => p.type !== 'FREE').map((p) => ({ id: p.id, name: p.name, unit: p.unit, ...(p.lastBought ? { lastBought: p.lastBought } : {}) })),
+    }), true;
+  }
+
+  // Swap a product for another in recipes (the cream you stopped buying for the one you buy now).
+  // The amount and unit stay; a ready recipe whose line no longer converts goes back to rough.
+  if (method === 'POST' && path === '/api/cards/swap') {
+    const b = await body(req);
+    const from = model.products.find((p) => p.id === String(b.from ?? '')), to = model.products.find((p) => p.id === String(b.to ?? ''));
+    if (!from || !to) throw new HttpError(404, 'No such product.');
+    if (from.id === to.id) throw new HttpError(400, 'Pick a different product to swap in.');
+    const only = Array.isArray(b.recipes) ? new Set((b.recipes as unknown[]).map(String)) : undefined;
+    const book = await loadBook(db, who.restaurantId);
+    const cards = book.recipeCards ?? [];
+    const importAnswers: PilotImportAnswers = book.importAnswers ?? {};
+    const told = new Map(Object.entries(importAnswers.ingredientProducts ?? {}).map(([n, id]) => [cardKey(n), id]));
+    // A line names `from` the way the recipes read it: told by a manager, or by its own name (and not a recipe's).
+    const isFrom = (name: string) => { const k = cardKey(name); return told.has(k) ? told.get(k) === from.id : k === cardKey(from.name) && !cardNamed(cards, name); };
+    const changed: string[] = [], rough: string[] = [];
+    let next = cards.map((c) => {
+      if ((only && !only.has(c.name)) || !c.ingredients.some((i) => isFrom(i.name))) return c;
+      changed.push(c.name);
+      return { ...c, ingredients: c.ingredients.map((i) => (isFrom(i.name) ? { ...i, name: to.name } : i)) };
+    });
+    if (!changed.length) throw new HttpError(409, `No recipe${only ? ' of those' : ''} uses ${from.name} any more.`);
+    next = next.map((c) => {
+      if (!changed.includes(c.name) || c.status === 'rough') return c;
+      if (c.ingredients.every((i) => cardKey(i.name) !== cardKey(to.name) || lineState(i, model, next) === 'ok')) return c;
+      rough.push(c.name);
+      return { ...c, status: 'rough' as const };
+    });
+    await saveBook(db, who.restaurantId, 'recipeCards', next, who.staffId);
+    if (importAnswers.portions?.some((p) => p.ingredient === from.name && changed.includes(p.recipe))) {
+      await saveBook(db, who.restaurantId, 'importAnswers', { ...importAnswers, portions: importAnswers.portions.map((p) => (p.ingredient === from.name && changed.includes(p.recipe) ? { ...p, ingredient: to.name } : p)) }, who.staffId);
+    }
+    return send(res, 200, { changed, rough }), true;
   }
 
   if (method === 'POST' && path === '/api/cards/preview') {

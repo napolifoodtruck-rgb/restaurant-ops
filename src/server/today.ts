@@ -17,12 +17,13 @@
 
 import type { Db } from './db.ts';
 import { atLeast, type SignedIn } from './auth.ts';
-import { getModel, type Model } from './model.ts';
+import { getModel, loadBook, type Model } from './model.ts';
 import { coverageOf, inArea, menuView, posItemOf, type AreaView } from './views.ts';
 import { guessArea, loadAreas } from './areas.ts';
 import { ordersDue } from './orders.ts';
 import { view as stationDay } from './prep.ts';
 import { blendedPrices } from '../connectors/marginedge.ts';
+import { notBoughtKey, recipeChecks } from './recipeChecks.ts';
 
 export interface TodayItem {
   key: string;
@@ -36,7 +37,7 @@ export interface TodayItem {
   due?: string;
   /** Money behind it, for ordering the rest. */
   dollars?: number;
-  go: { to: 'count' | 'review' | 'work' | 'menu' | 'performance' | 'settings' | 'cards' | 'drafts' | 'order' | 'orders'; stationId?: string; date?: string; vendorId?: string; side?: 'kitchen' | 'bar' };
+  go: { to: 'count' | 'review' | 'work' | 'menu' | 'performance' | 'settings' | 'cards' | 'drafts' | 'order' | 'orders' | 'recipeChecks'; stationId?: string; date?: string; vendorId?: string; side?: 'kitchen' | 'bar' };
   button: string;
   /** The side it's about (a station's side comes from its name: "Bar" is the bar's); none for syncs, which everyone sees. */
   side?: 'kitchen' | 'bar';
@@ -190,6 +191,7 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string, 
   }
 
   // Questions, plate-cost gaps and price moves, side by side: kitchen and bar people each see theirs.
+  const dismissed = ((await loadBook(db, who.restaurantId)).linkAnswers?.dismissed ?? []).map((d) => d.dedupeKey);
   for (const side of ['kitchen', 'bar'] as const) {
     const view: AreaView = { area: side, areaOf };
     // Menu questions, the biggest sellers first, answerable here.
@@ -235,6 +237,28 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string, 
       items.push({ key: `price:${m.productId}`, group: 'costs', label: up ? 'Price up' : 'Price down', tone: up ? 'alert' : 'info', dollars: Math.abs(m.perWeek) * 13,
         title: `${m.product} is ${up ? 'up' : 'down'} ${Math.round(Math.abs(m.change) * 100)}% in 3 months`,
         detail: `About ${dollars(Math.abs(m.perWeek))} a week ${up ? 'more' : 'less'} at your volume · ${m.dish} ${up ? '+' : '−'}${cents(Math.abs(m.plateChange))} a plate`, go: { to: 'performance' }, button: 'See dishes' });
+    }
+    // Recipe checks: a product the menu uses every week that hasn't come in on an invoice in far too
+    // long (the recipe probably names one you stopped buying), and what you buy weekly that no recipe uses.
+    const checks = recipeChecks(model, today, dismissed);
+    const stale = checks.notBought.filter((x) => x.side === side);
+    const shown = stale.length <= 3 ? stale.length : 2;
+    for (const x of stale.slice(0, shown)) {
+      const amount = x.perWeek >= 10 ? Math.round(x.perWeek) : Math.round(x.perWeek * 10) / 10;
+      items.push({ key: `recipe:notBought:${x.productId}`, group: 'costs', label: 'Recipe check', tone: 'ask', dollars: (x.dollarsPerWeek ?? 0) * 13,
+        title: x.last ? `${x.name} hasn’t been on an invoice since ${shortDate(x.last.date)}` : `${x.name} isn’t on any invoice`,
+        detail: `The menu uses about ${amount} ${x.unit} a week (${list(x.dishes, 2)}). ${x.likely ? `You’ve been buying ${x.likely.name}${x.likely.vendor ? ` from ${x.likely.vendor}` : ''}: is that what the recipe${x.recipes.length === 1 ? '' : 's'} should say?` : 'The recipe may name a product you no longer buy.'}`,
+        answers: [{ label: 'It’s right as is', body: { type: 'dismiss', dedupeKey: notBoughtKey(x.productId), note: `${x.name}: right as is, though not bought lately` } }],
+        go: { to: 'recipeChecks', side }, button: 'Recipe checks' });
+    }
+    if (stale.length > shown) items.push({ key: `recipe:notBought:more:${side}`, group: 'costs', label: 'Recipe checks', tone: 'ask', dollars: stale.slice(shown).reduce((a, x) => a + (x.dollarsPerWeek ?? 0) * 13, 0), title: `${stale.length - shown} more ingredients the menu uses but you haven’t bought lately`, detail: list(stale.slice(shown).map((x) => x.name), 4), go: { to: 'recipeChecks', side }, button: 'Recipe checks' });
+    // The bar's wines and spirits aren't in recipes until the drinks are drafted: that's asked about already.
+    const unused = checks.notInRecipes.filter((x) => x.side === side);
+    const barUndrafted = side === 'bar' && model.margins.unlinked.some((u) => u.catalogId && u.netSales > 0 && areaOf(u.category) === 'bar');
+    if (unused.length && !barUndrafted) {
+      items.push({ key: `recipe:notInRecipes:${side}`, group: 'costs', label: 'Recipe checks', tone: 'ask', dollars: unused.reduce((a, x) => a + x.dollars, 0) * 1.5,
+        title: `${unused.length} thing${unused.length === 1 ? ' you buy regularly isn’t' : 's you buy regularly aren’t'} in any recipe`,
+        detail: `${list(unused.map((x) => x.name), 3)}. A recipe may be missing ${unused.length === 1 ? 'it' : 'them'}.`, go: { to: 'recipeChecks', side }, button: 'Recipe checks' });
     }
     // Drinks with no card: one item for the lot, since most are drafted in a few taps.
     if (side === 'bar') {

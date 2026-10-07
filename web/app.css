@@ -945,3 +945,11 @@ button.donut-row { display: flex; min-width: 0; }
 /* Recipe editor steps: the numbers line up with "Steps", and "+ Add a step" with "+ Add a line". */
 .editor .steps { padding-left: 0; font-size: inherit; }
 .stepn { margin-left: 0; }
+
+/* Recipe checks. */
+.rchecks { display: flex; flex-direction: column; margin-top: 10px; }
+.rcheck { padding: 12px 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.rcheck h3 { margin: 0; font-size: 16px; }
+.rcheck-likely { font-size: 14px; background: var(--soft); border-radius: 8px; padding: 8px 10px; }
+.rcheck-pick .pick-in { min-width: 220px; flex: 1 1 220px; max-width: 360px; height: 40px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; }
+.rcheck-done { font-size: 14px; color: var(--muted); }

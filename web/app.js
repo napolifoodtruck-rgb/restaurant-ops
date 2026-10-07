@@ -2362,7 +2362,8 @@ async function recipesScreen(me, state = {}) {
   const manager = atLeast(me.roleLevel, 'manager');
   const newRecipe = manager ? h('button', { class: 'btn dark', text: 'New recipe', onclick: async () => { const d = (await api('GET', `/api/cards?area=${side}`)).data; cardEditor(me, d, null, { kind: side === 'bar' ? 'drink' : 'dish', back: { label: 'Recipes', go: (saved) => (saved ? recipePage(me, saved) : recipesScreen(me)), rail: 'recipes' } }); } }) : null;
   const tools = manager ? sideBox('Recipe costs', h('div', { class: 'small muted', text: 'What each recipe costs from your invoice prices, and its share of the price.' }),
-    sideActions(h('button', { class: 'btn small-btn', text: 'Recipe costs', onclick: () => cardsScreen(me) }))) : null;
+    sideActions(h('button', { class: 'btn small-btn', text: 'Recipe costs', onclick: () => cardsScreen(me) }),
+      h('button', { class: 'btn small-btn', text: 'Recipe checks', title: 'Ingredients the menu uses but you haven’t bought lately, and what you buy that no recipe uses', onclick: () => recipeChecksScreen(me, { from: returnTo('Recipes', () => recipesScreen(me)) }) }))) : null;
   show(shell(me, 'recipes', [
     h('header', { class: 'row wrap' },
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: q ? 'Kitchen and bar' : AREA_NAMES[side] }), h('h1', { text: 'Recipes' })),
@@ -2592,6 +2593,99 @@ async function tidyScreen(me) {
 }
 
 /** Write or change one card: what goes in, how much, what it makes, which buttons sell it. */
+/**
+ * Recipe checks: what the menu uses every week but hasn't come in on an invoice in far too long
+ * (the recipe probably names a product you stopped buying: swap in what you buy now), and what you
+ * buy on invoice after invoice that no recipe uses (a recipe may be missing it).
+ */
+async function recipeChecksScreen(me, opts = {}) {
+  const from = opts.from;
+  const rail = from?.rail ?? 'recipes';
+  loadingScreen(me, rail, 'Recipe checks');
+  const side = sideOf(me);
+  const r = await api('GET', `/api/cards/checks?area=${side}`);
+  if (!r.ok) return show(shell(me, rail, [h('h1', { text: 'Recipe checks' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const d = r.data;
+  const again = () => recipeChecksScreen(me, opts);
+  const open = (name) => recipePage(me, name, { from: returnTo('Recipe checks', again) });
+  const amount = (n) => (n >= 10 ? String(Math.round(n)) : String(Math.round(n * 10) / 10));
+  const recipeLinks = (names) => names.map((n, k) => [k ? ', ' : '', h('button', { class: 'linkish card-link', text: n, onclick: () => open(n) })]);
+  const productList = h('datalist', { id: 'check-products' }, d.products.map((p) => h('option', { value: p.name, label: p.lastBought ? `last bought ${shortDate(p.lastBought)}` : 'not bought lately' })));
+  // A row that's been answered folds to one line with Undo.
+  const settle = (row, said, undo) => {
+    const undoBtn = h('button', { class: 'link', text: 'Undo', onclick: () => pageAction(async () => { busy(undoBtn, true); const res = await undo(); if (!res.ok) { busy(undoBtn, false); return undoBtn.after(h('span', { class: 'error small', text: ` ${res.data.error ?? 'Couldn’t undo it.'}` })); } again(); }) });
+    fill(row, h('div', { class: 'rcheck-done row tight wrap' }, h('span', { class: 'grow', text: said }), undoBtn));
+  };
+  const dismiss = (row, key, note, said) => pageAction(async () => {
+    const res = await api('POST', '/api/answers', { type: 'dismiss', dedupeKey: key, note });
+    if (!res.ok) return row.append(h('div', { class: 'error small', text: res.data.error ?? 'That didn’t save.' }));
+    settle(row, said, () => api('POST', '/api/answers/undo', { target: { dedupeKey: key } }));
+  });
+  const swap = (row, x, to, btn) => pageAction(async () => {
+    busy(btn, true);
+    const res = await api('POST', '/api/cards/swap', { from: x.productId, to: to.id, recipes: x.recipes });
+    if (!res.ok) { busy(btn, false); return row.append(h('div', { class: 'error small', text: res.data.error ?? 'That didn’t save.' })); }
+    const { changed, rough } = res.data;
+    settle(row, `${to.name} now in ${changed.join(', ')}.${rough.length ? ` ${rough.join(', ')} went back to rough: check the unit on that line.` : ''}`,
+      () => api('POST', '/api/cards/swap', { from: to.id, to: x.productId, recipes: changed }));
+  });
+
+  const staleRow = (x) => {
+    const row = h('article', { class: 'rcheck' });
+    const since = x.last ? `Last on an invoice ${shortDate(x.last.date)}${x.last.vendor ? ` (${x.last.vendor})` : ''}, ${x.weeks} weeks ago` : `Not on any invoice we have (${x.weeks} weeks)`;
+    const pickIn = h('input', { type: 'text', list: 'check-products', class: 'pick-in', placeholder: 'What you buy instead', 'aria-label': `What replaces ${x.name}` });
+    const pickMsg = h('span', { class: 'small error' });
+    const pickBox = h('div', { class: 'row tight wrap rcheck-pick', hidden: true }, pickIn,
+      h('button', { class: 'btn small-btn dark', text: 'Swap it in', onclick: (e) => {
+        const to = d.products.find((p) => p.name.toLowerCase() === pickIn.value.trim().toLowerCase());
+        if (!to) return (pickMsg.textContent = 'Pick it from the list as you type.');
+        swap(row, x, to, e.currentTarget);
+      } }), pickMsg);
+    const n = x.recipes.length;
+    const swapBtn = x.likely ? h('button', { class: 'btn small-btn dark', text: `Swap it in ${n === 1 ? x.recipes[0] : `${n} recipes`}`, onclick: (e) => swap(row, x, { id: x.likely.productId, name: x.likely.name }, e.currentTarget) }) : null;
+    fill(row,
+      h('div', { class: 'row wrap' }, h('h3', { class: 'grow', text: x.name }), x.dollarsPerWeek ? h('span', { class: 'small muted', text: `about ${dollars(x.dollarsPerWeek)} a week` }) : null),
+      h('div', { class: 'small', text: `The menu uses about ${amount(x.perWeek)} ${UNIT_LABEL(x.unit)} a week (${x.dishes.slice(0, 3).join(', ')}${x.dishes.length > 3 ? ` and ${x.dishes.length - 3} more` : ''}).` }),
+      h('div', { class: 'small warn-text', text: `${since}.` }),
+      x.recipes.length ? h('div', { class: 'small' }, h('span', { class: 'muted', text: n === 1 ? 'Named in ' : 'Named in these recipes: ' }), recipeLinks(x.recipes)) : null,
+      x.likely ? h('div', { class: 'rcheck-likely' }, h('span', { text: 'You’ve been buying ' }), h('b', { text: x.likely.name }),
+        h('span', { text: `${x.likely.vendor ? ` from ${x.likely.vendor}` : ''} (${x.likely.times} invoice${x.likely.times === 1 ? '' : 's'}, last ${shortDate(x.likely.lastDate)})${x.likely.inNoRecipe ? ', and no recipe uses it' : ''}. Is that what ${n === 1 ? 'it' : 'they'} should say?` })) : null,
+      h('div', { class: 'row tight wrap' }, swapBtn,
+        h('button', { class: `btn small-btn${x.likely ? '' : ' dark'}`, text: x.likely ? 'Something else…' : 'Pick what replaces it…', onclick: () => { pickBox.hidden = false; pickIn.focus(); } }),
+        h('button', { class: 'btn small-btn', text: 'It’s right as is', onclick: () => dismiss(row, `ingredient:notBought:${x.productId}`, `${x.name}: right as is, though not bought lately`, `${x.name}: kept as is. It won’t be flagged again.`) })),
+      pickBox);
+    return row;
+  };
+  const unusedRow = (x) => {
+    const row = h('article', { class: 'rcheck' });
+    fill(row,
+      h('div', { class: 'row wrap' }, h('h3', { class: 'grow', text: x.name }), h('span', { class: 'small muted', text: `${dollars(x.dollars)} in 60 days` })),
+      h('div', { class: 'small', text: `On ${x.times} invoices, last ${shortDate(x.lastDate)}${x.vendor ? ` (${x.vendor})` : ''}. No recipe uses it.` }),
+      h('div', { class: 'row tight wrap' },
+        h('button', { class: 'btn small-btn', text: 'Not for the menu', title: 'Staff meal, cleaning, or something sold as is: stop asking', onclick: () => dismiss(row, `ingredient:notInRecipe:${x.productId}`, `${x.name}: not for the menu`, `${x.name}: not for the menu. It won’t be listed again.`) })));
+    return row;
+  };
+  const stale = d.notBought, unused = d.notInRecipes;
+  show(shell(me, rail, [
+    h('header', { class: 'row wrap' },
+      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: AREA_NAMES[side] }), h('h1', { text: 'Recipe checks' })),
+      h('div', { class: 'row wrap' }, sideSwitch(me, again), from ? h('button', { class: 'btn', text: `← ${from.label}`, onclick: () => from.go() }) : null)),
+    page([
+      productList,
+      h('section', { class: 'card' },
+        h('h2', { text: 'Used on the menu, not bought lately' }),
+        h('div', { class: 'small muted', text: 'Sales run through your recipes say these get used every week, but no invoice has brought them in for far longer than a pack lasts. Usually the recipe names a product you’ve stopped buying.' }),
+        stale.length ? h('div', { class: 'rchecks' }, stale.map(staleRow)) : h('div', { class: 'small', text: 'Nothing: everything the menu uses has come in on an invoice lately.' })),
+      h('section', { class: 'card' },
+        h('h2', { text: 'Bought regularly, in no recipe' }),
+        h('div', { class: 'small muted', text: 'On 3 or more invoices in the last 60 days, and no recipe uses it. A recipe may be missing it, or it isn’t for the menu.' }),
+        unused.length ? h('div', { class: 'rchecks' }, unused.map(unusedRow)) : h('div', { class: 'small', text: 'Nothing: everything you buy regularly is in a recipe.' })),
+    ], [
+      sideBox('How it’s checked', h('div', { class: 'small muted', text: 'Each dish still on the menu, times what sold, run down through its recipe to what you buy. A product is flagged when, since its last invoice, the menu would have gone through 3 packs or more (or $40 worth, if it was never bought) and at least 4 weeks have passed. A big bag used a pinch at a time isn’t flagged.' })),
+    ]),
+  ]));
+}
+
 function cardEditor(me, d, card, start = {}) {
   // Where it was opened from is where Back, Cancel and Save return to (Recipe costs unless said).
   const back = start.back ?? { label: 'Recipe costs', go: () => cardsScreen(me), rail: 'menu' };
@@ -3118,7 +3212,7 @@ async function todayScreen(me, filter = 'all') {
   const go = (g) => ({
     count: () => prepCount(me, g.stationId, g.date), review: () => prepReview(me, g.stationId, g.date), work: () => prepWork(me, g.stationId, g.date),
     menu: () => menuScreen(me), performance: () => marginsScreen(me), settings: () => home(me),
-    cards: () => cardsScreen(me), drafts: () => draftsScreen(me), order: () => orderScreen(me, g.vendorId), orders: () => { if (g.side) { me.side = g.side; me.ordersSide = g.side; } ordersScreen(me); },
+    cards: () => cardsScreen(me), drafts: () => draftsScreen(me), recipeChecks: () => { if (g.side) me.side = g.side; recipeChecksScreen(me, { from: returnTo('Today', () => todayScreen(me)) }); }, order: () => orderScreen(me, g.vendorId), orders: () => { if (g.side) { me.side = g.side; me.ordersSide = g.side; } ordersScreen(me); },
   })[g.to]?.();
   const targetOf = (b) => (b.type === 'dismiss' ? { dedupeKey: b.dedupeKey } : { catalogId: b.catalogId, itemName: b.itemName, ...(b.variationName ? { variationName: b.variationName } : {}), ...(b.from ? { from: b.from } : {}) });
   // A line folded up in place: what was done, and Undo. Saving happens behind it.
