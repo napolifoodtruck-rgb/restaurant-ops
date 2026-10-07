@@ -33,6 +33,12 @@ function h(tag, props = {}, ...children) {
 }
 const show = (...nodes) => { document.querySelector('.added')?.remove(); root.replaceChildren(...nodes.flat(Infinity).filter(Boolean)); };
 const money = (cents) => `$${(cents / 100).toFixed(2).replace(/\.00$/, '')}`;
+/** Square names carry kitchen shorthand ("++ Extra Mozzarella", "PARTIALLY COOKED (ONLY OPTION ONLINE)"):
+ *  customers see the plain name. */
+const tidy = (name) => {
+  const s = String(name).replace(/\s*\((?:ONLY OPTION ONLINE|NOT AVAILABLE ONLINE)\)/gi, '').replace(/^[\s+*\-–—]+/, '').trim();
+  return s === s.toUpperCase() && /[A-Z]/.test(s) ? s.charAt(0) + s.slice(1).toLowerCase() : s;
+};
 const money2 = (cents) => `$${(cents / 100).toFixed(2)}`;
 
 async function api(method, path, body) {
@@ -128,27 +134,44 @@ function cartBar() {
 function menuView() {
   const cats = [...new Set(M.items.map((x) => x.category))];
   const slug = (c) => `cat-${c.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
-  show(header(), h('div', { class: 'wrap' },
+  show(header(), h('div', { class: 'wrap menu' },
     partialNotice(),
     pickupLine(),
     cats.length > 1 ? h('nav', { class: 'cats', 'aria-label': 'Menu sections' }, cats.map((c) => h('a', { href: `#${slug(c)}`, text: c }))) : null,
     M.items.length ? cats.map((c) => [h('h2', { id: slug(c), text: c }), h('div', { class: 'items' }, M.items.filter((x) => x.category === c).map(itemCard))])
       : h('p', { class: 'muted', text: 'The online menu isn’t up yet.' })),
     cartBar());
+  followSections();
+}
+/** Underline the section being read in the sticky section bar. */
+function followSections() {
+  const links = [...document.querySelectorAll('.cats a')];
+  if (!links.length || !('IntersectionObserver' in window)) return;
+  const seen = new IntersectionObserver((entries) => {
+    for (const e of entries) if (e.isIntersecting) {
+      for (const a of links) a.classList.toggle('on', a.getAttribute('href') === `#${e.target.id}`);
+      document.querySelector('.cats a.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  }, { rootMargin: '-70px 0px -70% 0px' });
+  for (const a of links) { const sec = document.querySelector(a.getAttribute('href')); if (sec) seen.observe(sec); }
 }
 
 function itemCard(item) {
   const from = Math.min(...item.variations.map((v) => v.price));
-  return h('button', { class: 'item', disabled: item.soldOut || !M.open ? true : undefined, onclick: () => itemSheet(item) },
+  const off = item.soldOut || !M.open;
+  return h('button', { class: 'item', disabled: off ? true : undefined, onclick: () => itemSheet(item) },
     h('div', { class: 'grow' },
-      h('div', { class: 'name' }, item.name, item.soldOut ? h('span', { class: 'tag out', text: 'Sold out tonight' }) : null),
+      h('div', { class: 'name', text: item.name }),
       item.description ? h('div', { class: 'desc', text: item.description }) : null,
-      item.notes.length ? h('div', { class: 'desc' }, item.notes.map((n) => h('span', { class: 'tag', style: 'margin:4px 6px 0 0', text: n }))) : null),
-    h('div', { class: 'price', text: `${item.variations.length > 1 ? 'from ' : ''}${money(from)}` }),
-    item.image ? h('img', { src: item.image, alt: '', loading: 'lazy' }) : null);
+      h('div', { class: 'meta' },
+        h('span', { class: 'price', text: `${item.variations.length > 1 ? 'from ' : ''}${money(from)}` }),
+        item.soldOut ? h('span', { class: 'tag out', text: 'Sold out tonight' }) : item.notes.map((n) => h('span', { class: 'tag', text: tidy(n) })))),
+    h('div', { class: 'pic' }, item.image ? h('img', { src: item.image, alt: '', loading: 'lazy' }) : null,
+      off ? null : h('span', { class: 'plus', 'aria-hidden': 'true', text: '+' })));
 }
 
-function closeSheet() { document.querySelector('.sheet-bg')?.remove(); }
+function closeSheet() { document.querySelector('.sheet-bg')?.remove(); document.body.classList.remove('locked'); }
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
 
 function itemSheet(item, editing) {
   let variationId = editing?.variationId ?? item.variations[0].id;
@@ -173,7 +196,7 @@ function itemSheet(item, editing) {
         input.checked ? picked.add(o.id) : picked.delete(o.id);
         refresh();
       });
-      return h('label', { class: 'opt' }, input, h('span', { class: 'grow', text: o.name }), o.price ? h('span', { class: 'muted', text: `+${money(o.price)}` }) : null);
+      return h('label', { class: 'opt' }, input, h('span', { class: 'grow', text: tidy(o.name) }), o.price ? h('span', { class: 'muted', text: `+${money(o.price)}` }) : null);
     })));
   addBtn.addEventListener('click', () => {
     for (const list of item.optionLists) {
@@ -190,17 +213,23 @@ function itemSheet(item, editing) {
   const bg = h('div', { class: 'sheet-bg', onclick: (e) => e.target === bg && closeSheet() },
     h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': item.name },
       item.image ? h('img', { class: 'hero', src: item.image, alt: '' }) : null,
-      h('div', { class: 'row' }, h('h3', { class: 'grow', text: item.name }), h('button', { class: 'link', text: 'Close', onclick: closeSheet })),
-      item.description ? h('p', { class: 'muted small', text: item.description }) : null,
-      item.notes.length ? h('p', { class: 'small' }, h('b', { text: item.notes.join(' · ') }), item.isPizza ? ' Finish it in your oven at home.' : '') : null,
-      variations, lists,
-      h('div', { class: 'qty' },
-        h('button', { 'aria-label': 'One less', text: '−', onclick: () => { quantity = Math.max(1, quantity - 1); refresh(); } }), qtyText,
-        h('button', { 'aria-label': 'One more', text: '+', onclick: () => { quantity = Math.min(20, quantity + 1); refresh(); } })),
-      err, addBtn));
+      h('button', { class: 'sheet-close', 'aria-label': 'Close', text: '×', onclick: closeSheet }),
+      h('div', { class: 'sheet-body' },
+        h('h3', { text: item.name }),
+        item.description ? h('p', { class: 'muted', text: item.description }) : null,
+        item.notes.length ? h('p', { class: 'note' }, h('b', { text: item.notes.map(tidy).join(' · ') }), item.isPizza ? '. Finish it in your oven at home.' : '') : null,
+        variations, lists),
+      h('div', { class: 'sheet-foot' }, err,
+        h('div', { class: 'row' },
+          h('div', { class: 'qty' },
+            h('button', { 'aria-label': 'One less', text: '−', onclick: () => { quantity = Math.max(1, quantity - 1); refresh(); } }), qtyText,
+            h('button', { 'aria-label': 'One more', text: '+', onclick: () => { quantity = Math.min(20, quantity + 1); refresh(); } })),
+          addBtn))));
   refresh();
   closeSheet();
   document.body.append(bg);
+  document.body.classList.add('locked');
+  bg.querySelector('.sheet-close').focus({ preventScroll: true });
 }
 
 // ------------------------------------------------------------------ cart and checkout
@@ -223,10 +252,10 @@ function addedPreview(line) {
 function lineView(l, actions = true) {
   const f = variationOf(l.variationId);
   if (!f) return null;
-  const opts = optionsOf(f.item, l.optionIds).map((o) => o.name);
+  const opts = optionsOf(f.item, l.optionIds).map((o) => tidy(o.name));
   return h('div', { class: 'line' },
     h('div', { class: 'row' }, h('span', { class: 'grow strong', text: `${l.quantity} × ${f.item.name}${f.item.variations.length > 1 ? ` (${f.v.name})` : ''}` }), h('span', { text: money(linePrice(l)) })),
-    [...f.item.notes, ...opts].length ? h('div', { class: 'mods', text: [...f.item.notes, ...opts].join(', ') }) : null,
+    [...f.item.notes, ...opts].length ? h('div', { class: 'mods', text: [...f.item.notes.map(tidy), ...opts].join(', ') }) : null,
     actions ? h('div', { class: 'row', style: 'margin-top:6px; gap:16px' },
       h('button', { class: 'link', text: 'Change', onclick: () => itemSheet(f.item, l) }),
       h('button', { class: 'link', text: 'Remove', onclick: () => { cart = cart.filter((x) => x !== l); saveCart(); cart.length ? cartView() : menuView(); } })) : null);
@@ -397,7 +426,7 @@ function doneView(order) {
     finishSteps(),
     h('div', { class: 'card' }, order.lines.map((l) => h('div', { class: 'line' },
       h('div', { class: 'row' }, h('span', { class: 'grow strong', text: `${l.quantity} × ${l.name}` }), h('span', { text: money2(l.total) })),
-      l.modifiers.length ? h('div', { class: 'mods', text: l.modifiers.map((m) => m.name).join(', ') }) : null)),
+      l.modifiers.length ? h('div', { class: 'mods', text: l.modifiers.map((m) => tidy(m.name)).join(', ') }) : null)),
       h('div', { class: 'totals' }, h('div', { class: 'total' }, h('span', { text: 'Paid' }), h('span', { text: money2(order.total + order.tip) })))),
     order.receiptUrl ? h('p', {}, h('a', { href: order.receiptUrl, target: '_blank', rel: 'noopener', text: 'Your receipt' })) : null,
     h('button', { class: 'btn wide', text: 'Back to the menu', onclick: menuView })));
