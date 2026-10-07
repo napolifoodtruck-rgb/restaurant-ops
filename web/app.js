@@ -2643,6 +2643,7 @@ function cardEditor(me, d, card, start = {}) {
       if (!res.ok) return;
       const hints = [...lines.querySelectorAll('.irow-hint')];
       const srcs = [...lines.querySelectorAll('.isrc')];
+      const ages = new Set();
       [...lines.querySelectorAll('.icost')].forEach((el, n) => {
         const i = c.ingredients[n];
         const l = res.data.lines[usable.indexOf(i)] ?? {};
@@ -2651,14 +2652,21 @@ function cardEditor(me, d, card, start = {}) {
         el.title = l.problem ?? '';
         el.classList.toggle('warn-text', Boolean(l.problem) || (st && st !== 'ok'));
         if (srcs[n]) drawSource(srcs[n], l.source);
+        const age = priceAge(l.source);
+        if (age.level && st === 'ok' && !l.problem) ages.add(age.level);
         // A finished line that still can't be costed says why, under it (a tooltip never shows on an iPad).
         const hint = hints[n];
         if (!hint || st !== 'ok') return;
-        hint.classList.remove('src-note');
+        hint.classList.remove('src-note', 'age-yellow', 'age-red');
         if (st === 'ok' && l.problem) { hint.dataset.cost = '1'; fill(hint, costHint(i, l)); }
-        else if (st === 'ok' && l.source?.from === 'marginedge') { hint.dataset.cost = '1'; hint.classList.add('src-note'); fill(hint, h('span', { text: 'Priced from MarginEdge’s last price: it isn’t on a recent invoice.' })); }
+        // No room for the Price from box: an old price is said under its line instead, in the same colour.
+        else if (st === 'ok' && age.level) { hint.dataset.cost = '1'; hint.classList.add('src-note', `age-${age.level}`); fill(hint, h('span', { text: age.line })); }
         else if (hint.dataset.cost === '1') { delete hint.dataset.cost; fill(hint); }
       });
+      // The key to the colours, under the lines, only for the colours in use.
+      fill(ageNote,
+        ages.has('yellow') ? h('div', { class: 'age-key age-yellow' }, h('i'), h('span', { text: 'Yellow: the price was last paid more than 3 months ago, so it may be out of date.' })) : null,
+        ages.has('red') ? h('div', { class: 'age-key age-red' }, h('i'), h('span', { text: 'Red: more than 6 months ago, or MarginEdge’s last price from before the invoices we read. Check it before trusting the cost.' })) : null);
       total.textContent = `${money2(res.data.total)}${toFinish() ? '+' : ''}`;
       const y = c.yields.find((x) => Number(x.amount) > 0 && x.unit);
       const per = prepKind() ? (y ? `for ${qty(Number(y.amount))} ${UNIT_LABEL(y.unit)}` : 'for one batch') : `a ${c.kind === 'drink' ? 'drink' : 'plate'}`;
@@ -2679,21 +2687,33 @@ function cardEditor(me, d, card, start = {}) {
     if (l.problem) return h('span', { class: 'warn-text', text: `No cost yet: ${l.problem}.` });
     return null;
   };
+  // How old a price is: yellow past 3 months, red past 6 (or MarginEdge's last price, which is older
+  // than every invoice we read). `line` says it under the line when the Price from box is hidden.
+  const priceAge = (src) => {
+    if (src?.from === 'marginedge') return { level: 'red', line: 'MarginEdge’s last price, from before the invoices we read (over 6 months): it may be out of date.' };
+    if (!(src?.from === 'invoice' || src?.from === 'manual') || !src.date) return { level: '' };
+    const days = (Date.now() - Date.parse(`${src.date}T12:00:00`)) / 86_400_000;
+    const level = days > 182 ? 'red' : days > 91 ? 'yellow' : '';
+    const what = src.from === 'manual' ? 'Price set by hand' : src.vendor ? `Last paid to ${src.vendor}` : 'Last paid';
+    return { level, line: `${what} on ${dateWithYear(src.date)}, over ${level === 'red' ? 6 : 3} months ago: it may be out of date.` };
+  };
+  const ageNote = h('div', { class: 'age-keys' });
   // Where a line's price comes from, beside its cost: the vendor and invoice date, so a wrong or old
   // price shows while the recipe is being written.
   const drawSource = (el, src) => {
     el.className = 'isrc';
     if (!src) return fill(el);
+    const { level } = priceAge(src);
+    if (level) el.classList.add(`age-${level}`);
     if (src.from === 'invoice') {
-      const age = (Date.now() - Date.parse(`${src.date}T12:00:00`)) / 86_400_000, old = age > 90;
+      const age = (Date.now() - Date.parse(`${src.date}T12:00:00`)) / 86_400_000;
       const when = age > 300 ? dateWithYear(src.date) : shortDate(src.date);
-      el.classList.toggle('old', old);
       el.title = `${src.vendor ?? 'Invoice'}, ${when}${src.invoices > 1 ? `: the average of ${src.invoices} invoices in the last 60 days, latest shown` : ''}`;
       const vendor = (src.vendor ?? 'Invoice').replace(/,?\s+(inc|llc|co|corp|ltd|company)\.?$/i, '').trim();
       return fill(el, h('b', { text: vendor }), h('span', { text: `${when}${src.invoices > 1 ? ` · avg of ${src.invoices}` : ''}` }));
     }
     if (src.from === 'manual') { el.title = 'A price set by hand in the app'; return fill(el, h('b', { text: 'Set by hand' }), src.date ? h('span', { text: shortDate(src.date) }) : null); }
-    if (src.from === 'marginedge') { el.classList.add('old'); el.title = 'Not on an invoice we’ve read: MarginEdge’s last price, which may be old'; return fill(el, h('b', { text: 'MarginEdge' }), h('span', { text: 'last price' })); }
+    if (src.from === 'marginedge') { el.title = 'Not on an invoice we’ve read: MarginEdge’s last price, which may be old'; return fill(el, h('b', { text: 'MarginEdge' }), h('span', { text: 'last price' })); }
     el.title = 'Costed from its own recipe’s lines';
     return fill(el, h('span', { text: 'its recipe' }));
   };
@@ -2961,7 +2981,7 @@ function cardEditor(me, d, card, start = {}) {
         basePick,
         yieldBox, yieldList,
         start.note && !card ? h('div', { class: 'note small', text: start.note }) : null,
-        datalist, lines,
+        datalist, h('div', { class: 'ilist-wrap' }, lines, ageNote),
         h('div', { class: 'strong', text: 'Steps' }), stepsBox,
         err,
         h('div', { class: 'row wrap' },

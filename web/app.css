@@ -910,8 +910,21 @@ button.donut-row { display: flex; min-width: 0; }
 .isrc:empty { border-color: transparent; }
 .isrc b { color: var(--ink); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .isrc span { white-space: nowrap; }
-.isrc.old { background: #FFF6E0; border-color: #EBD9A8; }
-.isrc.old b, .isrc.old span { color: #8A5A00; }
+/* How old a price is: yellow past 3 months, red past 6. The key under the lines matches. */
+.isrc.age-yellow { background: #FFF6E0; border-color: #EBD9A8; }
+.isrc.age-yellow b, .isrc.age-yellow span { color: #8A5A00; }
+.isrc.age-red { background: #FDECEA; border-color: #F2B8B5; }
+.isrc.age-red b, .isrc.age-red span { color: #B42318; }
+.irow-hint.age-yellow { color: #8A5A00; }
+.irow-hint.age-red { color: #B42318; }
+.ilist-wrap { container-type: inline-size; }
+.age-keys:empty { display: none; }
+.age-keys { display: flex; flex-direction: column; gap: 4px; margin: 2px 0 10px; font-size: 12.5px; }
+.age-key { display: flex; gap: 8px; align-items: flex-start; }
+.age-key i { flex: none; width: 14px; height: 14px; border-radius: 4px; margin-top: 1px; border: 1px solid; }
+.age-key.age-yellow { color: #8A5A00; } .age-key.age-yellow i { background: #FFF6E0; border-color: #EBD9A8; }
+.age-key.age-red { color: #B42318; } .age-key.age-red i { background: #FDECEA; border-color: #F2B8B5; }
+@container (max-width: 640px) { .age-keys { display: none; } }
 /* Not enough room for it all (iPad portrait, or landscape beside the cost box): the Price from box goes. */
 .ilist { container-type: inline-size; }
 @container (max-width: 640px) {
