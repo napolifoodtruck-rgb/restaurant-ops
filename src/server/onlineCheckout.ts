@@ -2,7 +2,7 @@
  * Online ordering for customers. Public: no sign-in. Same day, pickup only.
  *
  *   GET  /api/order/menu          the published menu, tonight's windows, and what the card form needs
- *   POST /api/order/checkout      { lines: [{ variationId, quantity, optionIds? }], window, name, phone, email?, tip, understood: true, replaces? }
+ *   POST /api/order/checkout      { lines: [{ variationId, quantity, optionIds? }], window, firstName, lastName, phone, email, tip, understood: true, replaces? }
  *                                 holds the pizzas in that window, creates the Square order; returns its total.
  *                                 `replaces`: the customer's earlier unpaid order, whose hold is given up first
  *   POST /api/order/:id/pay       { sourceId, verificationToken? }  the card token from the Web Payments SDK
@@ -238,14 +238,18 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       const r = await restaurant();
       const now = nowIn(r.timezone);
       const b = await body(req);
-      const name = typeof b.name === 'string' ? b.name.trim().slice(0, 80) : '';
+      const part = (v: unknown) => typeof v === 'string' ? v.trim().replace(/\s+/g, ' ').slice(0, 40) : '';
+      // A page loaded before first and last name were asked for sends one `name`.
+      const [first, last] = b.firstName === undefined && typeof b.name === 'string' ? [part(b.name).split(' ')[0], part(b.name).split(' ').slice(1).join(' ')] : [part(b.firstName), part(b.lastName)];
+      const name = `${first} ${last}`.trim();
       const phone = typeof b.phone === 'string' ? b.phone.trim() : '';
-      const email = typeof b.email === 'string' && b.email.trim() ? b.email.trim().slice(0, 120) : undefined;
-      if (!name) throw new HttpError(400, 'What name is the order under?');
+      const email = typeof b.email === 'string' ? b.email.trim().slice(0, 120) : '';
+      if (!first || !last) throw new HttpError(400, 'Your first and last name, please.');
       const digits = phone.replace(/\D/g, '');
       if (digits.length !== 10 && !(digits.length === 11 && digits.startsWith('1'))) throw new HttpError(400, 'A phone number, so we can reach you about the order.');
       const e164 = `+1${digits.slice(-10)}`;
-      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'That email doesn’t look right.');
+      if (!email) throw new HttpError(400, 'Your email, for your order confirmation.');
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'That email doesn’t look right.');
       if (b.understood !== true) throw new HttpError(400, 'Please confirm you know the pizzas are partially cooked, to finish at home.');
       const pause = await loadPause(db, r.id, r.timezone);
       if (pause) throw new HttpError(409, pause.tonight ? 'Sorry, we’ve stopped taking online orders for tonight.' : `Sorry, we’re very busy right now. We’ll take online orders again from ${clock(pause.untilTime)}.`);
@@ -278,10 +282,10 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       const id = (await db.query<{ id: string; pickup_at: string }>(
         `INSERT INTO online_orders (restaurant_id, day, window_starts, pizzas, hold_until, customer_name, customer_phone, customer_email, lines, subtotal_cents, total_cents, tip_cents, understood_partial)
          VALUES ($1, $2, $3, $4, now() + make_interval(mins => $5::int), $6, $7, $8, $9::jsonb, $10, $10, $11, true) RETURNING id`,
-        [r.id, now.date, b.window, cart.pizzas, HOLD_MINUTES, name, phone, email ?? null, JSON.stringify(cart.lines), cart.subtotal, tip])).rows[0]!.id;
+        [r.id, now.date, b.window, cart.pizzas, HOLD_MINUTES, name, phone, email, JSON.stringify(cart.lines), cart.subtotal, tip])).rows[0]!.id;
       const pickupAt = (await db.query<{ t: string }>('SELECT to_char((($1::date + $2::time) AT TIME ZONE $3) AT TIME ZONE \'UTC\', \'YYYY-MM-DD"T"HH24:MI:SS"Z"\') AS t', [now.date, b.window, r.timezone])).rows[0]!.t;
       try {
-        const order = await ready.square.createPickupOrder({ idempotencyKey: id, locationId: ready.locationId, referenceId: id.slice(0, 8), lines: cart.lines, pickupAt, customer: { name, phone: e164, ...(email ? { email } : {}) }, note: 'Online order: pizzas partially cooked, finished at home.' });
+        const order = await ready.square.createPickupOrder({ idempotencyKey: id, locationId: ready.locationId, referenceId: id.slice(0, 8), lines: cart.lines, pickupAt, customer: { name, phone: e164, email }, note: 'Online order: pizzas partially cooked, finished at home.' });
         await db.query('UPDATE online_orders SET square_order_id = $2, tax_cents = $3, total_cents = $4 WHERE id = $1', [id, order.id, order.tax, order.total]);
       } catch (err) {
         await db.query("UPDATE online_orders SET status = 'failed', failure = $2 WHERE id = $1", [id, (err as Error).message.slice(0, 500)]);

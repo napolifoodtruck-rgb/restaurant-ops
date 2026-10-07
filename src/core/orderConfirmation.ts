@@ -17,6 +17,7 @@ export const FINISH_STEPS = [
 export interface ConfirmationOrder {
   id: string;
   restaurant: string;
+  /** First and last. */
   name: string;
   /** "5:00 pm" */
   pickup: string;
@@ -41,6 +42,7 @@ const money = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 const escape = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
 export function confirmationEmail(o: ConfirmationOrder): Email {
+  const first = o.name.split(' ')[0] || o.name;
   const ref = o.id.slice(0, 8).toUpperCase();
   const pizzas = o.lines.some((l) => l.isPizza ?? true);
   const lines = o.lines.map((l) => ({ what: `${l.quantity} × ${tidy(l.name)}`, mods: l.modifiers.map((m) => tidy(m.name)).filter(Boolean).join(', '), total: money(l.total) }));
@@ -48,7 +50,7 @@ export function confirmationEmail(o: ConfirmationOrder): Email {
   const subject = `Your ${o.restaurant} order: pickup today at ${o.pickup}`;
 
   const text = [
-    `Thank you, ${o.name}! Your order is paid and we’re on it.`,
+    `Thank you, ${first}! Your order is paid and we’re on it.`,
     '',
     `Pickup today at ${o.pickup}`,
     `Order ${ref}, under the name ${o.name}`,
@@ -68,7 +70,7 @@ export function confirmationEmail(o: ConfirmationOrder): Email {
 <div style="max-width:560px;margin:0 auto;padding:24px 16px">
 <div style="background:#fff;border-radius:16px;padding:24px">
 <p style="margin:0 0 4px;font-size:14px;color:#6b665e">${escape(o.restaurant)}</p>
-<h1 style="margin:0 0 16px;font-size:22px">Thank you, ${escape(o.name)}!</h1>
+<h1 style="margin:0 0 16px;font-size:22px">Thank you, ${escape(first)}!</h1>
 <p style="margin:0 0 4px;font-size:18px"><b>Pickup today at ${escape(o.pickup)}</b></p>
 <p style="margin:0 0 20px;color:#6b665e">Order ${escape(ref)}, under the name ${escape(o.name)}</p>
 <table role="presentation" style="width:100%;border-collapse:collapse;font-size:15px">

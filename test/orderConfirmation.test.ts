@@ -3,18 +3,18 @@ import assert from 'node:assert/strict';
 import { confirmationEmail, tidy } from '../src/core/orderConfirmation.ts';
 import { emailSender } from '../src/connectors/email.ts';
 
-const order = { id: 'abcdef12-0000-0000-0000-000000000000', restaurant: 'Napoli', name: 'Ada <b>', pickup: '6:20 pm', lines: [{ quantity: 1, name: 'MARGHERITA', total: 1500, isPizza: true, modifiers: [{ name: 'PARTIALLY COOKED (ONLY OPTION ONLINE)' }, { name: '++ Extra Mozzarella' }] }], subtotal: 1500, tax: 113, tip: 0, total: 1613, receiptUrl: 'https://squareup.com/receipt/r?a=1&b=2' };
+const order = { id: 'abcdef12-0000-0000-0000-000000000000', restaurant: 'Napoli', name: '<b>Ada</b> Lovelace', pickup: '6:20 pm', lines: [{ quantity: 1, name: 'MARGHERITA', total: 1500, isPizza: true, modifiers: [{ name: 'PARTIALLY COOKED (ONLY OPTION ONLINE)' }, { name: '++ Extra Mozzarella' }] }], subtotal: 1500, tax: 113, tip: 0, total: 1613, receiptUrl: 'https://squareup.com/receipt/r?a=1&b=2' };
 
 test('the confirmation email', () => {
   const e = confirmationEmail(order);
   assert.equal(e.subject, 'Your Napoli order: pickup today at 6:20 pm');
-  assert.match(e.text, /Order ABCDEF12, under the name Ada <b>/);
+  assert.match(e.text, /Order ABCDEF12, under the name <b>Ada<\/b> Lovelace/);
   assert.match(e.text, /1 × Margherita  \$15\.00\n   Partially cooked, Extra Mozzarella/);
   assert.match(e.text, /Tax: \$1\.13\nTotal paid: \$16\.13/);
   assert.doesNotMatch(e.text, /Tip:/);
   assert.match(e.text, /4\. Add any finishing toppings\./);
   // Names from the order can't add markup.
-  assert.match(e.html, /Thank you, Ada &lt;b&gt;!/);
+  assert.match(e.html, /Thank you, &lt;b&gt;Ada&lt;\/b&gt;!/);
   assert.match(e.html, /href="https:\/\/squareup\.com\/receipt\/r\?a=1&amp;b=2"/);
   // Drinks only: nothing about finishing pizzas.
   const drinks = confirmationEmail({ ...order, lines: [{ quantity: 2, name: 'Soda', total: 600, isPizza: false, modifiers: [] }], receiptUrl: null });

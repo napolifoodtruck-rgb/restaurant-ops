@@ -1,7 +1,7 @@
 // The customers' ordering page. Plain module, no build step, built with h() like the kitchen app
 // so names from the menu can't inject markup. Phone first.
 //
-// Menu → item → cart → checkout (pickup time, name, phone, tip, "partially cooked" box) → card
+// Menu → item → cart → checkout (pickup time, first and last name, phone, email, tip, "partially cooked" box) → card
 // (Square's Web Payments SDK) → confirmation. The cart stays on this device until the order is paid.
 
 const root = document.getElementById('order');
@@ -300,9 +300,12 @@ function checkoutView() {
   const pickup = pickupLine();
   const saved = store.get('customer') ?? {};
   const err = h('div', { class: 'error' });
-  const name = h('input', { type: 'text', autocomplete: 'name', value: saved.name ?? '', required: true });
+  // Saved before first and last name were asked for: one `name`.
+  const [savedFirst = '', ...savedLast] = saved.firstName === undefined ? String(saved.name ?? '').trim().split(/\s+/) : [saved.firstName, saved.lastName ?? ''];
+  const firstName = h('input', { type: 'text', autocomplete: 'given-name', value: savedFirst, required: true });
+  const lastName = h('input', { type: 'text', autocomplete: 'family-name', value: savedLast.join(' '), required: true });
   const phone = h('input', { type: 'tel', autocomplete: 'tel', inputmode: 'tel', value: saved.phone ?? '', required: true });
-  const email = h('input', { type: 'email', autocomplete: 'email', value: saved.email ?? '', placeholder: 'For your receipt (optional)' });
+  const email = h('input', { type: 'email', autocomplete: 'email', value: saved.email ?? '', placeholder: 'Your confirmation goes here', required: true });
   let tipPct = 0;
   const tipRow = h('div', { class: 'tips' });
   const subtotal = cartTotal();
@@ -315,11 +318,13 @@ function checkoutView() {
     err.textContent = '';
     if (!understood.checked) return (err.textContent = 'Please tick the box: the pizzas are partially cooked, to finish at home.');
     if (!pickupWindow()) return (err.textContent = 'We’re full for online orders tonight.');
+    if (!firstName.value.trim() || !lastName.value.trim()) return (err.textContent = 'Your first and last name, please.');
+    if (!email.value.trim()) return (err.textContent = 'Your email, for your order confirmation.');
     go.disabled = true;
-    store.set('customer', { name: name.value, phone: phone.value, email: email.value });
+    store.set('customer', { firstName: firstName.value, lastName: lastName.value, phone: phone.value, email: email.value });
     const r = await api('POST', '/api/order/checkout', {
       lines: cart.map((l) => ({ variationId: l.variationId, quantity: l.quantity, optionIds: l.optionIds })),
-      window: pickupWindow()?.starts, name: name.value, phone: phone.value, email: email.value || undefined,
+      window: pickupWindow()?.starts, firstName: firstName.value, lastName: lastName.value, phone: phone.value, email: email.value,
       tip: Math.round(subtotal * tipPct / 100), understood: true,
       // An order started earlier and not paid gives up its pickup slot to this one.
       replaces: store.get('pending') ?? undefined,
@@ -339,7 +344,7 @@ function checkoutView() {
     h('h1', { text: 'Checkout' }),
     h('div', { class: 'card' },
       pickup,
-      h('label', { class: 'field' }, 'Name for the order', name),
+      h('div', { class: 'pair' }, h('label', { class: 'field' }, 'First name', firstName), h('label', { class: 'field' }, 'Last name', lastName)),
       h('label', { class: 'field' }, 'Phone', phone),
       h('label', { class: 'field' }, 'Email', email),
       h('div', { class: 'field strong small', style: 'margin-top:16px', text: 'Tip for the team' }), tipRow),

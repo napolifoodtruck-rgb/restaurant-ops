@@ -119,9 +119,12 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.deepEqual(menu.items.map((x: any) => [x.name, x.isPizza, x.notes]), [['Soda', false, []], ['Margherita', true, ['Partially cooked']]]);
   assert.deepEqual(menu.windows.slice(0, 2).map((w: any) => [w.starts, w.label, w.left, w.open]), [['17:00', '5:00 pm', 2, true], ['17:20', '5:20 pm', 4, true]]);
 
-  const order = { lines: [{ variationId: 'var-marg', quantity: 2, optionIds: ['m-arugula'] }, { variationId: 'var-soda', quantity: 1 }], window: '17:00', name: 'Ada', phone: '(919) 555-0100', email: 'ada@example.com', tip: 300, understood: true };
+  const order = { lines: [{ variationId: 'var-marg', quantity: 2, optionIds: ['m-arugula'] }, { variationId: 'var-soda', quantity: 1 }], window: '17:00', firstName: 'Ada', lastName: 'Lovelace', phone: '(919) 555-0100', email: 'ada@example.com', tip: 300, understood: true };
   // What a customer has to give us.
   assert.equal((await customer('POST', '/api/order/checkout', { ...order, understood: false })).status, 400);
+  assert.equal((await customer('POST', '/api/order/checkout', { ...order, lastName: ' ' })).status, 400);
+  assert.equal((await customer('POST', '/api/order/checkout', { ...order, email: '' })).status, 400);
+  assert.equal((await customer('POST', '/api/order/checkout', { ...order, firstName: undefined, lastName: undefined, name: 'Ada' })).status, 400);
   assert.equal((await customer('POST', '/api/order/checkout', { ...order, phone: '555-0100' })).status, 400);
   assert.equal((await customer('POST', '/api/order/checkout', { ...order, window: '17:10' })).status, 400);
   assert.equal((await customer('POST', '/api/order/checkout', { ...order, tip: 99999 })).status, 400);
@@ -139,6 +142,7 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.equal(sent.idempotency_key, held.json.id);
   assert.deepEqual(sent.order.line_items.map((l: any) => [l.name, l.quantity, l.base_price_money.amount, l.modifiers.map((m: any) => m.name)]), [['Margherita', '2', 1500, ['Partially cooked', 'Arugula']], ['Soda', '1', 300, []]]);
   const pickup = sent.order.fulfillments[0].pickup_details;
+  assert.equal(pickup.recipient.display_name, 'Ada Lovelace');
   assert.deepEqual([pickup.recipient.phone_number, pickup.schedule_type, pickup.pickup_at.endsWith('Z')], ['+19195550100', 'SCHEDULED', true]);
   assert.equal(new Date(pickup.pickup_at).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }), '5:00 PM');
 
@@ -269,11 +273,9 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   await db!.query("UPDATE online_orders SET paying_since = now() - interval '5 minutes' WHERE id = $1", [busy.json.id]);
   assert.equal((await customer('POST', `/api/order/${busy.json.id}/pay`, { sourceId: 'cnon:card-ok-7' })).json.status, 'paid');
 
-  // No email given: no confirmation. Email down: tried again when the order is next looked at.
-  const noEmail = await customer('POST', '/api/order/checkout', { ...order, email: '', window: '18:40', lines: [{ variationId: 'var-soda', quantity: 1 }], tip: 0 });
-  assert.equal((await customer('POST', `/api/order/${noEmail.json.id}/pay`, { sourceId: 'cnon:card-ok-8' })).json.status, 'paid');
-  assert.equal((await emailsFor(noEmail.json.id)).length, 0);
-  const later = await customer('POST', '/api/order/checkout', { ...order, window: '18:40', lines: [{ variationId: 'var-soda', quantity: 1 }], tip: 0 });
+  // A page from before first and last name sends one name. Email down: tried again when the order is next looked at.
+  const later = await customer('POST', '/api/order/checkout', { ...order, firstName: undefined, lastName: undefined, name: 'Ada  King Lovelace', window: '18:40', lines: [{ variationId: 'var-soda', quantity: 1 }], tip: 0 });
+  assert.equal(later.json.name, 'Ada King Lovelace');
   emailDown = true;
   assert.equal((await customer('POST', `/api/order/${later.json.id}/pay`, { sourceId: 'cnon:card-ok-9' })).json.status, 'paid');
   assert.equal((await emailsFor(later.json.id)).length, 0);
