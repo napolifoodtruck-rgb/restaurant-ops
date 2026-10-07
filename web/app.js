@@ -2060,6 +2060,7 @@ async function onlineMenuCard(me) {
       h('div', { class: 'row wrap' },
         photo(x.image, 'thumb small'), nameOf(x),
         x.soldOutToday ? h('span', { class: 'tag bad', text: 'Sold out tonight' }) : null,
+        x.soldOutInSquare ? h('span', { class: 'tag bad', text: 'Sold out in Square', title: 'As of the last Square sync. The order page checks Square every minute.' }) : null,
         h('button', { class: 'btn small-btn', text: x.soldOutToday ? 'Back on tonight' : 'Sold out tonight', onclick: (e) => save(e.currentTarget, `/api/online/items/${x.itemId}`, { soldOutToday: !x.soldOutToday }) }),
         h('label', { class: 'inline small', title: x.pizzaFromCategory ? `From its category, ${x.category}` : 'Set by hand' }, pizza, 'Counts as a pizza'),
         showOptions,

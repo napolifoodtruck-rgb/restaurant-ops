@@ -42,13 +42,21 @@ async function loadDay(db: Db, restaurantId: string, day: string): Promise<DayCe
   return rows.map((r) => ({ starts: hhmm(r.starts), maxPizzas: Number(r.max_pizzas) }));
 }
 
-/** Every Square item with its online settings, as of the last catalog sync. */
-export async function loadOnlineMenu(db: Db, restaurantId: string, today: string): Promise<{ menu: OnlineMenuItem[]; synced: boolean }> {
-  const catalog = (await db.query<{ data: CatalogObject }>('SELECT data FROM pos_catalog WHERE restaurant_id = $1', [restaurantId])).rows.map((r) => (typeof r.data === 'string' ? JSON.parse(r.data) : r.data) as CatalogObject);
+/**
+ * Every Square item with its online settings, as of the last catalog sync, with any objects just
+ * read from Square (`fresh`) in place of their copies. Sold out, prices and stock counting are
+ * as at `locationId` (default: the location the nightly sync reads).
+ */
+export async function loadOnlineMenu(db: Db, restaurantId: string, today: string, options: { fresh?: readonly CatalogObject[]; locationId?: string } = {}): Promise<{ menu: OnlineMenuItem[]; synced: boolean }> {
+  const copy = (await db.query<{ data: CatalogObject }>('SELECT data FROM pos_catalog WHERE restaurant_id = $1', [restaurantId])).rows.map((r) => (typeof r.data === 'string' ? JSON.parse(r.data) : r.data) as CatalogObject);
+  const fresh = new Map((options.fresh ?? []).map((o) => [o.id, o]));
+  const catalog = copy.map((o) => fresh.get(o.id) ?? o);
   const items = (await db.query<{ item_id: string; published: boolean; counts_as_pizza: boolean | null; sold_out_on: string | null }>('SELECT item_id, published, counts_as_pizza, sold_out_on::text AS sold_out_on FROM online_items WHERE restaurant_id = $1', [restaurantId])).rows;
   const modes = Object.fromEntries((await db.query<{ modifier_id: string; mode: ModifierMode }>('SELECT modifier_id, mode FROM online_modifiers WHERE restaurant_id = $1', [restaurantId])).rows.map((r) => [r.modifier_id, r.mode]));
-  const menu = onlineMenu(catalog, items.map((r) => ({ itemId: r.item_id, published: r.published, ...(r.counts_as_pizza !== null ? { countsAsPizza: r.counts_as_pizza } : {}), ...(r.sold_out_on ? { soldOutOn: r.sold_out_on } : {}) })), modes, today);
-  return { menu, synced: catalog.length > 0 };
+  // Without a location given, the one the nightly sync reads.
+  const locationId = options.locationId ?? (await db.query<{ pos_location_id: string | null }>('SELECT pos_location_id FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.pos_location_id ?? undefined;
+  const menu = onlineMenu(catalog, items.map((r) => ({ itemId: r.item_id, published: r.published, ...(r.counts_as_pizza !== null ? { countsAsPizza: r.counts_as_pizza } : {}), ...(r.sold_out_on ? { soldOutOn: r.sold_out_on } : {}) })), modes, today, locationId);
+  return { menu, synced: copy.length > 0 };
 }
 
 /** The windows of a date, with the pizzas already in paid orders and live holds. */

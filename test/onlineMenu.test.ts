@@ -84,3 +84,17 @@ test('sold out online for today only', () => {
   assert.equal(onlineMenu(catalog, items, {}, '2026-10-10')[0]!.soldOutToday, true);
   assert.equal(onlineMenu(catalog, items, {}, '2026-10-11')[0]!.soldOutToday, false);
 });
+
+test('sold out in Square at the restaurant’s location', () => {
+  const sizes = (overrides: { location_id?: string; sold_out?: boolean }[][]): CatalogObject[] => catalog.map((o) => (o.id !== 'item-marg' ? o : {
+    ...o, item_data: { ...o.item_data, variations: overrides.map((location_overrides, i) => ({ id: `var-${i}`, item_variation_data: { name: `Size ${i}`, price_money: { amount: 1500 }, location_overrides } })) },
+  }));
+  const items = [{ itemId: 'item-marg', published: true }];
+  const one = sizes([[{ location_id: 'loc-1', sold_out: true }], [{ location_id: 'loc-1', sold_out: false }]]);
+  const marg = onlineMenu(one, items, {}, '2026-10-10', 'loc-1').find((x) => x.itemId === 'item-marg')!;
+  assert.deepEqual([marg.variations.map((v) => Boolean(v.soldOut)), marg.soldOutInSquare], [[true, false], false]);
+  // Sold out somewhere else doesn't count here.
+  const all = sizes([[{ location_id: 'loc-2', sold_out: true }]]);
+  assert.equal(onlineMenu(all, items, {}, '2026-10-10', 'loc-1').find((x) => x.itemId === 'item-marg')!.soldOutInSquare, false);
+  assert.equal(onlineMenu(all, items, {}, '2026-10-10', 'loc-2').find((x) => x.itemId === 'item-marg')!.soldOutInSquare, true);
+});

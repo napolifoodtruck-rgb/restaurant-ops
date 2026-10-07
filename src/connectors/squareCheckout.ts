@@ -1,7 +1,7 @@
 /**
- * Square calls for online orders, and nothing else: create a pickup order, take its payment with
- * the one-time card token the Web Payments SDK made in the customer's browser, and look up which
- * payments were refunded since. Card numbers never come here. The nightly sync keeps its own
+ * Square calls for online orders, and nothing else: read the published items as they are now
+ * (prices, sold out) and their stock counts, create a pickup order, take its payment with the one-time card token the Web
+ * Payments SDK made in the customer's browser, and look up which payments were refunded since. Card numbers never come here. The nightly sync keeps its own
  * read-only client (squareApi.ts).
  *
  * In the sandbox, Square's test account doesn't have the restaurant's catalog, so lines go in by
@@ -12,6 +12,7 @@
 import type { Fetch } from './squareApi.ts';
 import { SquareApiError } from './squareApi.ts';
 import type { CartLine } from '../core/onlineCart.ts';
+import type { CatalogObject } from '../core/onlineMenu.ts';
 
 export type SquareEnvironment = 'sandbox' | 'production';
 
@@ -65,6 +66,29 @@ export class SquareCheckout {
     const err = new SquareApiError(res.status, `Square ${method} ${path} failed (${res.status})${errors.length ? `: ${errors.map((e) => e.detail ?? e.code).join('; ')}` : ''}`);
     (err as SquareApiError & { codes?: string[] }).codes = errors.map((e) => e.code ?? '').filter(Boolean);
     throw err;
+  }
+
+  /** These catalog objects as they are in Square right now. Ids Square doesn't have are left out. */
+  async catalogObjects(ids: readonly string[]): Promise<CatalogObject[]> {
+    const out: CatalogObject[] = [];
+    for (let i = 0; i < ids.length; i += 1000) {
+      const data = await this.#post('/v2/catalog/batch-retrieve', { object_ids: ids.slice(i, i + 1000), include_related_objects: false });
+      out.push(...(data.objects ?? []));
+    }
+    return out;
+  }
+
+  /** How many of each size Square has in stock at the location. Sizes it doesn't count are left out. */
+  async stockCounts(variationIds: readonly string[], locationId: string): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const data = await this.#post('/v2/inventory/counts/batch-retrieve', { catalog_object_ids: variationIds, location_ids: [locationId], states: ['IN_STOCK'], ...(cursor ? { cursor } : {}) });
+      for (const c of data.counts ?? []) if (c.state === 'IN_STOCK') out.set(c.catalog_object_id, Number(c.quantity));
+      cursor = data.cursor;
+      if (!cursor) break;
+    }
+    return out;
   }
 
   /** A pickup order, open in Square once paid (an unpaid order stays out of the POS). */
