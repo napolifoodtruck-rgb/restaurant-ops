@@ -2099,7 +2099,7 @@ const dragHandle = (label) => h('button', { type: 'button', class: 'drag-handle'
 const MODE_LABELS = { shown: 'Shown', hidden: 'Hidden online', always: 'Always on' };
 
 /**
- * What's sold online: the items on the order page, each with Counts as a pizza, Sold out tonight and
+ * What's sold online: the items on the order page, each with Counts as a pizza, Pause online tonight and
  * how its options show online. Search (or Browse) the Square library to add one; most get turned on
  * from the Menu screen's Sell online switch. Arrange shows the order page's sections and items to
  * drag into the order customers see, with how many of each sold lately. Options are shared across items in Square, so a change
@@ -2141,9 +2141,11 @@ async function onlineMenuCard(me) {
     return h('div', { class: 'ask' },
       h('div', { class: 'row wrap' },
         photo(x.image, 'thumb small'), nameOf(x),
-        x.soldOutToday ? h('span', { class: 'tag bad', text: 'Sold out tonight' }) : null,
+        x.soldOutToday ? h('span', { class: 'tag bad', text: 'Paused online tonight', title: 'Off the online order page only. Square and the POS still sell it.' }) : null,
         x.soldOutInSquare ? h('span', { class: 'tag bad', text: 'Sold out in Square', title: 'As of the last Square sync. The order page checks Square every minute.' }) : null,
-        h('button', { class: 'btn small-btn', text: x.soldOutToday ? 'Back on tonight' : 'Sold out tonight', onclick: (e) => save(e.currentTarget, `/api/online/items/${x.itemId}`, { soldOutToday: !x.soldOutToday }) }),
+        // Only the online order page: staff looking to 86 an item everywhere need Square.
+        h('button', { class: 'btn small-btn', text: x.soldOutToday ? 'Back on online' : 'Pause online tonight',
+          title: x.soldOutToday ? `Put ${x.name} back on the online order page` : `Takes ${x.name} off the online order page until tomorrow. It does NOT 86 it in Square or the POS: mark it sold out in Square for that.`, onclick: (e) => save(e.currentTarget, `/api/online/items/${x.itemId}`, { soldOutToday: !x.soldOutToday }) }),
         h('label', { class: 'inline small', title: x.pizzaFromCategory ? `From its category, ${x.category}` : 'Set by hand' }, pizza, 'Counts as a pizza'),
         showOptions,
         h('button', { class: 'link', text: 'Take off', title: `Stop selling ${x.name} online`, onclick: (e) => save(e.currentTarget, `/api/online/items/${x.itemId}`, { published: false }) })),
@@ -2237,6 +2239,7 @@ async function onlineMenuCard(me) {
   fill(box,
     h('h2', { text: 'Sold online' }),
     h('div', { class: 'small muted', text: 'Names, prices and options come from Square. Under Options, set “Partially cooked” to Always on and hide fully cooked and gluten-sensitive crust: an option changes everywhere it’s used.' }),
+    h('div', { class: 'small' }, h('b', { text: 'Pause online tonight' }), ' only takes an item off the online order page. To 86 it everywhere, mark it sold out in Square.'),
     h('div', { class: 'tag warn sync-warn', text: 'No Square menu yet: run the Square sync under Settings.', hidden: true }),
     h('div', { class: 'row tight online-find' }, search, browse, arrange),
     results, err, list);
