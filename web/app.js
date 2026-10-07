@@ -2654,7 +2654,9 @@ function cardEditor(me, d, card, start = {}) {
         // A finished line that still can't be costed says why, under it (a tooltip never shows on an iPad).
         const hint = hints[n];
         if (!hint || st !== 'ok') return;
+        hint.classList.remove('src-note');
         if (st === 'ok' && l.problem) { hint.dataset.cost = '1'; fill(hint, costHint(i, l)); }
+        else if (st === 'ok' && l.source?.from === 'marginedge') { hint.dataset.cost = '1'; hint.classList.add('src-note'); fill(hint, h('span', { text: 'Priced from MarginEdge’s last price: it isn’t on a recent invoice.' })); }
         else if (hint.dataset.cost === '1') { delete hint.dataset.cost; fill(hint); }
       });
       total.textContent = `${money2(res.data.total)}${toFinish() ? '+' : ''}`;
@@ -2806,7 +2808,7 @@ function cardEditor(me, d, card, start = {}) {
         });
         // What a rough line still needs, said where it is (not an error: it saves as rough).
         const drawHint = () => {
-          delete hint.dataset.cost;
+          delete hint.dataset.cost; hint.classList.remove('src-note');
           const st = stateOf(i), o = byName.get(String(i.name).toLowerCase());
           if (st === 'unmatched') fill(hint, h('span', { text: 'Not matched yet: pick it from the list as you type, or ' }), h('button', { class: 'link', text: 'make it a prep recipe', onclick: () => makePrep(i) }));
           else if (st === 'convert' && o?.kind === 'product') fill(hint, h('span', { class: 'warn-text', text: `No cost yet: ${o.name} is bought by the ${UNIT_LABEL(o.unit)}, and the app doesn’t know how much one ${UNIT_LABEL(i.unit)} of it is. Pick another unit, or ` }), h('button', { class: 'link', text: `set what one ${UNIT_LABEL(i.unit)} is`, onclick: () => newUnitForm(i, o, extra, i.unit) }));

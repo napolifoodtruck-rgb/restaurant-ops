@@ -919,3 +919,10 @@ button.donut-row { display: flex; min-width: 0; }
   .irow .isrc, .irow.head > :nth-child(4) { display: none; }
 }
 @media (max-width: 640px) { .irow { grid-template-columns: 64px 90px 1fr auto; } .isrc, .irow.head > :nth-child(4), .irow .icost, .irow.head > :nth-child(5) { display: none; } }
+
+/* Recipe editor steps: the numbers line up with "Steps", and "+ Add a step" with "+ Add a line". */
+.editor .steps { padding-left: 0; font-size: inherit; }
+.stepn { margin-left: 0; }
+/* With no room for the Price from box, a MarginEdge last price is said under the line instead. */
+.irow-hint.src-note { display: none; }
+@container (max-width: 640px) { .irow-hint.src-note { display: block; } }
