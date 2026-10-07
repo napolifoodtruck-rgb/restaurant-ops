@@ -105,11 +105,16 @@ function fill(el, ...kids) { el.replaceChildren(...kids.flat(Infinity).filter((k
 // no fading, no bar, the same scroll position.
 // Several can be saving at once (answer one line, then the next, without waiting): the page
 // refreshes once, after the last of them, so nothing still saving is redrawn under you.
-let inPlace = false, actionsOut = 0, lastRefresh = null, waitingRefresh = null;
+// One refresh at a time. A refresh that started before a later change is thrown away rather than
+// drawn (its data is already old: taking off two dishes quickly used to bring the second one back
+// for a moment); the next refresh, after the last change, is the one that shows.
+let inPlace = false, actionsOut = 0, actionsStarted = 0, lastRefresh = null, waitingRefresh = null, inFlight = null, queuedRefresh = null;
 function show(...nodes) {
   const y = window.scrollY, keep = inPlace;
   inPlace = false;
   if (keep && actionsOut > 0) { waitingRefresh = lastRefresh; return; }
+  // Stale: something was changed after this refresh asked for its data, or they've gone to another tab.
+  if (keep && inFlight && (actionsStarted !== inFlight.startedAt || tabNow() !== inFlight.tab)) { if (actionsStarted !== inFlight.startedAt) queuedRefresh ??= lastRefresh; return; }
   fill(app, ...nodes);
   if (keep) window.scrollTo(0, y);
 }
@@ -117,14 +122,19 @@ function show(...nodes) {
 function refreshInPlace(draw) {
   lastRefresh = draw;
   if (actionsOut > 0) { waitingRefresh = draw; return; }
+  if (inFlight) { queuedRefresh = draw; return; }
+  inFlight = { startedAt: actionsStarted, tab: tabNow() };
   inPlace = true;
-  return draw();
+  return Promise.resolve(draw()).finally(() => {
+    inFlight = null; inPlace = false;
+    if (queuedRefresh) { const q = queuedRefresh; queuedRefresh = null; refreshInPlace(q); }
+  });
 }
 /** An action on the page (a save): while any are out, refreshes wait; the last one to finish runs the latest. */
 const tabNow = () => app.querySelector('.shell')?.dataset.active;
 async function pageAction(fn) {
   const tab = tabNow();
-  actionsOut++;
+  actionsOut++; actionsStarted++;
   try { return await fn(); } finally {
     actionsOut--;
     // Gone to another tab meanwhile: the save still counts, but don't pull them back to redraw this one.
