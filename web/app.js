@@ -1390,10 +1390,10 @@ async function prepCount(me, stationId, date) {
 }
 
 /** A small ? that opens a box with the reasoning (tap on the iPad, hover with a mouse). Chef's screens only. */
-function whyTip(text) {
+function whyTip(text, opts = {}) {
   if (!text) return null;
-  const wrap = h('span', { class: 'why-wrap' });
-  const btn = h('button', { class: 'why', type: 'button', text: '?', 'aria-label': 'Why this number', 'aria-expanded': 'false', onclick: (e) => {
+  const wrap = h('span', { class: `why-wrap${opts.wrapClass ? ` ${opts.wrapClass}` : ''}` });
+  const btn = h('button', { class: opts.class ?? 'why', type: 'button', text: opts.label ?? '?', 'aria-label': opts.aria ?? 'Why this number', 'aria-expanded': 'false', onclick: (e) => {
     e.stopPropagation();
     const open = !wrap.classList.contains('open');
     document.querySelectorAll('.why-wrap.open').forEach((w) => { w.classList.remove('open'); w.firstChild.setAttribute('aria-expanded', 'false'); });
@@ -2648,25 +2648,26 @@ function cardEditor(me, d, card, start = {}) {
         const i = c.ingredients[n];
         const l = res.data.lines[usable.indexOf(i)] ?? {};
         const st = stateOf(i);
-        el.textContent = l.cost !== undefined && !l.problem ? money2(l.cost) : st && st !== 'ok' ? 'to finish' : l.problem ? 'no cost' : '';
+        const age = priceAge(l.source);
+        const oldPrice = age.level && st === 'ok' && !l.problem && l.cost !== undefined;
+        // An old price: where the Price from box is hidden, the cost itself turns yellow or red, and
+        // tapping it says why (an iPad has no hover). Where the box shows, the cost stays plain.
+        if (oldPrice) { ages.add(age.level); fill(el, whyTip(age.line, { label: money2(l.cost), class: `cost-tap age-${age.level}`, wrapClass: 'cost-tip', aria: `${money2(l.cost)}: why this price may be out of date` })); }
+        else el.textContent = l.cost !== undefined && !l.problem ? money2(l.cost) : st && st !== 'ok' ? 'to finish' : l.problem ? 'no cost' : '';
         el.title = l.problem ?? '';
         el.classList.toggle('warn-text', Boolean(l.problem) || (st && st !== 'ok'));
         if (srcs[n]) drawSource(srcs[n], l.source);
-        const age = priceAge(l.source);
-        if (age.level && st === 'ok' && !l.problem) ages.add(age.level);
         // A finished line that still can't be costed says why, under it (a tooltip never shows on an iPad).
         const hint = hints[n];
         if (!hint || st !== 'ok') return;
-        hint.classList.remove('src-note', 'age-yellow', 'age-red');
         if (st === 'ok' && l.problem) { hint.dataset.cost = '1'; fill(hint, costHint(i, l)); }
-        // No room for the Price from box: an old price is said under its line instead, in the same colour.
-        else if (st === 'ok' && age.level) { hint.dataset.cost = '1'; hint.classList.add('src-note', `age-${age.level}`); fill(hint, h('span', { text: age.line })); }
         else if (hint.dataset.cost === '1') { delete hint.dataset.cost; fill(hint); }
       });
       // The key to the colours, under the lines, only for the colours in use.
       fill(ageNote,
         ages.has('yellow') ? h('div', { class: 'age-key age-yellow' }, h('i'), h('span', { text: 'Yellow: the price was last paid more than 3 months ago, so it may be out of date.' })) : null,
-        ages.has('red') ? h('div', { class: 'age-key age-red' }, h('i'), h('span', { text: 'Red: more than 6 months ago, or MarginEdge’s last price from before the invoices we read. Check it before trusting the cost.' })) : null);
+        ages.has('red') ? h('div', { class: 'age-key age-red' }, h('i'), h('span', { text: 'Red: more than 6 months ago, or MarginEdge’s last price from before the invoices we read. Check it before trusting the cost.' })) : null,
+        ages.size ? h('div', { class: 'age-tap-hint muted', text: 'Tap a coloured price to see when and where it was last paid.' }) : null);
       total.textContent = `${money2(res.data.total)}${toFinish() ? '+' : ''}`;
       const y = c.yields.find((x) => Number(x.amount) > 0 && x.unit);
       const per = prepKind() ? (y ? `for ${qty(Number(y.amount))} ${UNIT_LABEL(y.unit)}` : 'for one batch') : `a ${c.kind === 'drink' ? 'drink' : 'plate'}`;
@@ -2828,7 +2829,7 @@ function cardEditor(me, d, card, start = {}) {
         });
         // What a rough line still needs, said where it is (not an error: it saves as rough).
         const drawHint = () => {
-          delete hint.dataset.cost; hint.classList.remove('src-note');
+          delete hint.dataset.cost;
           const st = stateOf(i), o = byName.get(String(i.name).toLowerCase());
           if (st === 'unmatched') fill(hint, h('span', { text: 'Not matched yet: pick it from the list as you type, or ' }), h('button', { class: 'link', text: 'make it a prep recipe', onclick: () => makePrep(i) }));
           else if (st === 'convert' && o?.kind === 'product') fill(hint, h('span', { class: 'warn-text', text: `No cost yet: ${o.name} is bought by the ${UNIT_LABEL(o.unit)}, and the app doesn’t know how much one ${UNIT_LABEL(i.unit)} of it is. Pick another unit, or ` }), h('button', { class: 'link', text: `set what one ${UNIT_LABEL(i.unit)} is`, onclick: () => newUnitForm(i, o, extra, i.unit) }));
