@@ -838,3 +838,12 @@ button.donut-row { display: flex; min-width: 0; }
 .irow-msg:empty { display: none; }
 .irow-msg { color: var(--danger, #B42318); font-size: 13px; margin: -2px 0 6px; }
 .irow.bad-amount input[aria-label="Amount"], .irow.bad-name input[list], .irow.bad-unit select { border-color: var(--danger, #B42318); box-shadow: 0 0 0 1px var(--danger, #B42318); }
+
+/* Sell online: a switch on each dish on the Menu screen */
+.sell-switch { display: inline-flex; flex-direction: row; white-space: nowrap; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; justify-self: start; }
+.sell-switch input { appearance: none; -webkit-appearance: none; width: 34px; height: 20px; border-radius: 10px; background: #C8C5BE; position: relative; margin: 0; cursor: pointer; transition: background .15s; flex: none; }
+.sell-switch input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: left .15s; }
+.sell-switch input:checked { background: var(--ink, #111); }
+.sell-switch input:checked::after { left: 16px; }
+.sell-switch input:focus-visible { outline: 2px solid var(--ink, #111); outline-offset: 2px; }
+.online-find input[type=search] { flex: 1; min-width: 0; }

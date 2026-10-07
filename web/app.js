@@ -1586,6 +1586,25 @@ async function menuScreen(me) {
   if (!r.ok) return show(shell(me, 'menu', [h('h1', { text: 'Menu' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const m = r.data;
   const manager = atLeast(me.roleLevel, 'manager');
+  // Sell online, right on each dish (managers, kitchen): which Square items are on the order page.
+  const onlineRes = manager && side === 'kitchen' ? await api('GET', '/api/online/menu') : null;
+  const onlineById = new Map((onlineRes?.ok ? onlineRes.data.items : []).map((x) => [x.itemId, x]));
+  const sellSwitch = (x) => {
+    const o = x.squareItemId ? onlineById.get(x.squareItemId) : undefined;
+    if (!o) return null;
+    const input = h('input', { type: 'checkbox', role: 'switch', checked: o.published ? true : undefined, 'aria-label': `Sell ${x.name} online` });
+    const label = h('label', { class: 'sell-switch', title: o.published ? 'On the online order page' : 'Not sold online' }, input, h('span', { text: 'Sell online' }));
+    input.addEventListener('change', async () => {
+      input.disabled = true;
+      label.querySelector('.error')?.remove();
+      const res = await api('POST', `/api/online/items/${o.itemId}`, { published: input.checked });
+      input.disabled = false;
+      if (!res.ok) { input.checked = !input.checked; return label.append(h('span', { class: 'error small', text: res.data.error ?? 'Not saved.' })); }
+      o.published = input.checked;
+      label.title = o.published ? 'On the online order page' : 'Not sold online';
+    });
+    return label;
+  };
   const since = (d) => (d <= m.from ? `before ${shortDate(m.from)}` : `since ${shortDate(d)}`);
   const baseOf = (section) => section.replace(/ add-ons$/, '');
   const sections = [...new Set(m.current.map((x) => baseOf(x.section)))];
@@ -1646,14 +1665,15 @@ async function menuScreen(me) {
     h('span', { class: 'mcell c-act' }, manager && x.menuKey ? h('button', { class: 'link take-off', text: 'Take off', title: `Take ${x.name} off the menu`, onclick: () => takeOff(x, row, right) }) : null)];
   const dishRow = (x) => {
     const right = h('div', { class: 'mright' });
-    const row = h('div', { class: 'mline' }, photo(x.image, 'thumb small'),
+    const row = h('div', { class: 'mline' }, photo(x.image, 'thumb small') ?? h('span'),
       h('div', { class: 'mname' },
         h('div', { class: 'row tight wrap' }, h('span', { text: x.name }),
           x.quiet ? h('button', { class: 'tag ask tag-button', text: 'quiet', title: `Hasn’t sold since ${shortDate(x.quiet.since)}: still on?`, onclick: () => pickChip('needs') }) : null,
           x.hasCard || !flagCards ? null : h('button', { class: 'tag warn tag-button', text: 'needs recipe', title: `Write the recipe for ${x.name}`, onclick: () => writeCard(x) }),
           sameAs(x)),
         includesLine(x),
-        h('div', { class: 'small muted', text: onText(x) })),
+        h('div', { class: 'small muted', text: onText(x) }),
+        sellSwitch(x)),
       right);
     fill(right, cells(x, row, right));
     return row;
@@ -1926,61 +1946,91 @@ const clock = (hhmm) => { const [hh, mm] = hhmm.split(':').map(Number); return `
 const MODE_LABELS = { shown: 'Shown', hidden: 'Hidden online', always: 'Always on' };
 
 /**
- * What's sold online: every Square item, with Online, Counts as a pizza and Sold out tonight, and how
- * each of its options shows online. Options are shared across items in Square, so a change to one
- * changes it everywhere it's used.
+ * What's sold online: the items on the order page, each with Counts as a pizza, Sold out tonight and
+ * how its options show online. Search (or Browse) the Square library to add one; most get turned on
+ * from the Menu screen's Sell online switch. Options are shared across items in Square, so a change
+ * to one changes it everywhere it's used.
  */
 async function onlineMenuCard(me) {
   const box = h('section', { class: 'card', 'aria-label': 'Sold online' });
-  let onlyOnline = recall('onlineOnly') === '1';
   const open = new Set();
-  async function draw() {
-    const r = await api('GET', '/api/online/menu');
-    if (!r.ok) return fill(box, h('h2', { text: 'Sold online' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' }));
-    const items = r.data.items;
-    const save = (el, path, body) => pageAction(async () => {
-      const res = await api('POST', path, body);
-      if (!res.ok) return el.closest('.ask')?.append(h('div', { class: 'error small', text: res.data.error ?? 'Not saved.' }));
-      await draw();
-    });
-    const price = (x) => x.variations.map((v) => (v.price !== undefined ? `${x.variations.length > 1 ? `${v.name} ` : ''}${dollars(v.price, { cents: v.price % 1 !== 0 })}` : null)).filter(Boolean).join(' · ');
-    const options = (x) => h('div', { class: 'stack' }, x.modifierLists.map((list) => h('div', { class: 'small' },
-      h('div', { class: 'strong', text: `${list.name}${list.min ? ' (required)' : ''}` }),
-      list.modifiers.map((mod) => {
-        const pick = h('select', { class: 'small-select', 'aria-label': `${mod.name} online` }, ['shown', 'hidden', 'always'].map((k) => h('option', { value: k, text: MODE_LABELS[k], selected: mod.mode === k ? true : undefined })));
-        pick.addEventListener('change', () => save(pick, `/api/online/modifiers/${mod.id}`, { mode: pick.value }));
-        return h('div', { class: 'row tight wrap' }, pick, h('span', { text: mod.name }), mod.price ? h('span', { class: 'muted', text: `+${dollars(mod.price, { cents: true })}` }) : null);
-      }))));
-    const itemRow = (x) => {
-      const row = h('div', { class: 'ask' });
-      const online = h('input', { type: 'checkbox', checked: x.published ? true : undefined, 'aria-label': `Sell ${x.name} online` });
-      online.addEventListener('change', () => save(online, `/api/online/items/${x.itemId}`, { published: online.checked }));
-      const pizza = h('input', { type: 'checkbox', checked: x.countsAsPizza ? true : undefined, 'aria-label': `${x.name} counts as a pizza` });
-      pizza.addEventListener('change', () => save(pizza, `/api/online/items/${x.itemId}`, { countsAsPizza: pizza.checked }));
-      const showOptions = x.modifierLists.length ? h('button', { class: 'link', text: open.has(x.itemId) ? 'Hide options' : `Options (${x.modifierLists.length})`, onclick: () => { open.has(x.itemId) ? open.delete(x.itemId) : open.add(x.itemId); draw(); } }) : null;
-      fill(row,
-        h('div', { class: 'row wrap' },
-          h('label', { class: 'inline grow' }, online, photo(x.image, 'thumb small'), h('span', {}, h('b', { text: x.name }), h('span', { class: 'small muted', text: price(x) ? ` · ${price(x)}` : '' }))),
-          x.published && x.soldOutToday ? h('span', { class: 'tag bad', text: 'Sold out tonight' }) : null,
-          x.published ? h('button', { class: 'btn small-btn', text: x.soldOutToday ? 'Back on tonight' : 'Sold out tonight', onclick: (e) => save(e.currentTarget, `/api/online/items/${x.itemId}`, { soldOutToday: !x.soldOutToday }) }) : null,
-          h('label', { class: 'inline small', title: x.pizzaFromCategory ? `From its category, ${x.category}` : 'Set by hand' }, pizza, 'Counts as a pizza'),
-          showOptions),
-        x.problems.map((p) => h('div', { class: 'tag warn', text: p })),
-        open.has(x.itemId) ? options(x) : null);
-      return row;
-    };
-    const shown = onlyOnline ? items.filter((x) => x.published) : items;
-    const categories = [...new Set(shown.map((x) => x.category))];
-    const only = h('input', { type: 'checkbox', checked: onlyOnline ? true : undefined, 'aria-label': 'Only what’s online' });
-    only.addEventListener('change', () => { onlyOnline = only.checked; remember('onlineOnly', onlyOnline ? '1' : '0'); draw(); });
-    fill(box,
-      h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: `Sold online (${items.filter((x) => x.published).length})` }), h('label', { class: 'inline small' }, only, 'Only what’s online')),
-      h('div', { class: 'small muted', text: 'Tick an item to sell it online. Names, prices and options come from Square. Under Options, set “Partially cooked” to Always on and hide fully cooked and gluten-sensitive crust: an option changes everywhere it’s used.' }),
-      r.data.synced ? null : h('div', { class: 'tag warn', text: 'No Square menu yet: run the Square sync under Settings.' }),
-      categories.map((cat) => [h('h3', { text: cat }), h('div', { class: 'asks' }, shown.filter((x) => x.category === cat).map(itemRow))]),
-      onlyOnline && !shown.length ? h('div', { class: 'small muted', text: 'Nothing is online yet.' }) : null);
+  let items = [];
+  let browsing = false;
+  const err = h('div', { class: 'error small' });
+  const list = h('div', { class: 'stack' });
+  const results = h('div', { class: 'asks' });
+  const search = h('input', { type: 'search', placeholder: 'Find a Square item to add', 'aria-label': 'Find a Square item', autocomplete: 'off' });
+  const browse = h('button', { class: 'btn small-btn', onclick: () => { browsing = !browsing; draw(); } });
+  search.addEventListener('input', () => found());
+  const save = (el, path, body) => pageAction(async () => {
+    err.textContent = '';
+    const res = await api('POST', path, body);
+    if (!res.ok) { err.textContent = res.data.error ?? 'Not saved.'; return; }
+    await load();
+  });
+  const price = (x) => x.variations.map((v) => (v.price !== undefined ? `${x.variations.length > 1 ? `${v.name} ` : ''}${dollars(v.price, { cents: v.price % 1 !== 0 })}` : null)).filter(Boolean).join(' · ');
+  const options = (x) => h('div', { class: 'stack' }, x.modifierLists.map((l) => h('div', { class: 'small' },
+    h('div', { class: 'strong', text: `${l.name}${l.min ? ' (required)' : ''}` }),
+    l.modifiers.map((mod) => {
+      const pick = h('select', { class: 'small-select', 'aria-label': `${mod.name} online` }, ['shown', 'hidden', 'always'].map((k) => h('option', { value: k, text: MODE_LABELS[k], selected: mod.mode === k ? true : undefined })));
+      pick.addEventListener('change', () => save(pick, `/api/online/modifiers/${mod.id}`, { mode: pick.value }));
+      return h('div', { class: 'row tight wrap' }, pick, h('span', { text: mod.name }), mod.price ? h('span', { class: 'muted', text: `+${dollars(mod.price, { cents: true })}` }) : null);
+    }))));
+  const nameOf = (x) => h('span', { class: 'grow' }, h('b', { text: x.name }), h('span', { class: 'small muted', text: price(x) ? ` · ${price(x)}` : '' }));
+  // An item that's online: everything about how it sells.
+  const onlineRow = (x) => {
+    const pizza = h('input', { type: 'checkbox', checked: x.countsAsPizza ? true : undefined, 'aria-label': `${x.name} counts as a pizza` });
+    pizza.addEventListener('change', () => save(pizza, `/api/online/items/${x.itemId}`, { countsAsPizza: pizza.checked }));
+    const showOptions = x.modifierLists.length ? h('button', { class: 'link', text: open.has(x.itemId) ? 'Hide options' : `Options (${x.modifierLists.length})`, onclick: () => { open.has(x.itemId) ? open.delete(x.itemId) : open.add(x.itemId); draw(); } }) : null;
+    return h('div', { class: 'ask' },
+      h('div', { class: 'row wrap' },
+        photo(x.image, 'thumb small'), nameOf(x),
+        x.soldOutToday ? h('span', { class: 'tag bad', text: 'Sold out tonight' }) : null,
+        h('button', { class: 'btn small-btn', text: x.soldOutToday ? 'Back on tonight' : 'Sold out tonight', onclick: (e) => save(e.currentTarget, `/api/online/items/${x.itemId}`, { soldOutToday: !x.soldOutToday }) }),
+        h('label', { class: 'inline small', title: x.pizzaFromCategory ? `From its category, ${x.category}` : 'Set by hand' }, pizza, 'Counts as a pizza'),
+        showOptions,
+        h('button', { class: 'link', text: 'Take off', title: `Stop selling ${x.name} online`, onclick: (e) => save(e.currentTarget, `/api/online/items/${x.itemId}`, { published: false }) })),
+      x.problems.map((p) => h('div', { class: 'tag warn', text: p })),
+      open.has(x.itemId) ? options(x) : null);
+  };
+  // An item from the library: add it, or it says it's online already.
+  const libraryRow = (x) => h('div', { class: 'ask' }, h('div', { class: 'row wrap' },
+    photo(x.image, 'thumb small'), nameOf(x), h('span', { class: 'small muted', text: x.category }),
+    x.published ? h('span', { class: 'tag', text: 'Online' })
+      : h('button', { class: 'btn small-btn dark', text: 'Add', 'aria-label': `Sell ${x.name} online`, onclick: (e) => save(e.currentTarget, `/api/online/items/${x.itemId}`, { published: true }) })));
+  function found() {
+    const q = search.value.trim().toLowerCase();
+    if (!q) return fill(results);
+    const words = q.split(/\s+/);
+    const hits = items.filter((x) => words.every((w) => `${x.name} ${x.category}`.toLowerCase().includes(w)))
+      .sort((a, b) => Number(a.published) - Number(b.published) || a.name.localeCompare(b.name)).slice(0, 20);
+    fill(results, hits.length ? hits.map(libraryRow) : h('div', { class: 'small muted', text: 'No Square item by that name.' }));
   }
-  await draw();
+  const byCategory = (xs, row) => [...new Set(xs.map((x) => x.category))].map((cat) => [h('h3', { text: cat }), h('div', { class: 'asks' }, xs.filter((x) => x.category === cat).map(row))]);
+  function draw() {
+    const online = items.filter((x) => x.published);
+    browse.textContent = browsing ? 'Hide the list' : 'Browse all';
+    fill(list,
+      browsing ? h('div', { class: 'stack' }, h('div', { class: 'small muted', text: `Every item in Square (${items.length})` }), byCategory(items, libraryRow)) : null,
+      browsing ? null : online.length ? byCategory(online, onlineRow)
+        : h('div', { class: 'small muted', text: 'Nothing is online yet. Turn on Sell online for a dish on the Menu, or find an item above.' }));
+    box.querySelector('h2').textContent = `Sold online (${online.length})`;
+    found();
+  }
+  async function load() {
+    const r = await api('GET', '/api/online/menu');
+    if (!r.ok) { err.textContent = r.data.error ?? 'Couldn’t load.'; return; }
+    items = r.data.items;
+    box.querySelector('.sync-warn').hidden = r.data.synced;
+    draw();
+  }
+  fill(box,
+    h('h2', { text: 'Sold online' }),
+    h('div', { class: 'small muted', text: 'Names, prices and options come from Square. Under Options, set “Partially cooked” to Always on and hide fully cooked and gluten-sensitive crust: an option changes everywhere it’s used.' }),
+    h('div', { class: 'tag warn sync-warn', text: 'No Square menu yet: run the Square sync under Settings.', hidden: true }),
+    h('div', { class: 'row tight online-find' }, search, browse),
+    results, err, list);
+  await load();
   return box;
 }
 
