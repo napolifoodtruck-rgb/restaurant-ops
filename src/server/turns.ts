@@ -1,3 +1,4 @@
+/** One at a time per key, inside this server only. Before running more than one server, see docs/scaling.md. */
 /**
  * Taking turns: work that reads something, changes it and writes it back runs one at a time per key,
  * so two requests a moment apart can't both read the same thing and lose one change. One app server,
