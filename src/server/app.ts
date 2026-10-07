@@ -90,6 +90,17 @@ function signInReply(res: ServerResponse, result: SignInResult, secure: boolean)
   send(res, 200, { me: result.who }, { 'set-cookie': cookie(SESSION_COOKIE, result.token, result.expiresAt, secure) });
 }
 
+/** Routes that rewrite the kitchen book (recipe cards, answers, menu status). */
+const bookWrites = (path: string) => ['/api/book', '/api/book/import', '/api/answers', '/api/answers/undo', '/api/menu/status', '/api/menu/price-variation'].includes(path)
+  || (path.startsWith('/api/cards') && path !== '/api/cards/preview');
+let bookQueue: Promise<unknown> = Promise.resolve();
+/** Runs after every book write before it has finished, whatever happened to them. */
+function inTurn<T>(fn: () => Promise<T>): Promise<T> {
+  const run = bookQueue.then(fn, fn);
+  bookQueue = run.catch(() => {});
+  return run;
+}
+
 const WEB_FILES: Record<string, { file: string; type: string }> = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
@@ -730,7 +741,12 @@ export function createApp(config: AppConfig) {
 
   return async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
-      await route(req, res);
+      // Saves that read the kitchen book, change it and write it back take turns: two taps a moment
+      // apart (taking two dishes off the menu) used to both read the same book, and the second write
+      // lost the first change. One app server, so one queue does it (several would need a database lock).
+      const path = (req.url ?? '').split('?')[0]!;
+      if (req.method === 'POST' && bookWrites(path)) await inTurn(() => route(req, res));
+      else await route(req, res);
     } catch (err) {
       if (err instanceof HttpError) return send(res, err.status, { error: err.message, ...(err.details ?? {}) });
       // A short reference, shown on screen and in the log, so a screenshot finds the log line.

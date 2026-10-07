@@ -323,6 +323,13 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.deepEqual((typeof book === 'string' ? JSON.parse(book) : book).confirm.filter((c: any) => c.catalogId === 'V-SODA').map((c: any) => c.recipe), ['House Soda']);
   assert.equal((await call('POST', '/api/prep/stations', { body: { name: 'Bar' }, cookies: ownerSession })).status, 201);
 
+  // Several dishes taken off a moment apart (the saves overlap): every one of them sticks.
+  const offs = ['pos:RACE1', 'pos:RACE2', 'pos:RACE3', 'pos:RACE4', 'pos:RACE5'];
+  await Promise.all(offs.map((menuKey) => call('POST', '/api/menu/status', { body: { menuKey, status: 'off', name: menuKey, date: '2026-07-01' }, cookies: ownerSession })));
+  const statusBook = (await db!.query<{ value: any }>("SELECT value FROM kitchen_book WHERE key = 'linkAnswers'")).rows[0]!.value;
+  const statusNow = (typeof statusBook === 'string' ? JSON.parse(statusBook) : statusBook).menuStatus.map((m: any) => m.recipeId);
+  for (const k of offs) assert.ok(statusNow.includes(k), k);
+
   // Rough recipes: saved half-written (lines not matched yet, no amount), for managers only until ready.
   const rough = { name: 'Spring Spritz', kind: 'drink', ingredients: [{ amount: 2, unit: 'floz', name: 'Water' }, { amount: 0, unit: '', name: 'rhubarb shrub' }] };
   const savedRough = (await call('POST', '/api/cards', { body: { card: rough }, cookies: ownerSession })).json;
