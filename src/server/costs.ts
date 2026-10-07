@@ -22,6 +22,7 @@ import { squareModifierSales } from '../connectors/square.ts';
 import { storedModifierSales } from './squareSync.ts';
 import { purchasesOf } from './reports.ts';
 import type { ItemRef } from '../core/recipes.ts';
+import { costHistory, type PricePoint } from '../core/costHistory.ts';
 
 const cents = (v: number) => Math.round(v * 100) / 100;
 
@@ -37,6 +38,29 @@ export function pricesOf(model: Model, productId: string) {
     date: p.date, ...(p.vendorExternalId && vendors.get(p.vendorExternalId) ? { vendor: vendors.get(p.vendorExternalId)! } : {}),
     perUnit: p.perBaseUnit, packPrice: p.price, pack: `${+p.per.amount.toFixed(3)} ${p.per.unit}`, quantity: p.quantity,
   }));
+}
+
+/** Each product's invoice prices by date (per base unit), worked out once per model. */
+const pointsMemo = new WeakMap<Model, Map<string, PricePoint[]>>();
+function pricePoints(model: Model): Map<string, PricePoint[]> {
+  let m = pointsMemo.get(model);
+  if (m) return m;
+  m = new Map();
+  for (const p of model.imported.prices) if (p.perBaseUnit > 0) m.set(p.productExternalId, [...(m.get(p.productExternalId) ?? []), { date: p.date.slice(0, 10), perUnit: p.perBaseUnit }]);
+  for (const list of m.values()) list.sort((a, b) => a.date.localeCompare(b.date));
+  pointsMemo.set(model, m);
+  return m;
+}
+/** A recipe's cost over time, as written today, from its ingredients' invoices. */
+export function recipeCostHistory(model: Model, recipeId: string, today: string, opts: { weeks?: number; every?: number } = {}) {
+  const recipe = model.book.recipes.get(recipeId);
+  if (!recipe) return undefined;
+  const cost = model.book.costOf({ kind: 'recipe', id: recipeId }, recipe.yield);
+  const points = pricePoints(model);
+  return costHistory({
+    lines: cost.lines.filter((l) => !l.productId.startsWith('free-')).map((l) => ({ productId: l.productId, name: l.productName, amount: l.amount })),
+    pricesOf: (id) => points.get(id) ?? [], priceNow: (id) => model.book.unitCost(id), today, ...opts,
+  });
 }
 
 export async function costRoutes(db: Db, res: ServerResponse, url: URL, who: SignedIn, today: string): Promise<boolean> {
@@ -134,7 +158,28 @@ export async function costRoutes(db: Db, res: ServerResponse, url: URL, who: Sig
       vendors: [...vendors.values()].filter((v) => v.spent > 0).sort((a, b) => b.spent - a.spent).map((v) => ({ vendor: v.vendor, spent: cents(v.spent), items: [...v.items.values()].filter((i) => i.spent > 0).sort((a, b) => b.spent - a.spent).map((i) => ({ ...i, spent: cents(i.spent) })) })) }), true;
   }
 
-  let m = path.match(/^\/api\/costs\/recipe\/(.+)$/);
+  // Cost over time: one recipe in full (a point a week for a year), or every dish on a side as a sparkline.
+  let m = path.match(/^\/api\/costs\/history\/(.+)$/);
+  if (m) {
+    const id = decodeURIComponent(m[1]!);
+    const h = recipeCostHistory(model, id, today);
+    if (!h) throw new HttpError(404, 'No recipe by that name.');
+    const dish = model.margins.dishes.find((d) => d.recipeId === id && d.quantity > 0);
+    return send(res, 200, { id, ...h, ...(dish ? { price: cents(dish.listPrice ?? dish.averagePrice) } : {}) }), true;
+  }
+  if (path === '/api/costs/sparks') {
+    const area = areaFor(who, url.searchParams.get('area'));
+    const areaOf = await loadAreas(db, who.restaurantId);
+    const out: Record<string, number[]> = {};
+    for (const d of model.margins.dishes) {
+      if (areaOf(d.category) !== area || !(d.quantity > 0) || out[d.recipeId]) continue;
+      const h = recipeCostHistory(model, d.recipeId, today, { weeks: 52, every: 28 });
+      if (h) out[d.recipeId] = h.points.map((p) => p.cost);
+    }
+    return send(res, 200, { sparks: out }), true;
+  }
+
+  m = path.match(/^\/api\/costs\/recipe\/(.+)$/);
   if (m) {
     const id = decodeURIComponent(m[1]!);
     const recipe = book.recipes.get(id);
