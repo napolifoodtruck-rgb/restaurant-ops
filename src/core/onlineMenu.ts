@@ -54,6 +54,8 @@ export interface OnlineItemSetting {
   countsAsPizza?: boolean;
   /** Sold out online for this date only. */
   soldOutOn?: string;
+  /** Where it goes in its category, as arranged. */
+  position?: number;
 }
 
 export interface OnlineModifier { id: string; name: string; price: number; mode: ModifierMode; squareHidesOnline: boolean; /** Its Square name says it's never online. */ locked?: true }
@@ -86,6 +88,8 @@ export interface OnlineMenuItem {
   soldOutToday: boolean;
   /** Every size is marked sold out in Square. */
   soldOutInSquare: boolean;
+  /** Where it goes in its category, as arranged; unset sorts after, by name. */
+  position?: number;
   modifierLists: OnlineModifierList[];
 }
 
@@ -155,10 +159,22 @@ export function onlineMenu(objects: readonly CatalogObject[], items: readonly On
       pizzaFromCategory: s?.countsAsPizza === undefined && pizzaCategory(category),
       soldOutToday: s?.soldOutOn === today,
       soldOutInSquare: variations.every((v) => v.soldOut),
+      ...(s?.position !== undefined ? { position: s.position } : {}),
       modifierLists,
     });
   }
   return out.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+}
+
+/**
+ * The menu in the order a manager arranged it: categories as listed in `categoryOrder`, items by
+ * position within them. Categories and items never arranged come after, alphabetically.
+ */
+export function arranged(menu: readonly OnlineMenuItem[], categoryOrder: readonly string[]): OnlineMenuItem[] {
+  const at = new Map(categoryOrder.map((c, i) => [c, i]));
+  const big = Number.MAX_SAFE_INTEGER;
+  return [...menu].sort((a, b) => (at.get(a.category) ?? big) - (at.get(b.category) ?? big) || a.category.localeCompare(b.category)
+    || (a.position ?? big) - (b.position ?? big) || a.name.localeCompare(b.name));
 }
 
 /**

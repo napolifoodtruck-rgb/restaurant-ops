@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { modifierProblems, onlineMenu, type CatalogObject } from '../src/core/onlineMenu.ts';
+import { arranged, modifierProblems, onlineMenu, type CatalogObject, type OnlineMenuItem } from '../src/core/onlineMenu.ts';
 
 // Shaped like the Square catalog: a pizza with the cooking choice, a gluten-sensitive crust and toppings; a salad.
 const catalog: CatalogObject[] = [
@@ -97,4 +97,11 @@ test('sold out in Square at the restaurant’s location', () => {
   const all = sizes([[{ location_id: 'loc-2', sold_out: true }]]);
   assert.equal(onlineMenu(all, items, {}, '2026-10-10', 'loc-1').find((x) => x.itemId === 'item-marg')!.soldOutInSquare, false);
   assert.equal(onlineMenu(all, items, {}, '2026-10-10', 'loc-2').find((x) => x.itemId === 'item-marg')!.soldOutInSquare, true);
+});
+
+test('arranged: sections as listed, items by position, the rest alphabetical after', () => {
+  const item = (name: string, category: string, position?: number) => ({ itemId: name, name, category, ...(position !== undefined ? { position } : {}) }) as OnlineMenuItem;
+  const menu = [item('Zucca', 'Pizza'), item('Diavola', 'Pizza', 2), item('Marg', 'Pizza', 1), item('Pistachio', 'Gelato', 0), item('Arancini', 'Apps'), item('Bruschetta', 'Bread')];
+  assert.deepEqual(arranged(menu, ['Pizza', 'Gelato']).map((x) => x.name), ['Marg', 'Diavola', 'Zucca', 'Pistachio', 'Arancini', 'Bruschetta']);
+  assert.deepEqual(arranged(menu, []).map((x) => x.category), ['Apps', 'Bread', 'Gelato', 'Pizza', 'Pizza', 'Pizza']);
 });

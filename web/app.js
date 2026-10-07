@@ -2017,12 +2017,71 @@ async function comingUpCard(me) {
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const clock = (hhmm) => { const [hh, mm] = hhmm.split(':').map(Number); return `${hh % 12 || 12}:${String(mm).padStart(2, '0')}`; };
+/**
+ * Drag to reorder: the `selector` children of `box` move by their .drag-handle, with a mouse, a
+ * finger or the arrow keys. `onDrop` runs after anything moved. Lists can nest: a handle moves only
+ * its own row.
+ */
+function sortable(box, selector, onDrop) {
+  const rows = () => [...box.children].filter((k) => k.matches(selector));
+  const rowOf = (target) => {
+    const handle = target.closest('.drag-handle');
+    const row = handle?.closest(selector);
+    return row && row.parentNode === box && handle.closest('[data-key]') === row ? { handle, row } : null;
+  };
+  box.addEventListener('pointerdown', (e) => {
+    const hit = rowOf(e.target);
+    if (!hit) return;
+    const { handle, row } = hit;
+    e.preventDefault();
+    e.stopPropagation();
+    row.classList.add('dragging');
+    const start = rows().indexOf(row);
+    // On the document, not the handle: moving the row in the page would drop a capture on the handle.
+    const move = (ev) => {
+      if (ev.pointerId !== e.pointerId) return;
+      ev.preventDefault();
+      const others = rows().filter((k) => k !== row);
+      const before = others.find((k) => { const r = k.getBoundingClientRect(); return ev.clientY < r.top + r.height / 2; });
+      if (before) { if (row.nextElementSibling !== before) box.insertBefore(row, before); }
+      else if (others.length && rows().at(-1) !== row) others.at(-1).after(row);
+    };
+    const up = (ev) => {
+      if (ev.pointerId !== e.pointerId) return;
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      document.removeEventListener('pointercancel', up);
+      row.classList.remove('dragging');
+      if (rows().indexOf(row) !== start) onDrop();
+    };
+    document.addEventListener('pointermove', move, { passive: false });
+    document.addEventListener('pointerup', up);
+    document.addEventListener('pointercancel', up);
+  });
+  box.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    const hit = rowOf(e.target);
+    if (!hit) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const list = rows();
+    const i = list.indexOf(hit.row);
+    const j = e.key === 'ArrowUp' ? i - 1 : i + 1;
+    if (j < 0 || j >= list.length) return;
+    if (j < i) list[j].before(hit.row); else list[j].after(hit.row);
+    hit.handle.focus();
+    onDrop();
+  });
+}
+const dragHandle = (label) => h('button', { type: 'button', class: 'drag-handle', 'aria-label': label, title: 'Drag, or use the arrow keys', text: '⠿' });
+
 const MODE_LABELS = { shown: 'Shown', hidden: 'Hidden online', always: 'Always on' };
 
 /**
  * What's sold online: the items on the order page, each with Counts as a pizza, Sold out tonight and
  * how its options show online. Search (or Browse) the Square library to add one; most get turned on
- * from the Menu screen's Sell online switch. Options are shared across items in Square, so a change
+ * from the Menu screen's Sell online switch. Arrange shows the order page's sections and items to
+ * drag into the order customers see, with how many of each sold lately. Options are shared across items in Square, so a change
  * to one changes it everywhere it's used.
  */
 async function onlineMenuCard(me) {
@@ -2030,11 +2089,13 @@ async function onlineMenuCard(me) {
   const open = new Set();
   let items = [];
   let browsing = false;
+  let arranging = false;
   const err = h('div', { class: 'error small' });
   const list = h('div', { class: 'stack' });
   const results = h('div', { class: 'asks' });
   const search = h('input', { type: 'search', placeholder: 'Find a Square item to add', 'aria-label': 'Find a Square item', autocomplete: 'off' });
-  const browse = h('button', { class: 'btn small-btn', onclick: () => { browsing = !browsing; draw(); } });
+  const browse = h('button', { class: 'btn small-btn', onclick: () => { browsing = !browsing; arranging = false; draw(); } });
+  const arrange = h('button', { class: 'btn small-btn', onclick: () => { arranging = !arranging; browsing = false; draw(); } });
   search.addEventListener('input', () => found());
   const save = (el, path, body) => pageAction(async () => {
     err.textContent = '';
@@ -2081,10 +2142,44 @@ async function onlineMenuCard(me) {
       .sort((a, b) => Number(a.published) - Number(b.published) || a.name.localeCompare(b.name)).slice(0, 20);
     fill(results, hits.length ? hits.map(libraryRow) : h('div', { class: 'small muted', text: 'No Square item by that name.' }));
   }
+  // The order page as customers see it: drag sections and items, saved as they drop.
+  function arrangeView(online) {
+    const saveOrder = async () => {
+      err.textContent = '';
+      const res = await api('POST', '/api/online/arrange', {
+        categories: [...view.querySelectorAll('.arr-cat')].map((c) => c.dataset.key),
+        items: [...view.querySelectorAll('.arr-item')].map((i) => i.dataset.key),
+      });
+      if (!res.ok) { err.textContent = res.data.error ?? 'The new order didn’t save.'; return load(); }
+      const again = await api('GET', '/api/online/menu');
+      if (again.ok) items = again.data.items;
+    };
+    const itemRow = (x) => h('div', { class: 'arr-item', 'data-key': x.itemId, 'data-sold': x.sold30 },
+      dragHandle(`Move ${x.name}`), photo(x.image, 'thumb small') ?? h('span'),
+      h('span', { class: 'grow' }, h('b', { text: x.name }), h('span', { class: 'small muted', text: price(x) ? ` · ${price(x)}` : '' })),
+      h('span', { class: 'small muted nowrap', text: `${x.sold30} sold in 30 days` }));
+    const section = (cat) => {
+      const rows = h('div', { class: 'arr-items' }, online.filter((x) => x.category === cat).map(itemRow));
+      sortable(rows, '.arr-item', saveOrder);
+      return h('div', { class: 'arr-cat', 'data-key': cat }, h('div', { class: 'arr-cat-head' }, dragHandle(`Move ${cat}`), h('h3', { text: cat })), rows);
+    };
+    const view = h('div', { class: 'arrange' }, [...new Set(online.map((x) => x.category))].map(section));
+    sortable(view, '.arr-cat', saveOrder);
+    const slowFirst = () => {
+      for (const rows of view.querySelectorAll('.arr-items')) [...rows.children].sort((a, b) => Number(a.dataset.sold) - Number(b.dataset.sold)).forEach((k) => rows.append(k));
+      saveOrder();
+    };
+    return h('div', { class: 'stack' },
+      h('div', { class: 'row wrap' }, h('div', { class: 'small muted grow', text: 'Drag sections and items into the order customers see. It saves as you drop.' }),
+        h('button', { class: 'btn small-btn', text: 'Slowest sellers first', title: 'In each section, put the items that sold least in the last 30 days on top', onclick: slowFirst })),
+      view);
+  }
   const byCategory = (xs, row) => [...new Set(xs.map((x) => x.category))].map((cat) => [h('h3', { text: cat }), h('div', { class: 'asks' }, xs.filter((x) => x.category === cat).map(row))]);
   function draw() {
     const online = items.filter((x) => x.published);
     browse.textContent = browsing ? 'Hide the list' : 'Browse all';
+    arrange.textContent = arranging ? 'Done arranging' : 'Arrange';
+    if (arranging && online.length) return fill(list, arrangeView(online)), found();
     fill(list,
       browsing ? h('div', { class: 'stack' }, h('div', { class: 'small muted', text: `Every item in Square (${items.length})` }), byCategory(items, libraryRow)) : null,
       browsing ? null : online.length ? byCategory(online, onlineRow)
@@ -2103,7 +2198,7 @@ async function onlineMenuCard(me) {
     h('h2', { text: 'Sold online' }),
     h('div', { class: 'small muted', text: 'Names, prices and options come from Square. Under Options, set “Partially cooked” to Always on and hide fully cooked and gluten-sensitive crust: an option changes everywhere it’s used.' }),
     h('div', { class: 'tag warn sync-warn', text: 'No Square menu yet: run the Square sync under Settings.', hidden: true }),
-    h('div', { class: 'row tight online-find' }, search, browse),
+    h('div', { class: 'row tight online-find' }, search, browse, arrange),
     results, err, list);
   await load();
   return box;
