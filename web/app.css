@@ -885,3 +885,17 @@ button.donut-row { display: flex; min-width: 0; }
 .online-pause { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; text-align: left; }
 .online-pause > .grow { flex: 1 1 260px; }
 .online-pause[hidden] { display: none; }
+
+/* Arranging the online menu: drag sections and items by their handles. */
+.arrange { display: flex; flex-direction: column; gap: 18px; }
+.arr-cat-head { display: flex; align-items: center; gap: 8px; }
+.arr-cat-head h3 { margin: 0; }
+.arr-items { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.arr-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); }
+.arr-cat.dragging, .arr-item.dragging { opacity: 0.85; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18); position: relative; z-index: 2; }
+.drag-handle { touch-action: none; cursor: grab; border: 0; background: none; font-size: 20px; line-height: 1; padding: 6px 4px; color: var(--muted, #777); min-width: 32px; min-height: 40px; }
+.drag-handle:active { cursor: grabbing; }
+.nowrap { white-space: nowrap; }
+.arr-item > .grow { flex: 1 1 auto; min-width: 0; }
+.online-find { flex-wrap: wrap; }
+.online-find input[type=search] { flex: 1 1 220px; }

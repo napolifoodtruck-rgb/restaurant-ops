@@ -62,6 +62,23 @@ test('online menu and pickup windows', { skip: !db && 'no PostgreSQL for tests (
   assert.equal((await call('POST', '/api/online/items/item-marg', { countsAsPizza: null })).status, 200);
   assert.equal((await call('GET', '/api/online/menu')).json.items[0].countsAsPizza, true);
 
+  // Arranging: sections and items in the order dragged, with how many sold in the last 30 days.
+  const more = [
+    { type: 'CATEGORY', id: 'cat-gelato', category_data: { name: 'Gelato' } },
+    { type: 'ITEM', id: 'item-diavola', item_data: { name: 'Diavola', reporting_category: { id: 'cat-pizza' }, variations: [{ id: 'var-diavola', item_variation_data: { name: 'Regular', price_money: { amount: 1700 } } }] } },
+    { type: 'ITEM', id: 'item-pist', item_data: { name: 'Pistachio', reporting_category: { id: 'cat-gelato' }, variations: [{ id: 'var-pist', item_variation_data: { name: 'Regular', price_money: { amount: 600 } } }] } },
+  ];
+  for (const o of more) await db!.query('INSERT INTO pos_catalog (restaurant_id, object_id, type, data) VALUES ($1, $2, $3, $4::jsonb)', [restaurantId, o.id, o.type, JSON.stringify(o)]);
+  for (const id of ['item-diavola', 'item-pist']) assert.equal((await call('POST', `/api/online/items/${id}`, { published: true })).status, 200);
+  await db!.query("INSERT INTO pos_item_sales_daily (restaurant_id, day, catalog_id, item_name, quantity, net_sales) VALUES ($1, now()::date - 2, 'var-marg', 'Margherita', 12, 180), ($1, now()::date - 3, 'var-marg', 'Margherita', 3, 45), ($1, now()::date - 60, 'var-marg', 'Margherita', 50, 750)", [restaurantId]);
+  const order = (m: any) => m.items.filter((x: any) => x.published).map((x: any) => x.name);
+  menu = (await call('GET', '/api/online/menu')).json;
+  assert.deepEqual(order(menu), ['Pistachio', 'Diavola', 'Margherita']);
+  assert.deepEqual(menu.items.map((x: any) => x.sold30), [0, 0, 15]);
+  assert.equal((await call('POST', '/api/online/arrange', { categories: 'Pizza' })).status, 400);
+  assert.equal((await call('POST', '/api/online/arrange', { categories: ['Pizza', 'Gelato'], items: ['item-marg', 'item-diavola', 'item-pist'] })).status, 200);
+  assert.deepEqual(order((await call('GET', '/api/online/menu')).json), ['Margherita', 'Diavola', 'Pistachio']);
+
   // The weekly plan: nothing until filled in.
   const today = localNow('America/New_York').date;
   const weekday = new Date(`${today}T12:00:00Z`).getUTCDay();

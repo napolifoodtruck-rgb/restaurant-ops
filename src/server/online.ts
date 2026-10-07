@@ -5,7 +5,8 @@
  *
  *   GET  /api/online/pause                     whether online orders are paused, and whether any are being taken tonight
  *   POST /api/online/pause                     { minutes: 15 | 30 | 60 } or { tonight: true } or { resume: true }
- *   GET  /api/online/menu                      every Square item with its online settings, and problems that would stop an order
+ *   GET  /api/online/menu                      every Square item with its online settings, in menu order, how many sold in 30 days, and problems that would stop an order
+ *   POST /api/online/arrange                   { categories: [name…], items: [itemId…] } the online menu's order, as dragged
  *   POST /api/online/items/:itemId             { published?, countsAsPizza? (true | false | null = from its category), soldOutToday? }
  *   POST /api/online/modifiers/:modifierId     { mode: 'shown' | 'hidden' | 'always' }
  *   GET  /api/online/windows?day=YYYY-MM-DD    the weekly plan, that date's windows (default today) and dates with their own limits
@@ -19,7 +20,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
-import { MODIFIER_MODES, modifierProblems, onlineMenu, type CatalogObject, type ModifierMode, type OnlineMenuItem } from '../core/onlineMenu.ts';
+import { MODIFIER_MODES, arranged, modifierProblems, onlineMenu, type CatalogObject, type ModifierMode, type OnlineMenuItem } from '../core/onlineMenu.ts';
 import { LAST_WINDOW_ENDS, isWindowStart, pizzaLimitProblem, stillOpen, windowStarts, windowsFor, type DayCell, type PickupWindow, type PlanCell } from '../core/pickupWindows.ts';
 import { addDays } from '../core/forecast.ts';
 
@@ -43,7 +44,7 @@ async function loadDay(db: Db, restaurantId: string, day: string): Promise<DayCe
 }
 
 /**
- * Every Square item with its online settings, as of the last catalog sync, with any objects just
+ * Every Square item with its online settings, in the order a manager arranged, as of the last catalog sync, with any objects just
  * read from Square (`fresh`) in place of their copies. Sold out, prices and stock counting are
  * as at `locationId` (default: the location the nightly sync reads).
  */
@@ -51,11 +52,12 @@ export async function loadOnlineMenu(db: Db, restaurantId: string, today: string
   const copy = (await db.query<{ data: CatalogObject }>('SELECT data FROM pos_catalog WHERE restaurant_id = $1', [restaurantId])).rows.map((r) => (typeof r.data === 'string' ? JSON.parse(r.data) : r.data) as CatalogObject);
   const fresh = new Map((options.fresh ?? []).map((o) => [o.id, o]));
   const catalog = copy.map((o) => fresh.get(o.id) ?? o);
-  const items = (await db.query<{ item_id: string; published: boolean; counts_as_pizza: boolean | null; sold_out_on: string | null }>('SELECT item_id, published, counts_as_pizza, sold_out_on::text AS sold_out_on FROM online_items WHERE restaurant_id = $1', [restaurantId])).rows;
+  const items = (await db.query<{ item_id: string; published: boolean; counts_as_pizza: boolean | null; sold_out_on: string | null; position: number | null }>('SELECT item_id, published, counts_as_pizza, sold_out_on::text AS sold_out_on, position FROM online_items WHERE restaurant_id = $1', [restaurantId])).rows;
+  const categoryOrder = (await db.query<{ name: string }>('SELECT name FROM online_categories WHERE restaurant_id = $1 ORDER BY position', [restaurantId])).rows.map((r) => r.name);
   const modes = Object.fromEntries((await db.query<{ modifier_id: string; mode: ModifierMode }>('SELECT modifier_id, mode FROM online_modifiers WHERE restaurant_id = $1', [restaurantId])).rows.map((r) => [r.modifier_id, r.mode]));
   // Without a location given, the one the nightly sync reads.
   const locationId = options.locationId ?? (await db.query<{ pos_location_id: string | null }>('SELECT pos_location_id FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.pos_location_id ?? undefined;
-  const menu = onlineMenu(catalog, items.map((r) => ({ itemId: r.item_id, published: r.published, ...(r.counts_as_pizza !== null ? { countsAsPizza: r.counts_as_pizza } : {}), ...(r.sold_out_on ? { soldOutOn: r.sold_out_on } : {}) })), modes, today, locationId);
+  const menu = arranged(onlineMenu(catalog, items.map((r) => ({ itemId: r.item_id, published: r.published, ...(r.counts_as_pizza !== null ? { countsAsPizza: r.counts_as_pizza } : {}), ...(r.sold_out_on ? { soldOutOn: r.sold_out_on } : {}), ...(r.position !== null ? { position: Number(r.position) } : {}) })), modes, today, locationId), categoryOrder);
   return { menu, synced: copy.length > 0 };
 }
 
@@ -116,7 +118,21 @@ export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResp
 
   if (method === 'GET' && path === '/api/online/menu') {
     const { menu, synced } = await loadOnlineMenu(db, who.restaurantId, now.date);
-    return send(res, 200, { today: now.date, synced, items: menu.map((x) => ({ ...x, problems: x.published ? modifierProblems(x) : [] })) }), true;
+    // How many of each sold in the last 30 days, everywhere: for arranging the menu.
+    const sold = new Map((await db.query<{ catalog_id: string; quantity: string }>('SELECT catalog_id, sum(quantity)::text AS quantity FROM pos_item_sales_daily WHERE restaurant_id = $1 AND day >= $2 GROUP BY catalog_id', [who.restaurantId, addDays(now.date, -30)])).rows.map((r) => [r.catalog_id, Number(r.quantity)]));
+    return send(res, 200, { today: now.date, synced, items: menu.map((x) => ({ ...x, sold30: Math.round(x.variations.reduce((n, v) => n + (sold.get(v.id) ?? 0), 0)), problems: x.published ? modifierProblems(x) : [] })) }), true;
+  }
+
+  if (method === 'POST' && path === '/api/online/arrange') {
+    const b = await body(req);
+    const strings = (v: unknown, max: number) => (Array.isArray(v) && v.length <= max && v.every((x) => typeof x === 'string' && x.length > 0 && x.length <= 200) ? (v as string[]) : undefined);
+    const categories = strings(b.categories, 200);
+    const items = strings(b.items, 2000);
+    if (!categories || !items) throw new HttpError(400, 'Send the categories and items in their new order.');
+    await db.query('DELETE FROM online_categories WHERE restaurant_id = $1', [who.restaurantId]);
+    await db.query('INSERT INTO online_categories (restaurant_id, name, position) SELECT $1, name, ord::int FROM jsonb_array_elements_text($2::jsonb) WITH ORDINALITY AS t(name, ord) ON CONFLICT DO NOTHING', [who.restaurantId, JSON.stringify(categories)]);
+    await db.query('UPDATE online_items o SET position = t.ord::int FROM jsonb_array_elements_text($2::jsonb) WITH ORDINALITY AS t(item_id, ord) WHERE o.restaurant_id = $1 AND o.item_id = t.item_id', [who.restaurantId, JSON.stringify(items)]);
+    return send(res, 200, { ok: true }), true;
   }
 
   if (method === 'POST' && (m = path.match(/^\/api\/online\/items\/([A-Za-z0-9_-]{1,64})$/))) {
