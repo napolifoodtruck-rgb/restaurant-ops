@@ -31,7 +31,7 @@ function h(tag, props = {}, ...children) {
   for (const c of children.flat(Infinity)) if (c !== null && c !== undefined && c !== false) el.append(c instanceof Node ? c : String(c));
   return el;
 }
-const show = (...nodes) => root.replaceChildren(...nodes.flat(Infinity).filter(Boolean));
+const show = (...nodes) => { document.querySelector('.added')?.remove(); root.replaceChildren(...nodes.flat(Infinity).filter(Boolean)); };
 const money = (cents) => `$${(cents / 100).toFixed(2).replace(/\.00$/, '')}`;
 const money2 = (cents) => `$${(cents / 100).toFixed(2)}`;
 
@@ -185,7 +185,7 @@ function itemSheet(item, editing) {
     cart = editing ? cart.map((l) => (l.key === editing.key ? line : l)) : [...cart, line];
     saveCart();
     closeSheet();
-    editing ? cartView() : menuView();
+    editing ? cartView() : (menuView(), addedPreview(line));
   });
   const bg = h('div', { class: 'sheet-bg', onclick: (e) => e.target === bg && closeSheet() },
     h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': item.name },
@@ -205,6 +205,21 @@ function itemSheet(item, editing) {
 
 // ------------------------------------------------------------------ cart and checkout
 
+/** "Added to your order": a peek at the cart, top right, that goes away by itself. */
+function addedPreview(line) {
+  const close = () => { clearTimeout(timer); box.remove(); };
+  const box = h('div', { class: 'added', role: 'status', 'aria-live': 'polite' },
+    h('div', { class: 'row' }, h('span', { class: 'grow strong', text: '✓ Added to your order' }), h('button', { class: 'link', 'aria-label': 'Close', text: 'Close', onclick: () => close() })),
+    lineView(line, false),
+    h('div', { class: 'row small muted', style: 'margin:8px 0 12px' }, h('span', { class: 'grow', text: `${cartCount()} item${cartCount() === 1 ? '' : 's'} in your order` }), h('span', { text: money2(cartTotal()) })),
+    h('button', { class: 'btn dark wide', text: 'View order', onclick: () => cartView() }));
+  let timer = setTimeout(close, 5000);
+  // Stays put while the customer is reading or about to tap it.
+  box.addEventListener('pointerenter', () => clearTimeout(timer));
+  box.addEventListener('pointerleave', () => { clearTimeout(timer); timer = setTimeout(close, 3000); });
+  box.addEventListener('focusin', () => clearTimeout(timer));
+  document.body.append(box);
+}
 function lineView(l, actions = true) {
   const f = variationOf(l.variationId);
   if (!f) return null;
