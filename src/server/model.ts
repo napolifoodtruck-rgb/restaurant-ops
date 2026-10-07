@@ -6,6 +6,7 @@
  * Built on demand and cached until the next sync or saved answer.
  */
 
+import { createHash } from 'node:crypto';
 import type { Db } from './db.ts';
 import { blendedPrices, importMarginEdge, type ImportAnswers, type ImportedProduct, type ImportResult } from '../connectors/marginedge.ts';
 import { buildRecipes, FREE_PRODUCTS, recipeId, type RecipeCard } from '../connectors/marginedgeRecipes.ts';
@@ -256,14 +257,70 @@ export async function getModel(db: Db, restaurantId: string, today: string, rang
   return model;
 }
 
+/**
+ * What only a sync changes: invoices read in, the POS catalog, sales and modifier rows. Kept
+ * apart from the recipes, so saving a recipe (several times a minute while the chef writes)
+ * rebuilds only the part the recipes touch, not the invoices and sales underneath.
+ */
+interface Base {
+  me: Awaited<ReturnType<typeof storedMarginEdge>>;
+  imported: ImportResult;
+  menuItems: PosMenuItem[];
+  images: Map<string, string>;
+  rawRows: Awaited<ReturnType<typeof storedItemSales>>;
+  modRows: Awaited<ReturnType<typeof storedModifierSales>>;
+  dataFrom?: string;
+}
+const baseCache = new Map<string, { stamp: string; base: Promise<Base> }>();
+
+async function getBase(db: Db, restaurantId: string, from: string, today: string, answers: PilotImportAnswers): Promise<Base> {
+  const key = `${restaurantId}|${from}|${today}`;
+  const synced = (await db.query<{ stamp: string | null }>(
+    "SELECT max(finished_at)::text AS stamp FROM sync_runs WHERE restaurant_id = $1 AND status = 'ok'", [restaurantId])).rows[0]?.stamp ?? '';
+  // Import answers (which invoice line is which product) change how invoices read, so they're part of the stamp.
+  const stamp = `${synced}|${createHash('sha1').update(JSON.stringify(answers)).digest('hex')}`;
+  const hit = baseCache.get(key);
+  if (hit && hit.stamp === stamp) return hit.base;
+  const mine = [...baseCache.keys()].filter((k) => k.startsWith(`${restaurantId}|`));
+  if (mine.length >= 8) baseCache.delete(mine[0]!);
+  const base = buildBase(db, restaurantId, from, today, answers);
+  baseCache.set(key, { stamp, base });
+  base.catch(() => baseCache.delete(key));
+  return base;
+}
+
+async function buildBase(db: Db, restaurantId: string, from: string, today: string, answers: PilotImportAnswers): Promise<Base> {
+  const me = await storedMarginEdge(db, restaurantId);
+  const imported = me ? importMarginEdge(me, answers) : { vendors: [], products: [], invoices: [], prices: [], flags: [] };
+  const catalogRows = (await db.query<{ data: any }>('SELECT data FROM pos_catalog WHERE restaurant_id = $1', [restaurantId])).rows;
+  const catalog: SquareCatalogObject[] = catalogRows.map((r) => (typeof r.data === 'string' ? JSON.parse(r.data) : r.data));
+  const categoryNames = Object.fromEntries(catalog.filter((o: any) => o.type === 'CATEGORY').map((o: any) => [o.id, o.category_data?.name ?? o.id]));
+  const menuItems = squareMenuItems(catalog, categoryNames);
+  // Photos: an item's first image, for the item and each of its variations (a variation's own image first).
+  const imageUrls = new Map(catalog.filter((o: any) => o.type === 'IMAGE' && o.image_data?.url).map((o: any) => [o.id, o.image_data.url as string]));
+  const images = new Map<string, string>();
+  for (const o of catalog as any[]) {
+    if (o.type !== 'ITEM') continue;
+    const itemImage = (o.item_data?.image_ids ?? []).map((id: string) => imageUrls.get(id)).find(Boolean);
+    if (itemImage) images.set(o.id, itemImage);
+    for (const v of o.item_data?.variations ?? []) {
+      const own = (v.item_variation_data?.image_ids ?? []).map((id: string) => imageUrls.get(id)).find(Boolean);
+      if (own ?? itemImage) images.set(v.id, own ?? itemImage);
+    }
+  }
+  const rawRows = await storedItemSales(db, restaurantId, from, today);
+  const modRows = await storedModifierSales(db, restaurantId, from, today);
+  const dataFrom = (await db.query<{ day: string | null }>('SELECT min(day)::text AS day FROM pos_item_sales_daily WHERE restaurant_id = $1', [restaurantId])).rows[0]?.day ?? undefined;
+  return { me, imported, menuItems, images, rawRows, modRows, ...(dataFrom ? { dataFrom } : {}) };
+}
+
 async function buildModel(db: Db, restaurantId: string, from: string, today: string): Promise<Model> {
   const missing: string[] = [];
   const bookData = await loadBook(db, restaurantId);
-  const me = await storedMarginEdge(db, restaurantId);
+  const answers: PilotImportAnswers = bookData.importAnswers ?? {};
+  const { me, imported, menuItems, images, rawRows, modRows, dataFrom } = await getBase(db, restaurantId, from, today, answers);
   if (!me) missing.push('marginedge');
   if (!bookData.recipeCards?.length) missing.push('recipeCards');
-  const answers: PilotImportAnswers = bookData.importAnswers ?? {};
-  const imported = me ? importMarginEdge(me, answers) : { vendors: [], products: [], invoices: [], prices: [], flags: [] };
 
   // Products and recipes.
   const allProducts = [...imported.products, ...(answers.offInvoiceProducts ?? [])];
@@ -292,26 +349,8 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
   });
   const book = new RecipeBook(products, recipes);
 
-  // Square: catalog and sales.
-  const catalogRows = (await db.query<{ data: any }>('SELECT data FROM pos_catalog WHERE restaurant_id = $1', [restaurantId])).rows;
-  const catalog: SquareCatalogObject[] = catalogRows.map((r) => (typeof r.data === 'string' ? JSON.parse(r.data) : r.data));
-  const categoryNames = Object.fromEntries(catalog.filter((o: any) => o.type === 'CATEGORY').map((o: any) => [o.id, o.category_data?.name ?? o.id]));
-  const menuItems = squareMenuItems(catalog, categoryNames);
-  // Photos: an item's first image, for the item and each of its variations (a variation's own image first).
-  const imageUrls = new Map(catalog.filter((o: any) => o.type === 'IMAGE' && o.image_data?.url).map((o: any) => [o.id, o.image_data.url as string]));
-  const images = new Map<string, string>();
-  for (const o of catalog as any[]) {
-    if (o.type !== 'ITEM') continue;
-    const itemImage = (o.item_data?.image_ids ?? []).map((id: string) => imageUrls.get(id)).find(Boolean);
-    if (itemImage) images.set(o.id, itemImage);
-    for (const v of o.item_data?.variations ?? []) {
-      const own = (v.item_variation_data?.image_ids ?? []).map((id: string) => imageUrls.get(id)).find(Boolean);
-      if (own ?? itemImage) images.set(v.id, own ?? itemImage);
-    }
-  }
   const imageOf = (catalogId: string) => images.get(catalogId);
   // Discount buttons (Tuesday $10, half-price Wednesday) fold into the drink they discount.
-  const rawRows = await storedItemSales(db, restaurantId, from, today);
   const saleOf = (r: (typeof rawRows)[number]) => ({ catalogId: String(r['ItemSales.item_variation_id'] ?? ''), itemName: String(r['ItemSales.item_name'] ?? ''), ...(r['ItemSales.item_variation_name'] ? { variationName: String(r['ItemSales.item_variation_name']) } : {}) });
   const fold = priceFolds(menuItems, bookData.linkAnswers ?? {}, rawRows.map(saleOf).filter((x) => x.catalogId));
   const manualFolds = new Set((bookData.linkAnswers?.priceMerge ?? []).map((m) => m.catalogId));
@@ -324,7 +363,6 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     return { ...r, 'ItemSales.item_variation_id': into.catalogId, 'ItemSales.item_name': into.itemName, 'ItemSales.item_variation_name': into.variationName ?? null };
   });
   const folded = foldedTotals(foldedSales);
-  const dataFrom = (await db.query<{ day: string | null }>('SELECT min(day)::text AS day FROM pos_item_sales_daily WHERE restaurant_id = $1', [restaurantId])).rows[0]?.day ?? undefined;
   if (!itemRows.length) missing.push('square');
   const sales = squareItemSales(itemRows, menuItems);
 
@@ -355,7 +393,6 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
   const linkQuestions = matchMenu(soldItems, recipes, state).questions;
 
   // Modifiers, margins, menu.
-  const modRows = await storedModifierSales(db, restaurantId, from, today);
   const modifiers = modifierCosts(book, squareModifierSales(modRows), (id, name, date) => lookup(id, name, date)?.recipeId, bookData.modifierAnswers ?? emptyModifierAnswers());
   const margins = menuMargins(book, lookup, sales, { modifierCosts: modifiers.byItem });
   // Buttons answered "not food" (a fee, a gift card) aren't waiting on a card.

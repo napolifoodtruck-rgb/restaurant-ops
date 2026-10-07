@@ -64,12 +64,28 @@ export function cardUnits(yields: { amount: number; unit: string }[]) {
  * Convert: its unit doesn't turn into how that product is bought (a handful of arugula, until set).
  */
 export type LineState = 'ok' | 'name' | 'unmatched' | 'amount' | 'unit' | 'convert';
+
+// Name lookups, built once per model (or list of cards) instead of a scan of every product for
+// every recipe line: hundreds of products times hundreds of lines added up to seconds on a small server.
+const byKeyMemo = new WeakMap<object, Map<string, any>>();
+function byKey<T extends { name: string }>(list: T[], key: string): T | undefined {
+  let m = byKeyMemo.get(list);
+  if (!m) {
+    m = new Map();
+    for (const x of list) { const k = cardKey(x.name); if (!m.has(k)) m.set(k, x); }
+    byKeyMemo.set(list, m);
+  }
+  return m.get(key);
+}
+export const productNamed = (model: Model, name: string) => byKey(model.products, cardKey(name));
+export const cardNamed = (cards: RecipeCard[], name: string) => byKey(cards, cardKey(name));
+
 export function lineState(i: { amount?: number | string; unit?: string; name?: string }, model: Model, cards: RecipeCard[]): LineState {
   const name = typeof i.name === 'string' ? i.name.trim() : '';
   if (!name) return 'name';
   const key = cardKey(name);
-  const product = model.products.find((p) => cardKey(p.name) === key);
-  const card = cards.find((c) => cardKey(c.name) === key);
+  const product = byKey(model.products, key);
+  const card = byKey(cards, key);
   if (!product && !card) return 'unmatched';
   if (!(Number(i.amount) > 0)) return 'amount';
   if (typeof i.unit !== 'string' || !i.unit) return 'unit';
@@ -162,6 +178,22 @@ export function linkedItems(model: Model) {
   return out;
 }
 
+/** A sold button's category, and which recipes use a recipe: worked out once per model. */
+const indexMemo = new WeakMap<Model, { categoryOf: Map<string, string>; usedByOf: Map<string, string[]> }>();
+function modelIndex(model: Model) {
+  let x = indexMemo.get(model);
+  if (x) return x;
+  const categoryOf = new Map<string, string>();
+  for (const l of model.sales) if (l.category && !categoryOf.has(l.catalogId)) categoryOf.set(l.catalogId, l.category);
+  const usedByOf = new Map<string, string[]>();
+  for (const r of model.recipes) {
+    for (const id of new Set(r.ingredients.filter((i) => i.item.kind === 'recipe').map((i) => i.item.id))) usedByOf.set(id, [...(usedByOf.get(id) ?? []), r.name]);
+  }
+  x = { categoryOf, usedByOf };
+  indexMemo.set(model, x);
+  return x;
+}
+
 export function cardView(model: Model, card: RecipeCard, linked: ReturnType<typeof linkedItems>, areaOf: AreaOf, cards: RecipeCard[] = []) {
   const id = recipeId(card.name);
   const recipe = model.book.recipes.get(id);
@@ -169,9 +201,10 @@ export function cardView(model: Model, card: RecipeCard, linked: ReturnType<type
   const cost = recipe ? model.book.costOf({ kind: 'recipe', id }, recipe.yield) : undefined;
   const items = (linked.get(id) ?? []).sort((a, b) => b.netSales - a.netSales);
   const sold = items.reduce((s, i) => s + i.sold, 0), net = items.reduce((s, i) => s + i.netSales, 0);
-  const categories = new Set(items.map((i) => model.sales.find((l) => l.catalogId === i.catalogId)?.category).filter(Boolean) as string[]);
+  const { categoryOf, usedByOf } = modelIndex(model);
+  const categories = new Set(items.map((i) => categoryOf.get(i.catalogId)).filter(Boolean) as string[]);
   const area = categories.size ? ([...categories].some((c) => areaOf(c) === 'bar') ? 'bar' : 'kitchen') : kind === 'drink' || kind === 'barPrep' ? 'bar' : 'kitchen';
-  const usedBy = model.recipes.filter((r) => r.ingredients.some((i) => i.item.kind === 'recipe' && i.item.id === id)).map((r) => r.name);
+  const usedBy = usedByOf.get(id) ?? [];
   return {
     name: card.name, kind, area,
     yields: card.yields,
@@ -196,7 +229,14 @@ function issueText(i: any): string {
   return i.type;
 }
 
+// The product list only changes with invoices and their answers (which make a new `imported`).
+const productsMemo = new WeakMap<object, ReturnType<typeof buildProductsView>>();
 function productsView(model: Model) {
+  let v = productsMemo.get(model.imported);
+  if (!v) { v = buildProductsView(model); productsMemo.set(model.imported, v); }
+  return v;
+}
+function buildProductsView(model: Model) {
   const typeOf = new Map(model.imported.products.map((p) => [p.externalId, p.categoryType]));
   const lastBought = new Map<string, string>();
   for (const p of model.imported.prices) if ((lastBought.get(p.productExternalId) ?? '') < p.date) lastBought.set(p.productExternalId, p.date.slice(0, 10));
@@ -322,7 +362,8 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     const linked = linkedItems(model);
     const cards = (book.recipeCards ?? []).map((c) => cardView(model, c, linked, areaOf, book.recipeCards ?? []));
     // Preps a side's cards use are that side's too.
-    const usedOn = (c: (typeof cards)[number]) => c.area === area || c.usedBy.some((n) => cards.find((x) => x.name === n)?.area === area);
+    const areaByName = new Map(cards.map((x) => [x.name, x.area]));
+    const usedOn = (c: (typeof cards)[number]) => c.area === area || c.usedBy.some((n) => areaByName.get(n) === area);
     const posItem = posItemOf(model);
     const notFood = new Set((book.linkAnswers?.notFood ?? []).map((x) => posName(x)));
     return send(res, 200, {
@@ -341,8 +382,8 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     if (!c?.ingredients) throw new HttpError(400, 'Missing recipe.');
     // Cost each line on its own: what it costs and what's missing.
     const lines = (c.ingredients as any[]).map((i) => {
-      const product = model.products.find((p) => cardKey(p.name) === cardKey(String(i.name ?? '')));
-      const card = (book.recipeCards ?? []).find((x) => cardKey(x.name) === cardKey(String(i.name ?? '')));
+      const product = productNamed(model, String(i.name ?? ''));
+      const card = cardNamed(book.recipeCards ?? [], String(i.name ?? ''));
       const amount = Number(i.amount) / ((Number(i.yieldPercent) || 100) / 100);
       if (!(amount > 0) || !i.unit) return {};
       const item = product ? { kind: 'product' as const, id: product.id } : card ? { kind: 'recipe' as const, id: recipeId(card.name) } : undefined;

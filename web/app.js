@@ -2,6 +2,13 @@
 // API returns, never from HTML strings, so names and messages can't inject markup.
 
 const app = document.getElementById('app');
+// Tapping a button while typing in a field: the field's change used to run on the way down
+// (on blur), redraw part of the page and slide the button away before the tap landed, so the
+// first tap did nothing. Now the tap keeps the field focused, and the field is committed just
+// before the button's own action runs, so the button stays where it was tapped.
+const typing = () => document.activeElement?.matches?.('input:not([type=checkbox]):not([type=radio]), textarea');
+app.addEventListener('mousedown', (e) => { if (e.target.closest?.('button') && typing()) e.preventDefault(); }, true);
+app.addEventListener('click', (e) => { if (e.target.closest?.('button') && typing()) document.activeElement.blur(); }, true);
 
 function h(tag, props = {}, ...children) {
   const el = document.createElement(tag);
@@ -140,6 +147,14 @@ async function pageAction(fn) {
     // Gone to another tab meanwhile: the save still counts, but don't pull them back to redraw this one.
     if (!actionsOut && waitingRefresh) { const r = waitingRefresh; waitingRefresh = null; if (tabNow() === tab) refreshInPlace(r); }
   }
+}
+/**
+ * Where a page was opened from, so finishing there (Save, Cancel, ←) goes back to it: the same
+ * page, freshly loaded, scrolled to where it was, with its own tab lit on the left.
+ */
+function returnTo(label, redraw) {
+  const y = window.scrollY, rail = tabNow();
+  return { label, rail, go: async (saved) => { await redraw(saved); requestAnimationFrame(() => window.scrollTo(0, y)); } };
 }
 /** The line someone just answered folds away; the rest of the page stays put. */
 function foldAway(row) {
@@ -1709,7 +1724,7 @@ async function menuScreen(me) {
       const dr = drafts.find((y) => y.shape !== 'ownCard' && y.ingredients?.length && y.items.some((it) => it.catalogId === x.pos.catalogId));
       if (dr) suggested = { ingredients: dr.ingredients.map((i) => ({ ...i })), note: `Suggested from your invoices: ${dr.ingredients.map((i) => `${qty(i.amount)} ${UNIT_LABEL(i.unit)} of ${i.name}`).join(', ')}. Check it, then Mark ready.` };
     }
-    cardEditor(me, d, null, { name: x.pos?.itemName ?? x.name, kind: side === 'bar' ? 'drink' : 'dish', link: x.pos ? [{ ...x.pos, name: x.name }] : [], ...(suggested ?? {}) });
+    cardEditor(me, d, null, { name: x.pos?.itemName ?? x.name, kind: side === 'bar' ? 'drink' : 'dish', link: x.pos ? [{ ...x.pos, name: x.name }] : [], ...(suggested ?? {}), back: returnTo('Menu', () => menuScreen(me)) });
   };
   // Any change saves, then the page comes back with fresh numbers (staying on the same chip).
   // The spinner stays on the button until it's saved; then that line folds away and the page refreshes where it is.
@@ -1764,7 +1779,7 @@ async function menuScreen(me) {
         h('div', { class: 'row tight wrap' }, h('span', { text: x.name }),
           x.quiet ? h('button', { class: 'tag ask tag-button', text: 'quiet', title: `Hasn’t sold since ${shortDate(x.quiet.since)}: still on?`, onclick: () => pickChip('needs') }) : null,
           x.hasCard || !flagCards ? null : h('button', { class: 'tag warn tag-button', text: 'needs recipe', title: `Write the recipe for ${x.name}`, onclick: () => writeCard(x) }),
-          x.rough && flagCards ? h('button', { class: 'tag rough tag-button', text: 'rough', title: `${x.name}: the recipe is still being worked out`, onclick: () => recipePage(me, x.name) }) : null,
+          x.rough && flagCards ? h('button', { class: 'tag rough tag-button', text: 'rough', title: `${x.name}: the recipe is still being worked out`, onclick: () => recipePage(me, x.name, { from: returnTo('Menu', () => menuScreen(me)) }) }) : null,
           sameAs(x)),
         includesLine(x),
         h('div', { class: 'small muted', text: onText(x) }),
@@ -2364,9 +2379,11 @@ async function recipesScreen(me, state = {}) {
 /** One card, on its own page in the book. */
 async function recipePage(me, name, opts = {}) {
   const r = await api('GET', `/api/recipes/${encodeURIComponent(name)}`);
-  if (!r.ok) return show(shell(me, 'recipes', [h('h1', { text: name }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
-  const v = recipeView(me, r.data, { open: (n) => recipePage(me, n), back: h('button', { class: 'btn', text: '← Recipes', onclick: () => recipesScreen(me) }), page: true, reload: () => refreshInPlace(() => recipePage(me, name, opts)), ...opts });
-  show(shell(me, 'recipes', [v.head, page(v.body, v.side)]));
+  const from = opts.from;
+  const rail = from?.rail ?? 'recipes';
+  if (!r.ok) return show(shell(me, rail, [h('h1', { text: name }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const v = recipeView(me, r.data, { open: (n) => recipePage(me, n, { from }), back: h('button', { class: 'btn', text: `← ${from?.label ?? 'Recipes'}`, onclick: () => (from ? from.go() : recipesScreen(me)) }), page: true, reload: () => refreshInPlace(() => recipePage(me, name, opts)), ...opts });
+  show(shell(me, rail, [v.head, page(v.body, v.side)]));
 }
 
 /** A card over whatever's on screen (a prep list), so nobody loses their place. */
@@ -2404,14 +2421,19 @@ function recipeView(me, r, opts) {
   const side = page ? h('div', { class: 'page-side-boxes' }) : null;
   const makesText = () => (prep ? `Makes ${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}${r.yields.length > 1 ? ` (${r.yields.slice(1).map((x) => `${nice(x.amount * scale)} ${UNIT_LABEL(x.unit)}`).join(', ')})` : ''}${r.batchGrams && dimensionName(y.unit) !== 'mass' ? `, about ${weightText(r.batchGrams * scale)}` : ''}` : r.kind === 'drink' ? 'One drink' : 'One plate');
   const sellsAs = r.sellsAs.filter((n) => n.toLowerCase() !== r.name.toLowerCase());
-  const editButton = r.canEdit && !opts.sheet ? h('button', { class: 'btn', text: 'Edit recipe', onclick: async () => { const d = (await api('GET', '/api/cards')).data; const c = d.cards.find((x) => x.name === r.name); if (c) cardEditor(me, d, c, { back: { label: r.name, go: (saved) => recipePage(me, saved || c.name), rail: 'recipes' } }); } }) : null;
+  const editButton = r.canEdit && !opts.sheet ? h('button', { class: 'btn', text: 'Edit recipe', onclick: async () => { const d = (await api('GET', '/api/cards')).data; const c = d.cards.find((x) => x.name === r.name); if (c) cardEditor(me, d, c, { back: { label: r.name, go: (saved) => recipePage(me, saved || c.name, opts), rail: opts.from?.rail ?? 'recipes' } }); } }) : null;
+  // A new recipe that starts as a copy of this one (a new pizza from the margherita), back here if cancelled.
+  const baseButton = r.canEdit && page ? h('button', { class: 'btn', text: 'Use as a base', title: 'Start a new recipe from a copy of this one', onclick: async () => {
+    const d = (await api('GET', '/api/cards')).data; const c = d.cards.find((x) => x.name === r.name);
+    if (c) cardEditor(me, d, null, { base: c, back: { label: r.name, go: (saved) => recipePage(me, saved || r.name, opts), rail: opts.from?.rail ?? 'recipes' } });
+  } }) : null;
   const usedIn = () => (r.usedBy.length ? r.usedBy.map((n, k) => [k ? ', ' : '', h('button', { class: 'linkish card-link', text: n, onclick: () => opts.open(n) })]) : null);
   // The page's title row stays put; only the amounts change with the batch size.
   const head = page ? h('header', { class: 'row wrap' },
     h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[r.side]} · ${r.section}` }),
       h('div', { class: 'row tight wrap' }, h('h1', { text: r.name }), r.rough ? h('span', { class: 'tag rough', title: 'Still being worked out: cooks don’t see it yet.', text: `Rough${r.toFinish ? ` · ${r.toFinish} to finish` : ''}` }) : null),
       h('div', { class: 'sub', text: [sellsAs.length ? `Sells as ${sellsAs.join(', ')}` : '', r.shelfLifeDays ? `keeps ${r.shelfLifeDays} days` : ''].filter(Boolean).join(' · ') || null })),
-    opts.back ?? null, editButton) : null;
+    opts.back ?? null, baseButton, editButton) : null;
   const draw = () => {
     const sizes = [0.5, 1, 2, 3];
     const other = r.scaledTo && Math.abs(r.scale - 1) > 1e-6 && !sizes.includes(r.scale);
@@ -2492,7 +2514,7 @@ async function cardsScreen(me, opts = {}) {
   const cardRows = d.cards.filter((c) => !filter || c.name.toLowerCase().includes(filter.toLowerCase())).map((c) => {
     const share = c.cost !== undefined && c.averagePrice ? c.cost / c.averagePrice : undefined;
     return h('div', { class: 'crow' },
-      h('div', {}, h('button', { class: 'linkish name', text: c.name, onclick: () => cardEditor(me, d, c) }),
+      h('div', {}, h('button', { class: 'linkish name', text: c.name, onclick: () => cardEditor(me, d, c, { back: returnTo('Recipe costs', () => cardsScreen(me, opts)) }) }),
         h('div', { class: 'small muted', text: [c.linked.length ? `sells as ${c.linked.slice(0, 2).map((l) => l.name).join(', ')}${c.linked.length > 2 ? ` +${c.linked.length - 2}` : ''}` : c.usedBy.length ? `used in ${c.usedBy.slice(0, 2).join(', ')}${c.usedBy.length > 2 ? ` +${c.usedBy.length - 2}` : ''}` : c.kind === 'dish' || c.kind === 'drink' ? 'not linked to a button' : ''].filter(Boolean).join('') })),
       h('span', { class: `tag${c.kind === 'drink' || c.kind === 'barPrep' ? ' blue' : ''}`, text: KIND_NAMES[c.kind] }),
       h('div', { class: 'num', text: c.cost !== undefined ? `${money2(c.cost)}${c.complete ? '' : '*'}` : '–' }),
@@ -2504,7 +2526,7 @@ async function cardsScreen(me, opts = {}) {
   // Down the side: what still sells without a card (the full list is on Recipe coverage), names to tidy, a new card.
   const noCardBox = d.noCard.length ? sideBox(`Selling without a recipe (${d.noCard.length})`,
     h('div', { class: 'list compact' }, d.noCard.slice(0, 8).map((x) => h('div', {},
-      h('button', { class: 'linkish grow', text: x.name, title: `Write the recipe for ${x.name}`, onclick: () => cardEditor(me, d, null, { name: x.itemName, kind: side === 'bar' ? 'drink' : 'dish', link: [x] }) }),
+      h('button', { class: 'linkish grow', text: x.name, title: `Write the recipe for ${x.name}`, onclick: () => cardEditor(me, d, null, { name: x.itemName, kind: side === 'bar' ? 'drink' : 'dish', link: [x], back: returnTo('Recipe costs', () => cardsScreen(me, opts)) }) }),
       h('span', { class: 'small muted', text: dollars(x.netSales) })))),
     sideActions(h('button', { class: 'btn small-btn', text: 'All of them', onclick: () => coverageScreen(me) }),
       side === 'bar' ? h('button', { class: 'btn small-btn dark', text: 'Draft bar recipes', onclick: () => draftsScreen(me) }) : null)) : null;
@@ -2516,7 +2538,7 @@ async function cardsScreen(me, opts = {}) {
   const fix = d.cards.filter((c) => c.problems?.length).length;
   const totals = sideBox('Recipes', h('div', { class: 'list compact' }, kinds.map(([t, n]) => h('div', {}, h('span', { class: 'grow', text: t }), h('b', { text: String(n) })))),
     fix ? h('div', { class: 'small warn-text', text: `${fix} with something to fix: hover the tag for what.` }) : null,
-    sideActions(h('button', { class: 'btn small-btn dark', text: 'New recipe', onclick: () => cardEditor(me, d, null, { kind: side === 'bar' ? 'drink' : 'dish' }) })));
+    sideActions(h('button', { class: 'btn small-btn dark', text: 'New recipe', onclick: () => cardEditor(me, d, null, { kind: side === 'bar' ? 'drink' : 'dish', back: returnTo('Recipe costs', () => cardsScreen(me, opts)) }) })));
   show(shell(me, 'menu', [
     h('header', { class: 'row wrap' },
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[side]} · costed from invoice prices` }), h('h1', { text: 'Recipe costs' }),
@@ -2607,6 +2629,8 @@ function cardEditor(me, d, card, start = {}) {
     statusChip.className = `tag ${c.status === 'rough' ? 'rough' : 'ok'}`;
     statusChip.textContent = c.status === 'rough' ? `Rough${n ? ` · ${n} to finish` : ' · every line done'}` : 'Ready';
     statusChip.title = c.status === 'rough' ? 'Still being worked out: managers see it, cooks don’t yet.' : 'Cooks see this recipe.';
+    // Every line finished: Mark ready is the next step, so it stands out.
+    if (readyBtn) { readyBtn.classList.toggle('dark', !n); saveBtn.classList.toggle('dark', Boolean(n)); }
   };
 
   let previewTimer;
@@ -2752,6 +2776,34 @@ function cardEditor(me, d, card, start = {}) {
   // Steps, numbered, in order (kept one per line in the recipe's method).
   const steps = (c.method ?? '').split(/\n+/).map((x) => x.trim()).filter(Boolean);
   const stepsBox = h('div', { class: 'steps' });
+
+  // A new recipe can start as a copy of another (a new pizza from the margherita): its kind, yields,
+  // lines and steps come over; the name and the button that sells it stay this recipe's own.
+  const baseNote = h('span', { class: 'small muted' });
+  const useBase = (b) => {
+    c.kind = b.kind; kind.value = b.kind;
+    c.yields = (b.yields ?? []).map((y) => ({ ...y }));
+    if (prepKind() && !c.yields.length) c.yields.push({ amount: '', unit: '' });
+    c.ingredients = (b.ingredients ?? []).map(({ state, ...i }) => ({ ...i }));
+    if (!c.ingredients.length) c.ingredients.push({ amount: '', unit: '', name: '' });
+    steps.splice(0, steps.length, ...(b.method ?? '').split(/\n+/).map((x) => x.trim()).filter(Boolean));
+    baseNote.textContent = `Copied from ${b.name}. Change what’s different and give it its own name.`;
+    drawLines(); drawYields(); drawSteps(); preview();
+  };
+  const baseOptions = (d.cards ?? []).filter((x) => x.name !== card?.name);
+  const baseInput = h('input', { type: 'text', list: 'base-recipes', class: 'base-in', placeholder: 'Pick a recipe to copy', 'aria-label': 'Start from a recipe' });
+  baseInput.addEventListener('change', () => {
+    const want = baseInput.value.trim().toLowerCase();
+    if (!want) return;
+    const b = baseOptions.find((x) => x.name.toLowerCase() === want);
+    if (!b) { baseNote.textContent = 'Pick one from the list as you type.'; return; }
+    const started = c.ingredients.some((i) => i.name) || steps.some((x) => x.trim());
+    if (started && !confirmText(`Replace what’s here with a copy of ${b.name}?`)) { baseInput.value = ''; return; }
+    useBase(b);
+  });
+  const basePick = !card && baseOptions.length ? h('div', { class: 'row tight wrap base-pick' },
+    h('span', { class: 'small strong', text: 'Start from a recipe' }), baseInput,
+    h('datalist', { id: 'base-recipes' }, baseOptions.map((x) => h('option', { value: x.name, label: KIND_NAMES[x.kind] ?? '' }))), baseNote) : null;
   const drawSteps = () => {
     if (!steps.length) steps.push('');
     fill(stepsBox, steps.map((t, n) => {
@@ -2790,7 +2842,25 @@ function cardEditor(me, d, card, start = {}) {
     row?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     row?.querySelector(field === 'amount' ? 'input[aria-label="Amount"]' : field === 'unit' ? 'select' : 'input[list]')?.focus({ preventScroll: true });
   };
+  // Saving: both buttons grey out and say so until the next page shows (or an error comes back).
+  const saveBtn = h('button', { class: 'btn dark', text: 'Save', onclick: () => save(false) });
+  const readyBtn = c.status === 'rough' ? h('button', { class: 'btn', text: 'Mark ready', title: 'Cooks see it from then on. Every line needs to be finished.', onclick: () => save(true) }) : null;
+  let saving = false;
+  const busy = (on, ready) => {
+    saving = on;
+    for (const [btn, label, mine] of [[saveBtn, 'Save', !ready], [readyBtn, 'Mark ready', ready]]) {
+      if (!btn) continue;
+      btn.disabled = on;
+      btn.textContent = on && mine ? 'Saving…' : label;
+    }
+  };
   const save = async (ready) => {
+    if (saving) return;
+    busy(true, ready);
+    try { if (await saveNow(ready) === 'saved') return; } catch (e) { err.textContent = 'That didn’t save. Try again.'; }
+    busy(false);
+  };
+  const saveNow = async (ready) => {
     err.textContent = '';
     const sent = c.ingredients.filter((i) => i.name || i.amount || i._amountText);
     // Caught here, before anything is sent: an amount that couldn't be read.
@@ -2811,15 +2881,18 @@ function cardEditor(me, d, card, start = {}) {
       err.scrollIntoView({ block: 'center', behavior: 'smooth' });
       return;
     }
-    back.go(nameInput.value.trim());
+    await back.go(nameInput.value.trim());
+    return 'saved';
   };
   const del = card && !card.usedBy?.length ? h('button', { class: 'link danger', text: 'Delete recipe', onclick: async () => {
     if (!confirmText(`Delete the ${card.name} recipe? Buttons linked to it go back to “selling without a recipe”.`)) return;
     const res = await api('POST', '/api/cards/delete', { name: card.name });
     if (!res.ok) return (err.textContent = res.data.error ?? 'Not deleted.');
-    if (back.rail === 'recipes') recipesScreen(me); else cardsScreen(me);
+    // Back where it was opened from, unless that was this recipe's own page.
+    if (back.label === card.name) recipesScreen(me); else back.go();
   } }) : null;
 
+  if (start.base) { useBase(start.base); baseInput.value = start.base.name; }
   drawLines(); drawYields(); drawSteps(); drawLinks(); preview();
   show(shell(me, back.rail, [
     h('header', { class: 'row wrap' },
@@ -2828,14 +2901,14 @@ function cardEditor(me, d, card, start = {}) {
     h('div', { class: 'page editor' },
       h('section', { class: 'card page-main' },
         h('div', { class: 'row wrap' }, h('label', { class: 'grow' }, 'Name', nameInput), h('label', {}, 'Kind', kind)),
+        basePick,
         yieldBox, yieldList,
         start.note && !card ? h('div', { class: 'note small', text: start.note }) : null,
         datalist, lines,
         h('div', { class: 'strong', text: 'Steps' }), stepsBox,
         err,
         h('div', { class: 'row wrap' },
-          h('button', { class: 'btn dark', text: 'Save', onclick: () => save(false) }),
-          c.status === 'rough' ? h('button', { class: 'btn', text: 'Mark ready', title: 'Cooks see it from then on. Every line needs to be finished.', onclick: () => save(true) }) : null,
+          saveBtn, readyBtn,
           h('button', { class: 'btn', text: 'Cancel', onclick: () => back.go() }), h('div', { class: 'grow' }), del),
         h('div', { class: 'small muted', text: c.status === 'rough' ? 'Saves as rough: you and managers see it, cooks don’t. Mark it ready when every line is finished.' : 'Ready: cooks see this recipe. If a change leaves a line unfinished, it goes back to rough.' })),
       h('aside', { class: 'page-side' },
@@ -2917,7 +2990,7 @@ async function draftsScreen(me, pours = {}) {
       h('div', { class: 'grow' }, h('div', { text: x.name }), h('div', { class: 'small muted', text: `${x.category} · ${x.quantity} sold · ${dollars(x.netSales)}` })),
       h('button', { class: 'btn small-btn', text: 'Write recipe', onclick: async () => {
         const d = (await api('GET', '/api/cards?area=bar')).data;
-        cardEditor(me, d, null, { name: x.name, kind: 'drink', link: x.items.map((i) => ({ ...i, name: i.variationName ? `${i.itemName} (${i.variationName})` : i.itemName })) });
+        cardEditor(me, d, null, { name: x.name, kind: 'drink', link: x.items.map((i) => ({ ...i, name: i.variationName ? `${i.itemName} (${i.variationName})` : i.itemName })), back: returnTo('Draft bar recipes', () => draftsScreen(me, pours)) });
       } }),
       h('button', { class: 'link', text: 'No recipe needed', onclick: async () => { await api('POST', '/api/cards/no-card', { items: x.items }); draftsScreen(me, pours); } }))))) : null;
   show(shell(me, 'menu', [
@@ -4179,7 +4252,7 @@ async function coverageScreen(me) {
     h('div', { class: 'small muted', text: 'Their sales aren’t counted in food cost until they have a recipe. Biggest sellers first.' }),
     h('div', { class: 'list' }, noCard.map((x) => h('div', {},
       h('div', { class: 'grow' }, h('div', { text: x.name }), h('div', { class: 'small muted', text: `${x.category} · ${x.sold} sold · ${dollars(x.netSales)} in 90 days` })),
-      h('button', { class: 'btn small-btn', text: 'Write recipe', onclick: () => cardEditor(me, cards.data, null, { name: x.itemName, kind: side === 'bar' ? 'drink' : 'dish', link: [x] }) }),
+      h('button', { class: 'btn small-btn', text: 'Write recipe', onclick: () => cardEditor(me, cards.data, null, { name: x.itemName, kind: side === 'bar' ? 'drink' : 'dish', link: [x], back: returnTo('Recipe coverage', () => coverageScreen(me)) }) }),
       h('button', { class: 'link', text: 'No recipe needed', onclick: async () => { await api('POST', '/api/cards/no-card', { items: [x] }); coverageScreen(me); } }))))) : null;
   show(shell(me, 'today', [
     h('header', { class: 'row wrap' },

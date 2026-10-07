@@ -488,6 +488,7 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
 
   // A discount button (Tuesday's price) counts as the drink it discounts, unless kept apart.
   await db!.query("INSERT INTO pos_item_sales_daily (restaurant_id, day, catalog_id, item_name, variation_name, category, quantity, net_sales) VALUES ($1, current_date - 1, 'V-SODA-T', 'House Soda', 'Tuesday Special', 'Non-Alcoholic Drinks', 2, 6)", [restaurantId]);
+  await db!.query("INSERT INTO sync_runs (restaurant_id, source, status, finished_at) VALUES ($1, 'square', 'ok', now())", [restaurantId]); // sales arrive by a sync
   const sodaSold = async () => (await call('GET', '/api/recipes/House%20Soda', { cookies: ownerSession })).json.linked.find((l: any) => l.catalogId === 'V-SODA');
   const folded = await sodaSold();
   assert.deepEqual([folded.sold, folded.includes.map((v: any) => [v.variationName, v.quantity])], [5, [['Tuesday Special', 2]]]);

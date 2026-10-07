@@ -901,3 +901,7 @@ button.donut-row { display: flex; min-width: 0; }
 .arr-item > .grow { flex: 1 1 auto; min-width: 0; }
 .online-find { flex-wrap: wrap; }
 .online-find input[type=search] { flex: 1 1 220px; }
+
+/* New recipe: start from a copy of another. */
+.base-pick { padding: 8px 10px; border: 1px dashed var(--line, #d8d8d8); border-radius: 8px; }
+.base-pick .base-in { min-width: 220px; flex: 1 1 220px; max-width: 360px; }
