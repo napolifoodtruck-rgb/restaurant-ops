@@ -19,7 +19,7 @@ import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, loadBook } from './model.ts';
 import { loadAreas } from './areas.ts';
 import { coverageOf } from './views.ts';
-import { cardView, kindOf, linkedItems, yieldConversions } from './cards.ts';
+import { cardView, kindOf, lineState, linkedItems, yieldConversions } from './cards.ts';
 import { tryConvert } from '../core/units.ts';
 import { normalizeName as cardKey } from '../connectors/marginedgeRecipes.ts';
 
@@ -32,7 +32,9 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
   const areaOf = await loadAreas(db, who.restaurantId);
   const book = await loadBook(db, who.restaurantId);
   const linked = linkedItems(model);
-  const cards = (book.recipeCards ?? []).map((c) => ({ card: c, view: cardView(model, c, linked, areaOf) }));
+  // Rough recipes (still in R&D) are for managers; cooks see them once they're marked ready.
+  const rd = atLeast(who.roleLevel, 'manager');
+  const cards = (book.recipeCards ?? []).filter((c) => rd || c.status !== 'rough').map((c) => ({ card: c, view: cardView(model, c, linked, areaOf) }));
   const byName = new Map(cards.map((c) => [cardKey(c.card.name), c]));
   // A prep belongs to the side of what uses it (the bar's simple syrup), else its own kind.
   const sideOf = (c: (typeof cards)[number], seen = new Set<string>()): 'kitchen' | 'bar' => {
@@ -64,7 +66,7 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
       const top = c.view.linked.sort((a, b) => b.sold - a.sold)[0];
       const sellsAs = top?.itemName;
       const image = c.view.linked.map((l) => model.imageOf(l.catalogId)).find(Boolean);
-      list.push({ name: c.card.name, kind: c.view.kind, ...(sellsAs && cardKey(sellsAs) !== cardKey(c.card.name) ? { sellsAs } : {}), ...(image ? { image } : {}) });
+      list.push({ name: c.card.name, kind: c.view.kind, ...(c.card.status === 'rough' ? { rough: true } : {}), ...(sellsAs && cardKey(sellsAs) !== cardKey(c.card.name) ? { sellsAs } : {}), ...(image ? { image } : {}) });
       sides[side].set(section, list);
     }
     // Sections that sell most first, preps last.
@@ -83,7 +85,7 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
   if (m) {
     const name = decodeURIComponent(m[1]!);
     const c = byName.get(cardKey(name));
-    if (!c) throw new HttpError(404, 'No recipe by that name.');
+    if (!c) throw new HttpError(404, (book.recipeCards ?? []).some((x) => cardKey(x.name) === cardKey(name)) ? 'That recipe isn’t ready yet.' : 'No recipe by that name.');
     const kind = kindOf(c.card);
     const prep = kind === 'prep' || kind === 'barPrep';
     const yields = c.card.yields.length ? c.card.yields : [{ amount: 1, unit: 'each' }];
@@ -113,7 +115,8 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
       ingredients: c.card.ingredients.map((i) => ({ amount: i.amount, unit: i.unit, name: i.name, ...(byName.has(cardKey(i.name)) ? { card: byName.get(cardKey(i.name))!.card.name } : {}), ...(i.yieldPercent && i.yieldPercent !== 100 ? { yieldPercent: i.yieldPercent } : {}), ...(i.note ? { note: i.note } : {}) })),
       ...(c.card.method ? { method: c.card.method } : {}),
       ...(c.card.shelfLifeDays ? { shelfLifeDays: c.card.shelfLifeDays } : {}),
-      usedBy: c.view.usedBy,
+      usedBy: c.view.usedBy.filter((n) => byName.has(cardKey(n))),
+      ...(c.card.status === 'rough' ? { rough: true, toFinish: c.card.ingredients.filter((i) => lineState(i, model, book.recipeCards ?? []) !== 'ok').length } : {}),
       sellsAs: [...new Set(c.view.linked.map((l) => l.itemName))],
       ...(c.view.linked.map((l) => model.imageOf(l.catalogId)).find(Boolean) ? { image: c.view.linked.map((l) => model.imageOf(l.catalogId)).find(Boolean) } : {}),
       ...(manager && c.view.cost !== undefined ? { cost: c.view.cost, complete: c.view.complete } : {}),

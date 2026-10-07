@@ -21,9 +21,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
-import { getModel } from './model.ts';
+import { getModel, loadBook } from './model.ts';
 import { loadContainers } from './units.ts';
 import { recipeWeight, unitWeight, type RecipeWeight, type WeightSource } from '../core/containers.ts';
+import { tryConvert } from '../core/units.ts';
 import { nameSimilarity } from '../core/menuLinks.ts';
 import { cookPace, itemTimes, itemUsuals, listSpan, median, minutesLeft, stationItemUsual, type ItemUsual, type Mark, type WorkedList } from '../core/prepTiming.ts';
 import { batchSuggestion, dayLines, dayShare, itemDayShare, onHandFrom, weekdayOf, type BulkOnHand, type DayScale, type ItemScale, type StationItem, type StationNeed } from '../core/stationLists.ts';
@@ -84,21 +85,28 @@ async function recentSales(db: Db, restaurantId: string, before: string) {
 }
 
 /**
- * The day's scale: how busy the weekday runs against the busiest one, and for each item tied to a recipe,
- * how much its dishes sell that weekday against the busiest one (last 8 weeks of sales, traced down the
- * recipes to the prep). Worked out once per restaurant, date and sales update.
+ * How much of each prep recipe (tied to a station item) the dishes sold used, day by day, from `from`
+ * up to (not including) `to`: sales traced down the recipes. Worked out once per window and sales update.
  */
-const scaleCache = new Map<string, { model: object; scale: DayScale | undefined }>();
-async function dayScale(db: Db, restaurantId: string, date: string): Promise<DayScale | undefined> {
-  const base = dayShare(await recentSales(db, restaurantId, date), weekdayOf(date));
-  if (!base) return undefined;
+interface PrepUsage {
+  model: Awaited<ReturnType<typeof getModel>>;
+  tied: { id: string; recipe_name: string }[];
+  /** Recipe name (lowercase) → recipe id. */
+  byName: Map<string, string>;
+  /** Prep recipe → date → amount used, in the recipe's own yield unit. */
+  use: Map<string, Map<string, number>>;
+  /** Prep recipe → dish → amount used. */
+  fromDish: Map<string, Map<string, number>>;
+  openDates: string[];
+}
+const usageCache = new Map<string, { model: object; usage: PrepUsage }>();
+async function prepUsage(db: Db, restaurantId: string, from: string, to: string): Promise<PrepUsage | undefined> {
   const tied = (await db.query<{ id: string; recipe_name: string }>('SELECT id, recipe_name FROM station_items WHERE restaurant_id = $1 AND active AND recipe_name IS NOT NULL', [restaurantId])).rows;
-  if (!tied.length) return base;
+  if (!tied.length) return undefined;
   const model = await getModel(db, restaurantId, new Date().toISOString().slice(0, 10));
-  const key = `${restaurantId}|${date}|${tied.map((t) => `${t.id}:${t.recipe_name}`).join(',')}`;
-  const hit = scaleCache.get(key);
-  if (hit && hit.model === model) return hit.scale;
-  const from = addDays(date, -56);
+  const key = `${restaurantId}|${from}|${to}|${tied.map((t) => `${t.id}:${t.recipe_name}`).join(',')}`;
+  const hit = usageCache.get(key);
+  if (hit && hit.model === model) return hit.usage;
   const byName = new Map(model.recipes.map((r) => [r.name.toLowerCase(), r.id]));
   const wanted = new Set(tied.map((t) => byName.get(t.recipe_name.toLowerCase())).filter((x): x is string => Boolean(x)));
   // Per portion of each dish sold: how much of each wanted prep recipe it takes.
@@ -116,10 +124,10 @@ async function dayScale(db: Db, restaurantId: string, date: string): Promise<Day
     return m;
   };
   const open = new Set<string>();
-  const use = new Map<string, Map<string, number>>(); // prep recipe → date → amount
-  const fromDish = new Map<string, Map<string, number>>(); // prep recipe → dish → amount
+  const use = new Map<string, Map<string, number>>();
+  const fromDish = new Map<string, Map<string, number>>();
   for (const l of model.sales) {
-    if (!l.date || l.date < from || l.date >= date || !(l.quantity > 0)) continue;
+    if (!l.date || l.date < from || l.date >= to || !(l.quantity > 0)) continue;
     open.add(l.date);
     const link = model.lookup(l.catalogId, l.name, l.date);
     if (!link) continue;
@@ -134,24 +142,77 @@ async function dayScale(db: Db, restaurantId: string, date: string): Promise<Day
       fromDish.set(prepId, f);
     }
   }
-  const openDates = [...open];
+  const usage: PrepUsage = { model, tied, byName, use, fromDish, openDates: [...open] };
+  usageCache.set(key, { model, usage });
+  if (usageCache.size > 200) usageCache.delete(usageCache.keys().next().value!);
+  return usage;
+}
+
+/**
+ * The day's scale: how busy the weekday runs against the busiest one, and for each item tied to a recipe,
+ * how much its dishes sell that weekday against the busiest one (last 8 weeks of sales, traced down the
+ * recipes to the prep).
+ */
+async function dayScale(db: Db, restaurantId: string, date: string): Promise<DayScale | undefined> {
+  const base = dayShare(await recentSales(db, restaurantId, date), weekdayOf(date));
+  if (!base) return undefined;
+  const u = await prepUsage(db, restaurantId, addDays(date, -56), date);
+  if (!u) return base;
   const items = new Map<string, ItemScale>();
-  for (const t of tied) {
-    const id = byName.get(t.recipe_name.toLowerCase());
-    const byDate = id ? use.get(id) : undefined;
+  for (const t of u.tied) {
+    const id = u.byName.get(t.recipe_name.toLowerCase());
+    const byDate = id ? u.use.get(id) : undefined;
     if (!id || !byDate) continue;
-    const share = itemDayShare(byDate, openDates, weekdayOf(date), base.busiest);
+    const share = itemDayShare(byDate, u.openDates, weekdayOf(date), base.busiest);
     if (share === undefined) continue;
-    const dishes = [...(fromDish.get(id) ?? new Map<string, number>())].sort((a, b) => b[1] - a[1]);
+    const dishes = [...(u.fromDish.get(id) ?? new Map<string, number>())].sort((a, b) => b[1] - a[1]);
     const total = dishes.reduce((a, [, v]) => a + v, 0);
     // The dishes that drive it: the top one, and a second when it's a real part.
     const named = dishes.filter(([, v], i) => i === 0 || (i === 1 && v >= total * 0.25)).map(([n]) => n);
     items.set(t.id, { share: Math.round(share * 1000) / 1000, dishes: dishes.length > 2 || (dishes.length === 2 && named.length === 1) ? [...named.slice(0, -1), `${named[named.length - 1]}${named.length === 1 ? ' and other dishes' : ''}`] : named });
   }
-  const scale: DayScale = { ...base, items };
-  scaleCache.set(key, { model, scale });
-  if (scaleCache.size > 200) scaleCache.delete(scaleCache.keys().next().value!);
-  return scale;
+  return { ...base, items };
+}
+
+/**
+ * "My estimate" for tonight's count, per item tied to a recipe: the last count, plus what was made
+ * since, minus what the dishes sold since used (traced down the recipes), never below 0. Only from a
+ * count in the last week; shown beside the count, never filled in for the cook.
+ */
+async function countEstimates(db: Db, restaurantId: string, stationId: string, date: string, list: Item[], weights: Map<string, { grams: number }>): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const tied = list.filter((it) => it.kind === 'count' && it.recipeName);
+  if (!tied.length) return out;
+  // The last count of each item before this list (a list's count is taken the night before its date).
+  const last = (await db.query<{ item_id: string; counted: string; for_date: string }>(
+    `SELECT DISTINCT ON (l.item_id) l.item_id, l.counted, p.for_date::text AS for_date FROM prep_list_lines l JOIN prep_lists p ON p.id = l.list_id
+      WHERE p.restaurant_id = $1 AND p.station_id = $2 AND p.for_date < $3 AND p.for_date >= $4 AND l.counted IS NOT NULL ORDER BY l.item_id, p.for_date DESC`,
+    [restaurantId, stationId, date, addDays(date, -7)])).rows;
+  if (!last.length) return out;
+  const since = last.reduce((a, r) => (r.for_date < a ? r.for_date : a), date);
+  const made = (await db.query<{ item_id: string; for_date: string; made: string }>(
+    `SELECT l.item_id, p.for_date::text AS for_date, l.made FROM prep_list_lines l JOIN prep_lists p ON p.id = l.list_id
+      WHERE p.restaurant_id = $1 AND p.station_id = $2 AND p.for_date >= $3 AND p.for_date < $4 AND l.done_at IS NOT NULL AND l.made IS NOT NULL`,
+    [restaurantId, stationId, since, date])).rows;
+  const u = await prepUsage(db, restaurantId, since, date);
+  if (!u) return out;
+  for (const it of tied) {
+    const c = last.find((r) => r.item_id === it.id);
+    const id = u.byName.get(it.recipeName!.toLowerCase());
+    const recipe = id ? u.model.book.recipes.get(id) : undefined;
+    if (!c || !recipe || !it.unit) continue;
+    // One of the recipe's yield units, in the item's unit: directly, or through weight.
+    let perYield = tryConvert({ amount: 1, unit: recipe.yield.unit }, it.unit, recipe.conversions);
+    if (perYield === undefined) {
+      const g = tryConvert({ amount: 1, unit: recipe.yield.unit }, 'g', recipe.conversions), each = weights.get(it.id)?.grams;
+      if (g && each) perYield = g / each;
+    }
+    if (!perYield) continue;
+    const used = [...(u.use.get(id!) ?? new Map<string, number>())].filter(([d]) => d >= c.for_date).reduce((a, [, v]) => a + v, 0) * perYield;
+    const added = made.filter((m) => m.item_id === it.id && m.for_date >= c.for_date).reduce((a, m) => a + Number(m.made), 0);
+    out.set(it.id, Math.max(0, Math.round((Number(c.counted) + added - used) * 2) / 2));
+  }
+  return out;
 }
 
 /** What each item on a station will be made for a date: the chef's number, else the suggestion. */
@@ -246,6 +307,8 @@ export async function view(db: Db, who: SignedIn, stationId: string, date: strin
   const onHand = await bulkOnHand(db, who.restaurantId, batchItems.map((b) => b.id));
   const bulk = await bulkSuggestions(db, who.restaurantId, batchItems, date, share, onHand);
   const weights = await itemWeights(db, who.restaurantId, all);
+  const estimates = list.status === 'approved' ? new Map<string, number>() : await countEstimates(db, who.restaurantId, stationId, date, all, weights);
+  const roughRecipes = new Set(atLeast(who.roleLevel, 'manager') ? [] : ((await loadBook(db, who.restaurantId)).recipeCards ?? []).filter((c) => c.status === 'rough').map((c) => c.name.toLowerCase()));
 
   // Cleaning: daily tasks, weekly ones on their day, and weekly ones with no day until done that week.
   const weekStart = addDays(date, -((weekdayOf(date) + 6) % 7)); // Monday
@@ -287,8 +350,11 @@ export async function view(db: Db, who: SignedIn, stationId: string, date: strin
         ...(oh ? { onHand: { amount: Math.round(oh.amount * 100) / 100, estimated: oh.estimated, ...(oh.countedAt ? { countedAt: oh.countedAt } : {}) } } : {}),
         ...(d.reason && d.suggested === undefined ? { reason: d.reason } : {}),
         ...d.item,
+        // A recipe still in R&D: cooks get the line, not the recipe.
+        ...(d.item.recipeName && roughRecipes.has(d.item.recipeName.toLowerCase()) ? { recipeName: undefined } : {}),
         ...(d.dayPar !== undefined ? { dayPar: d.dayPar } : {}),
         ...(d.parWhy && !b ? { parWhy: d.parWhy } : {}),
+        ...(estimates.has(d.item.id) ? { estimate: estimates.get(d.item.id) } : {}),
         ...(l?.counted !== null && l?.counted !== undefined ? { counted: Number(l.counted) } : {}),
         ...(d.suggested !== undefined ? { suggested: d.suggested, reason: d.reason } : {}),
         ...(chosen !== undefined ? { chosen } : {}),

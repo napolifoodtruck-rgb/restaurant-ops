@@ -21,7 +21,7 @@ import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, loadBook, saveBook, withAnswer, type LinkAnswers, type Model, type PilotImportAnswers } from './model.ts';
 import { loadAreas, type AreaOf } from './areas.ts';
 import { posItemOf } from './views.ts';
-import { normalizeName as cardKey, recipeId, type RecipeCard } from '../connectors/marginedgeRecipes.ts';
+import { normalizeName as cardKey, recipeId, yieldsToConversions, type RecipeCard } from '../connectors/marginedgeRecipes.ts';
 import { tryConvert } from '../core/units.ts';
 import { posName, type PosMenuItem } from '../core/menuLinks.ts';
 import { draftDrinkCards, type BarItem } from '../core/drinkCards.ts';
@@ -33,6 +33,8 @@ export interface CardInput {
   yields?: { amount: number; unit: string }[];
   ingredients: { amount: number; unit: string; name: string; yieldPercent?: number; note?: string }[];
   method?: string;
+  /** Mark it ready (cooks see it): only when every line is finished. */
+  ready?: boolean;
 }
 
 const isPrepCard = (c: RecipeCard) => /^prep/i.test(c.recipeType ?? '') || (!!c.category && !/menu/i.test(c.category));
@@ -49,7 +51,34 @@ function unitsFor(base: string, conversions: any): string[] {
   return [...new Set([base, ...custom, ...UNITS])].filter((u) => u === base || tryConvert({ amount: 1, unit: u }, base, conversions) !== undefined);
 }
 
-function toStored(c: CardInput, before?: RecipeCard): RecipeCard {
+/** The units a card can be used in: every way it says what it makes, and everything those convert to. */
+export function cardUnits(yields: { amount: number; unit: string }[]) {
+  const { primary, conversions } = yieldsToConversions(yields.length ? yields : [{ amount: 1, unit: 'each' }]);
+  const base = primary?.unit ?? 'each';
+  const own = yields.map((y) => y.unit).filter((u) => tryConvert({ amount: 1, unit: u }, base, conversions) !== undefined);
+  return { unit: base, units: [...new Set([...own, ...unitsFor(base, conversions)])] };
+}
+
+/**
+ * Where a line stands: finished, or what it still needs. Unmatched: not a product or recipe yet.
+ * Convert: its unit doesn't turn into how that product is bought (a handful of arugula, until set).
+ */
+export type LineState = 'ok' | 'name' | 'unmatched' | 'amount' | 'unit' | 'convert';
+export function lineState(i: { amount?: number | string; unit?: string; name?: string }, model: Model, cards: RecipeCard[]): LineState {
+  const name = typeof i.name === 'string' ? i.name.trim() : '';
+  if (!name) return 'name';
+  const key = cardKey(name);
+  const product = model.products.find((p) => cardKey(p.name) === key);
+  const card = cards.find((c) => cardKey(c.name) === key);
+  if (!product && !card) return 'unmatched';
+  if (!(Number(i.amount) > 0)) return 'amount';
+  if (typeof i.unit !== 'string' || !i.unit) return 'unit';
+  if (product) return tryConvert({ amount: 1, unit: i.unit }, product.baseUnit, product.conversions) === undefined ? 'convert' : 'ok';
+  const units = cardUnits(card!.yields).units;
+  return units.includes(i.unit) ? 'ok' : 'convert';
+}
+
+function toStored(c: CardInput, before?: RecipeCard, ready?: boolean): RecipeCard {
   const prep = c.kind === 'prep' || c.kind === 'barPrep';
   const yields = prep ? (c.yields ?? []).filter((y) => y.amount > 0 && y.unit) : [{ amount: 1, unit: 'each' }];
   return {
@@ -58,33 +87,42 @@ function toStored(c: CardInput, before?: RecipeCard): RecipeCard {
     // A dish keeps the type it had (Pizza, Appetizers); the others are named for what they are.
     recipeType: c.kind === 'drink' ? 'Drink' : c.kind === 'barPrep' ? 'Prep (bar)' : c.kind === 'prep' ? 'Prep' : before && kindOf(before) === 'dish' ? before.recipeType : 'Dish',
     yields,
-    ingredients: c.ingredients.map((i) => ({ amount: Number(i.amount), unit: i.unit, name: i.name.trim(), yieldPercent: i.yieldPercent && i.yieldPercent > 0 && i.yieldPercent <= 100 ? i.yieldPercent : 100, ...(i.note ? { note: i.note } : {}) })),
+    ingredients: c.ingredients.map((i) => ({ amount: Number(i.amount) > 0 ? Number(i.amount) : 0, unit: typeof i.unit === 'string' ? i.unit : '', name: i.name.trim(), yieldPercent: i.yieldPercent && i.yieldPercent > 0 && i.yieldPercent <= 100 ? i.yieldPercent : 100, ...(i.note ? { note: i.note } : {}) })),
     ...(c.method?.trim() ? { method: c.method.trim() } : {}),
     unreadLines: before?.unreadLines ?? [],
     layout: 'card',
     ...(before?.shelfLifeDays ? { shelfLifeDays: before.shelfLifeDays } : {}),
+    ...(ready ? {} : { status: 'rough' as const }),
   };
 }
 
 /** What's wrong with a card, and the ingredient line it's on (counted in the lines sent), if it's one line. */
 type CardProblem = { message: string; line?: number; field?: 'amount' | 'unit' | 'name' };
-function cardProblem(c: any, model: Model, cards: RecipeCard[], previousName?: string): CardProblem | undefined {
+function cardProblem(c: any, model: Model, cards: RecipeCard[], previousName?: string, strict = true): CardProblem | undefined {
   const p = (message: string, line?: number, field?: CardProblem['field']): CardProblem => ({ message, ...(line !== undefined ? { line } : {}), ...(field ? { field } : {}) });
   if (!c || typeof c.name !== 'string' || !c.name.trim()) return p('Name the recipe.');
   if (!['dish', 'drink', 'prep', 'barPrep'].includes(c.kind)) return p('Is it a dish, a drink or a prep?');
   if (!Array.isArray(c.ingredients)) return p('Missing ingredients.');
   const key = cardKey(c.name);
   if (cards.some((x) => cardKey(x.name) === key && (!previousName || cardKey(previousName) !== key))) return p(`There's already a recipe called ${c.name.trim()}. Pick another name, or open that one to change it.`);
-  if ((c.kind === 'prep' || c.kind === 'barPrep') && !(Array.isArray(c.yields) && c.yields.some((y: any) => y?.amount > 0 && y?.unit))) return p('Say what a batch makes (e.g. 2 qt).');
+  if (strict && (c.kind === 'prep' || c.kind === 'barPrep') && !(Array.isArray(c.yields) && c.yields.some((y: any) => y?.amount > 0 && y?.unit))) return p('Say what a batch makes (e.g. 2 qt) before it’s ready.');
   const products = new Set(model.products.map((p) => cardKey(p.name)));
   const cardNames = new Set(cards.filter((x) => !previousName || cardKey(x.name) !== cardKey(previousName)).map((x) => cardKey(x.name)));
-  for (const [n, i] of (c.ingredients as any[]).entries()) {
+  // Rough: anything goes but a line with nothing that goes in, and a recipe using itself.
+  if (!strict) {
+    for (const [n, i] of (c.ingredients as any[]).entries()) {
+      if (typeof i?.name !== 'string' || !i.name.trim()) return p(`Line ${n + 1} has an amount but nothing that goes in. Fill it in or remove the line.`, n, 'name');
+      if (cardKey(i.name) === key) return p(`Line ${n + 1}: a recipe can’t use itself.`, n, 'name');
+    }
+  }
+  for (const [n, i] of (strict ? (c.ingredients as any[]) : []).entries()) {
     const where = `Line ${n + 1}`;
     if (typeof i?.name !== 'string' || !i.name.trim()) return p(`${where} has an amount but nothing that goes in. Fill it in or remove the line.`, n, 'name');
-    if (!(Number(i.amount) > 0)) return p(`${where}, ${i.name}: how much? Write the amount as 2, 1.5, 1 1/2 or ½.`, n, 'amount');
-    if (typeof i.unit !== 'string' || !i.unit) return p(`${where}, ${i.name}: in what unit?`, n, 'unit');
     if (cardKey(i.name) === key) return p(`${where}: a recipe can’t use itself.`, n, 'name');
     if (!products.has(cardKey(i.name)) && !cardNames.has(cardKey(i.name))) return p(`${where}: “${i.name}” isn’t a product on your invoices or another recipe. Pick it from the list as you type.`, n, 'name');
+    if (!(Number(i.amount) > 0)) return p(`${where}, ${i.name}: how much? Write the amount as 2, 1.5, 1 1/2 or ½.`, n, 'amount');
+    if (typeof i.unit !== 'string' || !i.unit) return p(`${where}, ${i.name}: in what unit?`, n, 'unit');
+    if (lineState(i, model, cards) === 'convert') return p(`${where}, ${i.name}: how much is one ${i.unit}? Set it once (beside the unit) and it works everywhere.`, n, 'unit');
   }
   // No loops through other cards: this card can't go into anything it uses.
   const byKey = new Map(cards.map((x) => [cardKey(x.name), x]));
@@ -124,7 +162,7 @@ export function linkedItems(model: Model) {
   return out;
 }
 
-export function cardView(model: Model, card: RecipeCard, linked: ReturnType<typeof linkedItems>, areaOf: AreaOf) {
+export function cardView(model: Model, card: RecipeCard, linked: ReturnType<typeof linkedItems>, areaOf: AreaOf, cards: RecipeCard[] = []) {
   const id = recipeId(card.name);
   const recipe = model.book.recipes.get(id);
   const kind = kindOf(card);
@@ -137,7 +175,12 @@ export function cardView(model: Model, card: RecipeCard, linked: ReturnType<type
   return {
     name: card.name, kind, area,
     yields: card.yields,
-    ingredients: card.ingredients.map((i) => ({ amount: i.amount, unit: i.unit, name: i.name, ...(i.yieldPercent && i.yieldPercent !== 100 ? { yieldPercent: i.yieldPercent } : {}), ...(i.note ? { note: i.note } : {}) })),
+    status: card.status === 'rough' ? 'rough' : 'ready',
+    ingredients: card.ingredients.map((i) => {
+      const state = cards.length ? lineState(i, model, cards) : 'ok';
+      return { amount: i.amount > 0 ? i.amount : '', unit: i.unit, name: i.name, ...(state !== 'ok' ? { state } : {}), ...(i.yieldPercent && i.yieldPercent !== 100 ? { yieldPercent: i.yieldPercent } : {}), ...(i.note ? { note: i.note } : {}) };
+    }),
+    ...(card.status === 'rough' && cards.length ? { toFinish: card.ingredients.filter((i) => lineState(i, model, cards) !== 'ok').length } : {}),
     ...(card.method ? { method: card.method } : {}),
     ...(cost ? { cost: Math.round(cost.total * 100) / 100, complete: cost.complete, problems: [...new Set(cost.issues.map(issueText))] } : {}),
     ...(kind === 'dish' || kind === 'drink' ? { averagePrice: sold > 0 ? Math.round((net / sold) * 100) / 100 : undefined } : {}),
@@ -172,7 +215,7 @@ async function saveCards(db: Db, who: SignedIn, changes: { card: CardInput; prev
   let importChanged = false;
   for (const ch of changes) {
     const prev = ch.previousName ? cards.find((c) => cardKey(c.name) === cardKey(ch.previousName!)) : cards.find((c) => cardKey(c.name) === cardKey(ch.card.name));
-    const stored = toStored(ch.card, prev);
+    const stored = toStored(ch.card, prev, ch.card.ready === true);
     cards = prev ? cards.map((c) => (c === prev ? stored : c)) : [...cards, stored];
     // A rename follows the card everywhere it's named.
     if (prev && prev.name !== stored.name) {
@@ -277,14 +320,14 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     const area = url.searchParams.get('area') === 'bar' ? 'bar' : url.searchParams.get('area') === 'kitchen' ? 'kitchen' : undefined;
     const book = await loadBook(db, who.restaurantId);
     const linked = linkedItems(model);
-    const cards = (book.recipeCards ?? []).map((c) => cardView(model, c, linked, areaOf));
+    const cards = (book.recipeCards ?? []).map((c) => cardView(model, c, linked, areaOf, book.recipeCards ?? []));
     // Preps a side's cards use are that side's too.
     const usedOn = (c: (typeof cards)[number]) => c.area === area || c.usedBy.some((n) => cards.find((x) => x.name === n)?.area === area);
     const posItem = posItemOf(model);
     const notFood = new Set((book.linkAnswers?.notFood ?? []).map((x) => posName(x)));
     return send(res, 200, {
       cards: (area ? cards.filter(usedOn) : cards).sort((a, b) => a.name.localeCompare(b.name)),
-      allCards: cards.map((c) => ({ name: c.name, kind: c.kind, unit: c.yields[0]?.unit ?? 'each', units: unitsFor(c.yields[0]?.unit ?? 'each', yieldConversions(c.yields)) })),
+      allCards: cards.map((c) => ({ name: c.name, kind: c.kind, status: c.status, ...cardUnits(c.kind === 'prep' || c.kind === 'barPrep' ? c.yields : [{ amount: 1, unit: 'each' }]) })),
       products: productsView(model),
       noCard: model.margins.unlinked.filter((u) => u.catalogId && u.netSales > 0 && !notFood.has(u.name) && (!area || areaOf(u.category) === area))
         .map((u) => ({ ...posItem(u.catalogId, u.name), name: u.name, category: u.category, sold: Math.round(u.quantity), netSales: Math.round(u.netSales) })),
@@ -317,15 +360,25 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     if (!list.length) throw new HttpError(400, 'No recipes.');
     const book = await loadBook(db, who.restaurantId);
     let cards = [...(book.recipeCards ?? [])];
+    const batch = path === '/api/cards/batch';
+    const statuses: ('rough' | 'ready')[] = [];
     for (const ch of list) {
       const prev = typeof ch.previousName === 'string' ? ch.previousName : undefined;
-      const problem = cardProblem(ch.card, model, cards, prev);
+      const before = (book.recipeCards ?? []).find((c) => cardKey(c.name) === cardKey(prev ?? ch.card?.name ?? ''));
+      const wantReady = batch || ch.card?.ready === true;
+      // Already ready, and still finished after this change: it stays ready.
+      const finished = !cardProblem(ch.card, model, cards, prev, true);
+      const ready = wantReady || (Boolean(before) && before!.status !== 'rough' && finished);
+      statuses.push(ready ? 'ready' : 'rough');
+      if (ch.card) ch.card.ready = ready;
+      const problem = cardProblem(ch.card, model, cards, prev, wantReady);
       if (problem) throw new HttpError(400, list.length > 1 ? `${ch.card?.name ?? 'A recipe'}: ${problem.message}` : problem.message, list.length > 1 ? undefined : { ...(problem.line !== undefined ? { line: problem.line } : {}), ...(problem.field ? { field: problem.field } : {}) });
       // Later cards in a batch may use earlier ones.
-      cards = [...cards.filter((c) => cardKey(c.name) !== cardKey(prev ?? ch.card.name)), toStored(ch.card)];
+      cards = [...cards.filter((c) => cardKey(c.name) !== cardKey(prev ?? ch.card.name)), toStored(ch.card, undefined, ch.card.ready)];
     }
     await saveCards(db, who, list.map((ch) => ({ card: ch.card as CardInput, ...(typeof ch.previousName === 'string' ? { previousName: ch.previousName } : {}), link: posItemArg(ch.link), unlink: posItemArg(ch.unlink) })));
-    return send(res, 200, { saved: list.length }), true;
+    const toFinish = (list[0]?.card?.ingredients ?? []).filter((i: any) => lineState(i, model, cards) !== 'ok').length;
+    return send(res, 200, { saved: list.length, status: statuses[0], ...(statuses[0] === 'rough' ? { toFinish } : {}) }), true;
   }
 
   if (method === 'POST' && path === '/api/cards/delete') {

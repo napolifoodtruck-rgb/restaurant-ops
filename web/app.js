@@ -194,7 +194,7 @@ let BRAND = { name: null, logo: null };
 async function loadBrand() {
   const r = await api('GET', '/api/brand');
   if (r.ok) BRAND = r.data;
-  if (BRAND.name) document.title = `${BRAND.name} · Kitchen`;
+  if (BRAND.name) document.title = BRAND.name;
 }
 /** The logo, white on black, or the name set in a frame the same way when there's no logo yet. */
 function brandMark(size = 'rail') {
@@ -215,6 +215,27 @@ function photo(url, cls = 'thumb') {
   return img;
 }
 
+/**
+ * The home-screen icon: the logo centered on a black square (iPads want a square; the logo is wide).
+ * Made here from the uploaded logo, by the owner's browser, whenever the logo is newer than the icon.
+ */
+async function makeIcon() {
+  if (!BRAND.logo || BRAND.iconFresh) return;
+  const img = new Image();
+  img.src = BRAND.logo;
+  try { await img.decode(); } catch { return; }
+  const size = 512, pad = 0.14;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const g = canvas.getContext('2d');
+  g.fillStyle = '#000'; g.fillRect(0, 0, size, size);
+  const k = Math.min((size * (1 - 2 * pad)) / img.naturalWidth, (size * (1 - 2 * pad)) / img.naturalHeight);
+  const w = img.naturalWidth * k, hh = img.naturalHeight * k;
+  g.drawImage(img, (size - w) / 2, (size - hh) / 2, w, hh);
+  const res = await api('POST', '/api/brand/icon', { dataUrl: canvas.toDataURL('image/png') });
+  if (res.ok) BRAND.iconFresh = true;
+}
+
 async function start() {
   if (!BRAND.name) await loadBrand();
   const invite = location.hash.match(/^#invite=([A-Za-z0-9_-]+)$/);
@@ -224,6 +245,7 @@ async function start() {
   // Cooks, and anyone on a kitchen iPad, land on Prep: on an iPad that belongs to a station, that station's list.
   if (me.ok) {
     const who = { ...me.data.me, ...(me.data.device ? { device: me.data.device } : {}) };
+    if (canAdminister(who)) makeIcon();
     return who.device || !atLeast(who.roleLevel, 'manager') ? prepHome(who) : todayScreen(who);
   }
   const device = await api('GET', '/api/devices/staff');
@@ -1268,27 +1290,61 @@ async function prepCount(me, stationId, date) {
   if (!r.ok) return show(shell(me, 'prep', [h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const v = r.data;
   const countable = v.lines.filter((l) => l.kind === 'count' || l.kind === 'batch');
-  const counted = countable.filter((l) => l.counted !== undefined).length;
   const toCount = countable.length;
+  // How many are counted, kept up to date as each is tapped.
+  const tallyBar = h('div'), tallyText = h('div', { class: 'small' });
+  const tally = () => { const n = countable.filter((l) => l.counted !== undefined).length; fill(tallyBar, progress(n, toCount)); tallyText.textContent = `${n} of ${toCount}`; };
+  tally();
+  // A count is a tap: buttons sized to the item's par (halves when it's small), "other" for anything else.
+  // The app's estimate sits beside them, never picked for the cook: they look, then tap.
+  const choices = (l) => {
+    const par = l.dayPar ?? l.par;
+    const step = par !== undefined && (par < 4 || !Number.isInteger(par)) ? 0.5 : 1;
+    const top = Math.max(par ?? 3, l.estimate ?? 0, l.counted ?? 0) + step * 2;
+    const n = Math.round(top / step) + 1;
+    return n > 12 ? null : Array.from({ length: n }, (_, k) => k * step);
+  };
+  const tapCount = (l, need, save) => {
+    const vals = choices(l);
+    const box = h('div', { class: 'taps', role: 'group', 'aria-label': `${l.name} on hand` });
+    let other = null;
+    const draw = () => fill(box,
+      (vals ?? []).map((v) => h('button', { class: `tap${l.counted === v ? ' on' : ''}`, 'aria-pressed': String(l.counted === v), text: v === 0 ? '0' : nice(v), onclick: async () => { l.counted = v; draw(); await save(v); } })),
+      other ?? h('button', { class: `tap other${l.counted !== undefined && !(vals ?? []).includes(l.counted) ? ' on' : ''}`, text: l.counted !== undefined && !(vals ?? []).includes(l.counted) ? nice(l.counted) : 'other', onclick: () => {
+        other = stepper(l.counted, 0.5, async (v) => { l.counted = v ?? undefined; await save(v); }, `${l.name} on hand`); draw(); other.querySelector('input')?.focus();
+      } }));
+    if (!vals) other = stepper(l.counted, 1, async (v) => { l.counted = v ?? undefined; await save(v); }, `${l.name} on hand`);
+    draw();
+    return box;
+  };
   const rows = countable.map((l) => {
     const isBatch = l.kind === 'batch';
     const need = h('span', { class: 'small muted nowrap', text: l.toMake !== undefined ? `make ${amountWithWeight(l.toMake, l.unit, l)}` : '' });
+    const save = async (val) => {
+      l.counted = val === null ? undefined : val;
+      tally();
+      const res = await api('POST', `/api/prep/${stationId}/${date}/count`, { itemId: l.id, counted: val });
+      if (res.ok) { const nl = res.data.lines.find((x) => x.id === l.id); need.textContent = nl?.toMake !== undefined ? `make ${amountWithWeight(nl.toMake, nl.unit, nl)}` : ''; }
+      else need.textContent = res.data.error ?? 'Not saved';
+    };
+    if (!isBatch) return h('div', { class: 'countrow tapped' },
+      h('div', { class: 'row tight wrap' },
+        h('div', { class: 'grow' }, h('div', { class: 'name', text: l.name }), h('div', { class: 'small muted', text: [l.unit ?? '', eachWeight(l), l.dayPar !== undefined ? `par ${qty(l.dayPar)}` : '', l.note ?? ''].filter(Boolean).join(' · ') })),
+        l.estimate !== undefined ? h('span', { class: 'estimate small', title: 'Last count, plus what was made, minus what sold since. Count it anyway: this is a guess.', text: `my estimate: about ${nice(l.estimate) === '0' ? '0' : nice(l.estimate)}` }) : null,
+        need),
+      tapCount(l, need, save));
     return h('div', { class: 'countrow' },
       h('div', { class: 'grow' }, h('div', { class: 'name', text: l.name }), h('div', { class: 'small muted', text: isBatch
         ? (l.bulkUnit ? `Optional: on hand in ${l.bulkUnit}. ${l.onHand ? `The app has ${l.onHand.estimated ? 'about ' : ''}${qty(l.onHand.amount)} ${l.bulkUnit}.` : 'Nothing recorded yet.'}` : 'Set its storage unit under Edit list to track it.')
         : [l.unit ?? '', eachWeight(l), l.dayPar !== undefined ? `par ${qty(l.dayPar)}` : '', l.note ?? ''].filter(Boolean).join(' · ') })),
       isBatch ? h('span') : need,
-      isBatch && !l.bulkUnit ? h('span') : stepper(l.counted, isBatch ? 0.5 : l.dayPar !== undefined && l.dayPar < 4 ? 0.5 : 1, async (val) => {
-        const res = await api('POST', `/api/prep/${stationId}/${date}/count`, { itemId: l.id, counted: val });
-        if (res.ok) { const nl = res.data.lines.find((x) => x.id === l.id); need.textContent = nl?.toMake !== undefined ? `make ${amountWithWeight(nl.toMake, nl.unit, nl)}` : ''; }
-        else need.textContent = res.data.error ?? 'Not saved';
-      }, `${l.name} on hand`));
+      isBatch && !l.bulkUnit ? h('span') : stepper(l.counted, 0.5, save, `${l.name} on hand`));
   });
   const left = countable.filter((l) => l.counted === undefined && (l.kind === 'count' || l.bulkUnit));
   show(shell(me, 'prep', [
     prepHeader(me, v, 'Count', v.status === 'approved' ? 'Already approved for tomorrow. A chef can reopen it to change counts.' : 'How much is left of each, in the station’s units.'),
     page(h('section', { class: 'card' }, h('div', { class: 'list' }, rows)), [
-      sideBox('Counted', progress(counted, toCount), h('div', { class: 'small', text: `${counted} of ${toCount}` }),
+      sideBox('Counted', tallyBar, tallyText,
         sideActions(h('button', { class: 'btn dark', text: 'Done counting', onclick: () => prepHome(me) }))),
       left.length && left.length < toCount ? sideBox('Not counted yet', h('div', { class: 'small', text: left.map((l) => l.name).join(' · ') })) : null,
       sideBox('Tips', h('div', { class: 'small muted', text: 'Counts save as you go. Bulk items are optional: count them when you know, and the suggestion for what fills from them gets sharper.' })),
@@ -1615,7 +1671,14 @@ async function menuScreen(me) {
   // "Needs card" opens a new card already named and linked to the button that sells it.
   const writeCard = async (x) => {
     const d = (await api('GET', `/api/cards?area=${side}`)).data;
-    cardEditor(me, d, null, { name: x.pos?.itemName ?? x.name, kind: side === 'bar' ? 'drink' : 'dish', link: x.pos ? [{ ...x.pos, name: x.name }] : [] });
+    // A bar drink that's one thing it was bought as (a glass or bottle of wine, a beer): start from that.
+    let suggested;
+    if (side === 'bar' && x.pos) {
+      const drafts = (await api('GET', '/api/cards/drafts')).data?.drafts ?? [];
+      const dr = drafts.find((y) => y.shape !== 'ownCard' && y.ingredients?.length && y.items.some((it) => it.catalogId === x.pos.catalogId));
+      if (dr) suggested = { ingredients: dr.ingredients.map((i) => ({ ...i })), note: `Suggested from your invoices: ${dr.ingredients.map((i) => `${qty(i.amount)} ${UNIT_LABEL(i.unit)} of ${i.name}`).join(', ')}. Check it, then Mark ready.` };
+    }
+    cardEditor(me, d, null, { name: x.pos?.itemName ?? x.name, kind: side === 'bar' ? 'drink' : 'dish', link: x.pos ? [{ ...x.pos, name: x.name }] : [], ...(suggested ?? {}) });
   };
   // Any change saves, then the page comes back with fresh numbers (staying on the same chip).
   // The spinner stays on the button until it's saved; then that line folds away and the page refreshes where it is.
@@ -1670,6 +1733,7 @@ async function menuScreen(me) {
         h('div', { class: 'row tight wrap' }, h('span', { text: x.name }),
           x.quiet ? h('button', { class: 'tag ask tag-button', text: 'quiet', title: `Hasn’t sold since ${shortDate(x.quiet.since)}: still on?`, onclick: () => pickChip('needs') }) : null,
           x.hasCard || !flagCards ? null : h('button', { class: 'tag warn tag-button', text: 'needs recipe', title: `Write the recipe for ${x.name}`, onclick: () => writeCard(x) }),
+          x.rough && flagCards ? h('button', { class: 'tag rough tag-button', text: 'rough', title: `${x.name}: the recipe is still being worked out`, onclick: () => recipePage(me, x.name) }) : null,
           sameAs(x)),
         includesLine(x),
         h('div', { class: 'small muted', text: onText(x) }),
@@ -2142,7 +2206,7 @@ async function recipesScreen(me, state = {}) {
     page(sections.length ? h('div', { class: 'book' }, sections.map((s) => h('section', { class: 'card', id: `sec-${s.section}` },
       h('div', { class: 'row' }, h('h2', { class: 'grow', text: s.section }), h('span', { class: 'small muted', text: String(s.cards.length) })),
       h('div', { class: 'book-list' }, s.cards.map((c) => h('button', { class: `book-item${c.image ? ' with-photo' : ''}`, onclick: () => recipePage(me, c.name) },
-        photo(c.image), h('span', { text: c.name }))))))
+        photo(c.image), h('span', { text: c.name }), c.rough ? h('span', { class: 'tag rough', text: 'rough' }) : null)))))
     ) : h('div', { class: 'card small muted', text: q ? 'No recipe by that name.' : `No ${side === 'bar' ? 'drink' : ''} recipes yet.` }),
     [contents, coverage, tools]),
   ]));
@@ -2195,7 +2259,8 @@ function recipeView(me, r, opts) {
   const usedIn = () => (r.usedBy.length ? r.usedBy.map((n, k) => [k ? ', ' : '', h('button', { class: 'linkish card-link', text: n, onclick: () => opts.open(n) })]) : null);
   // The page's title row stays put; only the amounts change with the batch size.
   const head = page ? h('header', { class: 'row wrap' },
-    h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[r.side]} · ${r.section}` }), h('h1', { text: r.name }),
+    h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[r.side]} · ${r.section}` }),
+      h('div', { class: 'row tight wrap' }, h('h1', { text: r.name }), r.rough ? h('span', { class: 'tag rough', title: 'Still being worked out: cooks don’t see it yet.', text: `Rough${r.toFinish ? ` · ${r.toFinish} to finish` : ''}` }) : null),
       h('div', { class: 'sub', text: [sellsAs.length ? `Sells as ${sellsAs.join(', ')}` : '', r.shelfLifeDays ? `keeps ${r.shelfLifeDays} days` : ''].filter(Boolean).join(' · ') || null })),
     opts.back ?? null, editButton) : null;
   const draw = () => {
@@ -2207,11 +2272,12 @@ function recipeView(me, r, opts) {
       other ? h('button', { class: Math.abs(scale - r.scale) < 1e-6 ? 'on' : '', text: `For ${nice(r.scaledTo.amount)}${/^\d/.test(UNIT_LABEL(r.scaledTo.unit)) ? ' ×' : ''} ${UNIT_LABEL(r.scaledTo.unit)}`, onclick: () => { scale = r.scale; draw(); } }) : null) : null;
     const asked = r.asked && !r.scaledTo && prep ? h('div', { class: 'note', text: `The list says make ${nice(r.asked.amount)}${/^\d/.test(UNIT_LABEL(r.asked.unit)) ? ' ×' : ''} ${UNIT_LABEL(r.asked.unit)}. This recipe is written in ${UNIT_LABEL(y.unit)}, so it shows one batch.` }) : null;
     const table = h('table', { class: 'ingredients' }, h('tbody', {}, r.ingredients.map((i) => h('tr', {},
-      h('td', { class: 'amt', text: `${nice(i.amount * scale)} ${UNIT_LABEL(i.unit)}` }),
+      h('td', { class: 'amt', text: i.amount > 0 ? `${nice(i.amount * scale)} ${UNIT_LABEL(i.unit)}` : `– ${UNIT_LABEL(i.unit ?? '')}` }),
       h('td', {}, i.card ? h('button', { class: 'linkish card-link', text: i.card, onclick: () => opts.open(i.card) }) : h('span', { text: i.name }),
         i.yieldPercent ? h('span', { class: 'small muted', text: ` (after trimming; ${i.yieldPercent}% usable)` }) : null,
         i.note ? h('div', { class: 'small muted', text: i.note }) : null)))));
-    const method = r.method ? h('div', { class: 'method' }, h('h3', { text: 'Method' }), r.method.split(/\n+/).map((p) => h('p', { text: p }))) : h('div', { class: 'small muted', text: r.canEdit && !opts.sheet ? 'No method written yet. Add one with Edit recipe.' : 'No method written yet.' });
+    // Steps, numbered (one per line of the method).
+    const method = r.method ? h('div', { class: 'method' }, h('h3', { text: 'Steps' }), h('ol', { class: 'steps-view' }, r.method.split(/\n+/).map((p) => p.trim()).filter(Boolean).map((p) => h('li', { text: p })))) : h('div', { class: 'small muted', text: r.canEdit && !opts.sheet ? 'No steps written yet. Add them with Edit recipe.' : 'No steps written yet.' });
     const cost = r.cost !== undefined ? `Costs ${money2(r.cost * scale)}${r.complete ? '' : ' (some lines have no price yet)'}` : null;
     if (page) {
       fill(body, asked, h('section', { class: 'card' }, h('h2', { text: makesText() }), table), h('section', { class: 'card' }, method));
@@ -2358,92 +2424,199 @@ async function tidyScreen(me) {
 function cardEditor(me, d, card, start = {}) {
   // Where it was opened from is where Back, Cancel and Save return to (Recipe costs unless said).
   const back = start.back ?? { label: 'Recipe costs', go: () => cardsScreen(me), rail: 'menu' };
-  const c = card ? JSON.parse(JSON.stringify(card)) : { name: start.name ?? '', kind: start.kind ?? 'dish', yields: [{ amount: 1, unit: 'qt' }], ingredients: [], linked: start.link ?? [] };
+  const c = card ? JSON.parse(JSON.stringify(card)) : { name: start.name ?? '', kind: start.kind ?? 'dish', yields: [], ingredients: start.ingredients ?? [], linked: start.link ?? [], status: 'rough' };
   if (!c.ingredients.length) c.ingredients.push({ amount: '', unit: '', name: '' });
-  const options = [...d.products.map((p) => ({ name: p.name, units: p.units, unit: p.unit, price: p.price, kind: 'product' })), ...d.allCards.filter((x) => x.name !== card?.name).map((x) => ({ name: x.name, units: x.units, unit: x.unit, kind: 'card' }))];
+  const prepKind = () => c.kind === 'prep' || c.kind === 'barPrep';
+  if (prepKind() && !c.yields.length) c.yields.push({ amount: '', unit: '' });
+  const options = [...d.products.map((p) => ({ id: p.id, name: p.name, units: [...p.units], unit: p.unit, price: p.price, kind: 'product' })), ...d.allCards.filter((x) => x.name !== card?.name).map((x) => ({ name: x.name, units: [...x.units], unit: x.unit, kind: 'card' }))];
   const byName = new Map(options.map((o) => [o.name.toLowerCase(), o]));
   const listId = 'ingredient-options';
   const datalist = h('datalist', { id: listId }, options.map((o) => h('option', { value: o.name, label: o.kind === 'card' ? 'recipe' : UNIT_LABEL(o.unit) })));
+  // Units a recipe's yields can be in: the usual ones and your containers; anything else typed is a new one.
+  const yieldUnits = ['batch', 'each', 'portion', 'qt', 'pt', 'gal', 'floz', 'cup', 'ml', 'l', 'oz', 'lb', 'g', 'kg'];
+  const yieldList = h('datalist', { id: 'yield-units' }, yieldUnits.map((u) => h('option', { value: UNIT_LABEL(u) })));
+  api('GET', '/api/units').then((r) => { for (const ct of r.data?.containers ?? []) yieldList.append(h('option', { value: ct.name })); });
   const err = h('div', { class: 'error', role: 'alert' });
   const total = h('div', { class: 'big' });
   const totalNote = h('div', { class: 'small muted' });
+  const statusChip = h('span', { class: 'tag' });
   const lines = h('div', { class: 'ilist' });
+
+  // Where a line stands: finished, or what it still needs (rough recipes save either way).
+  const GENERIC = ['each', 'g', 'oz', 'lb', 'ml', 'floz', 'tsp', 'tbsp', 'cup', 'qt', 'pinch', 'handful', 'bunch'];
+  const stateOf = (i) => {
+    if (!i.name) return '';
+    const o = byName.get(i.name.toLowerCase());
+    if (!o) return 'unmatched';
+    if (!(Number(i.amount) > 0)) return 'amount';
+    if (!i.unit) return 'unit';
+    return o.units.includes(i.unit) ? 'ok' : 'convert';
+  };
+  const toFinish = () => c.ingredients.filter((i) => i.name && stateOf(i) !== 'ok').length;
+  const drawStatus = () => {
+    const n = toFinish();
+    statusChip.className = `tag ${c.status === 'rough' ? 'rough' : 'ok'}`;
+    statusChip.textContent = c.status === 'rough' ? `Rough${n ? ` · ${n} to finish` : ' · every line done'}` : 'Ready';
+    statusChip.title = c.status === 'rough' ? 'Still being worked out: managers see it, cooks don’t yet.' : 'Cooks see this recipe.';
+  };
+
   let previewTimer;
   const preview = () => {
+    drawStatus();
     clearTimeout(previewTimer);
     previewTimer = setTimeout(async () => {
-      const res = await api('POST', '/api/cards/preview', { card: { ingredients: c.ingredients.filter((i) => i.name) } });
+      const usable = c.ingredients.filter((i) => i.name);
+      const res = await api('POST', '/api/cards/preview', { card: { ingredients: usable } });
       if (!res.ok) return;
-      const filled = c.ingredients.filter((i) => i.name);
       [...lines.querySelectorAll('.icost')].forEach((el, n) => {
-        const l = res.data.lines[filled.indexOf(c.ingredients[n])] ?? {};
-        el.textContent = l.cost !== undefined ? money2(l.cost) : '';
+        const i = c.ingredients[n];
+        const l = res.data.lines[usable.indexOf(i)] ?? {};
+        const st = stateOf(i);
+        el.textContent = l.cost !== undefined ? money2(l.cost) : st && st !== 'ok' ? 'to finish' : '';
         el.title = l.problem ?? '';
-        el.classList.toggle('warn-text', Boolean(l.problem));
+        el.classList.toggle('warn-text', Boolean(l.problem) || (st && st !== 'ok'));
       });
-      total.textContent = money2(res.data.total);
-      const per = c.kind === 'prep' || c.kind === 'barPrep' ? `for ${qty(Number(c.yields[0]?.amount) || 0)} ${UNIT_LABEL(c.yields[0]?.unit ?? '')}` : `a ${c.kind === 'drink' ? 'drink' : 'plate'}`;
+      total.textContent = `${money2(res.data.total)}${toFinish() ? '+' : ''}`;
+      const y = c.yields.find((x) => Number(x.amount) > 0 && x.unit);
+      const per = prepKind() ? (y ? `for ${qty(Number(y.amount))} ${UNIT_LABEL(y.unit)}` : 'for one batch') : `a ${c.kind === 'drink' ? 'drink' : 'plate'}`;
       const price = card?.averagePrice;
-      totalNote.textContent = `${per}${price && c.kind !== 'prep' && c.kind !== 'barPrep' ? ` · ${pct(res.data.total / price)} of the ${money2(price)} it sells for` : ''}${res.data.complete ? '' : ' · some lines can’t be priced yet'}`;
+      totalNote.textContent = `${per}${price && !prepKind() ? ` · ${pct(res.data.total / price)} of the ${money2(price)} it sells for` : ''}${toFinish() ? ` · ${toFinish()} line${toFinish() === 1 ? '' : 's'} not costed yet` : res.data.complete ? '' : ' · some lines can’t be priced yet'}`;
     }, 250);
   };
-  const unitSelect = (i) => {
+
+  // Yields: what one batch makes, said every way it's measured (1 batch · 12 qt · 6 kg · 30 balls).
+  const yieldBox = h('div', { class: 'yields' });
+  const drawYields = () => {
+    if (!prepKind()) return fill(yieldBox);
+    fill(yieldBox,
+      h('div', { class: 'row tight' }, h('span', { class: 'strong', text: 'Yields' }), h('span', { class: 'small muted', text: 'one batch, every way you measure it' })),
+      c.yields.map((y, n) => {
+        const amt = h('input', { inputmode: 'decimal', class: 'short', value: y.amount === '' ? '' : String(y.amount), 'aria-label': 'Yield amount', placeholder: '0' });
+        amt.addEventListener('change', () => { const v = parseAmount(amt.value); y.amount = Number.isNaN(v) ? '' : v; preview(); });
+        const unit = h('input', { type: 'text', class: 'yunit', list: 'yield-units', value: UNIT_LABEL(y.unit ?? ''), 'aria-label': 'Yield unit', placeholder: 'batch, qt, kg, ball…' });
+        unit.addEventListener('change', () => { y.unit = unit.value.trim() === 'fl oz' ? 'floz' : unit.value.trim(); preview(); });
+        return h('div', { class: 'row tight' }, h('span', { class: 'small muted yeq', text: n ? '=' : '' }), amt, unit,
+          c.yields.length > 1 ? h('button', { class: 'btn small-btn', 'aria-label': 'Remove this yield', text: '×', onclick: () => { c.yields.splice(n, 1); drawYields(); preview(); } }) : null);
+      }),
+      h('div', { class: 'row tight wrap' }, h('button', { class: 'btn small-btn', text: '+ Another way to measure it', onclick: () => { c.yields.push({ amount: '', unit: '' }); drawYields(); } }),
+        h('span', { class: 'small muted', text: 'A unit you name here (ball, tray) works wherever this recipe is used.' })));
+  };
+
+  // A unit of an ingredient (a handful of arugula), set once on the ingredient and used everywhere.
+  const newUnitForm = (i, o, slot, preset) => {
+    const nameIn = h('input', { type: 'text', class: 'short', value: preset ?? '', placeholder: 'handful', 'aria-label': 'New unit' });
+    const amt = h('input', { inputmode: 'decimal', class: 'short', placeholder: 'how much', 'aria-label': 'How much it is' });
+    const unit = h('select', { 'aria-label': 'In' }, ['g', 'oz', 'lb', 'kg', 'ml', 'floz', 'tsp', 'tbsp', 'cup', 'qt', 'each'].map((u) => h('option', { value: u, text: UNIT_LABEL(u) })));
+    const msg = h('span', { class: 'small error' });
+    const done = async () => {
+      const name = nameIn.value.trim().toLowerCase();
+      if (!name) return (msg.textContent = 'Name the unit (handful, pinch, ball).');
+      const v = parseAmount(amt.value);
+      if (amt.value.trim() && !(v > 0)) return (msg.textContent = 'An amount like 15 or 1/2, or leave it for later.');
+      if (v > 0) {
+        const res = await api('POST', '/api/answers', { type: 'conversion', productId: o.id, fact: 'customUnit', unit: name, amount: v, amountUnit: unit.value });
+        if (!res.ok) return (msg.textContent = res.data.error);
+        if (!o.units.includes(name)) o.units.push(name);
+      }
+      i.unit = name;
+      drawLines(); preview();
+    };
+    fill(slot, h('div', { class: 'newunit row tight wrap' }, h('span', { class: 'small', text: '1' }), nameIn, h('span', { class: 'small', text: `of ${o.name} =` }), amt, unit,
+      h('button', { class: 'btn small-btn dark', text: 'Set', onclick: done }), h('button', { class: 'link', text: 'Cancel', onclick: () => drawLines() }), msg));
+    nameIn.focus();
+  };
+
+  const unitSelect = (i, slot) => {
     const o = byName.get(String(i.name).toLowerCase());
-    let units = o?.units ?? ['each', 'g', 'oz', 'lb', 'ml', 'floz', 'qt'];
-    // A unit the card already uses stays, even when it can't be converted yet (the cost line says so).
+    let units = o?.units ?? GENERIC;
+    // A unit the line already uses stays, even when it doesn't convert yet (the line says so).
     if (i.unit && !units.includes(i.unit)) units = [i.unit, ...units];
-    if (!i.unit) i.unit = o ? (o.kind === 'product' && ['bottle', 'keg', 'gal', 'l'].includes(o.unit) && units.includes('floz') ? 'floz' : o.unit) : units[0];
-    const sel = h('select', { 'aria-label': `Unit for ${i.name || 'ingredient'}` }, units.map((u) => h('option', { value: u, text: UNIT_LABEL(u) + (o && !o.units.includes(u) ? ' (no conversion yet)' : ''), selected: u === i.unit ? true : undefined })));
-    sel.addEventListener('change', () => { i.unit = sel.value; preview(); });
+    if (!i.unit && o) i.unit = o.kind === 'product' && ['bottle', 'keg', 'gal', 'l'].includes(o.unit) && units.includes('floz') ? 'floz' : o.unit;
+    const sel = h('select', { 'aria-label': `Unit for ${i.name || 'ingredient'}` },
+      h('option', { value: '', text: 'unit…', selected: !i.unit ? true : undefined }),
+      units.map((u) => h('option', { value: u, text: UNIT_LABEL(u) + (o && !o.units.includes(u) ? ' (how much?)' : ''), selected: u === i.unit ? true : undefined })),
+      o?.kind === 'product' ? h('option', { value: '__new', text: '+ New unit…' }) : null);
+    sel.addEventListener('change', () => {
+      if (sel.value === '__new') { sel.value = i.unit ?? ''; return newUnitForm(i, o, slot); }
+      i.unit = sel.value; if (i._err?.field === 'unit') markLine(i); drawLines(); preview();
+    });
     return sel;
   };
+
   // A line's problem, shown under it until that line changes (from typing, or from the server on Save).
   const markLine = (i, msg, field) => { i._err = msg ? { msg, field } : undefined; };
+  const move = (n, by) => { const m = n + by; if (m < 0 || m >= c.ingredients.length) return; const [x] = c.ingredients.splice(n, 1); c.ingredients.splice(m, 0, x); drawLines(); preview(); };
+  const makePrep = async (i) => {
+    const res = await api('POST', '/api/cards', { card: { name: i.name, kind: c.kind === 'drink' || c.kind === 'barPrep' ? 'barPrep' : 'prep', yields: [], ingredients: [] } });
+    if (!res.ok) return showLineError(i, res.data.error, 'name');
+    const o = { name: i.name, units: ['batch', 'each'], unit: 'batch', kind: 'card' };
+    options.push(o); byName.set(i.name.toLowerCase(), o); datalist.append(h('option', { value: i.name, label: 'recipe' }));
+    if (!i.unit) i.unit = 'batch';
+    drawLines(); preview();
+  };
   const drawLines = () => {
     fill(lines, h('div', { class: 'irow head' }, h('div', { text: 'Amount' }), h('div', { text: 'Unit' }), h('div', { text: 'What goes in' }), h('div', { class: 'num', text: 'Cost' }), h('div')),
       c.ingredients.map((i, n) => {
-        const amount = h('input', { inputmode: 'decimal', value: i._amountText ?? (i.amount === '' ? '' : String(i.amount)), 'aria-label': 'Amount', placeholder: '0' });
+        const amount = h('input', { inputmode: 'decimal', value: i._amountText ?? (i.amount === '' || !(Number(i.amount) > 0) ? '' : String(i.amount)), 'aria-label': 'Amount', placeholder: '0' });
         const note = h('div', { class: 'irow-msg', role: 'alert', text: i._err?.msg ?? '' });
+        const hint = h('div', { class: 'irow-hint' });
         const row = h('div', { class: `irow${i._err ? ' bad' : ''}${i._err?.field ? ` bad-${i._err.field}` : ''}` });
         const setBad = (msg, field) => { markLine(i, msg, field); note.textContent = msg ?? ''; row.className = `irow${msg ? ` bad bad-${field}` : ''}`; };
         amount.addEventListener('change', () => {
           const v = parseAmount(amount.value);
           if (Number.isNaN(v)) { i.amount = ''; i._amountText = amount.value; setBad(`Can’t read “${amount.value.trim()}”. Write it as 2, 1.5, 1 1/2 or ½.`, 'amount'); }
           else { i.amount = v; delete i._amountText; setBad(); }
-          preview();
+          drawHint(); preview();
         });
         const name = h('input', { type: 'text', list: listId, value: i.name, 'aria-label': 'Ingredient', placeholder: 'Start typing a product or recipe' });
-        const unitSlot = h('div', {}, unitSelect(i));
+        const unitSlot = h('div', {});
+        const extra = h('div', {});
+        fill(unitSlot, unitSelect(i, extra));
         name.addEventListener('change', () => {
-          i.name = name.value.trim(); const o = byName.get(i.name.toLowerCase()); if (o) i.name = o.name; if (!o || !o.units.includes(i.unit)) i.unit = '';
-          fill(unitSlot, unitSelect(i));
-          if (i.name && !o) setBad(`“${i.name}” isn’t on the list yet: pick a product or recipe as you type.`, 'name'); else if (i._err?.field !== 'amount') setBad();
-          preview();
+          i.name = name.value.trim(); const o = byName.get(i.name.toLowerCase()); if (o) i.name = o.name; if (o && !o.units.includes(i.unit)) i.unit = '';
+          if (i._err?.field === 'name') markLine(i);
+          drawLines(); preview();
         });
-        unitSlot.addEventListener('change', () => { if (i._err?.field === 'unit') setBad(); });
+        // What a rough line still needs, said where it is (not an error: it saves as rough).
+        const drawHint = () => {
+          const st = stateOf(i), o = byName.get(String(i.name).toLowerCase());
+          if (st === 'unmatched') fill(hint, h('span', { text: 'Not matched yet: pick it from the list as you type, or ' }), h('button', { class: 'link', text: 'make it a prep recipe', onclick: () => makePrep(i) }));
+          else if (st === 'convert' && o?.kind === 'product') fill(hint, h('span', { text: `How much is one ${i.unit} of ${o.name}? ` }), h('button', { class: 'link', text: 'Set it once', onclick: () => newUnitForm(i, o, extra, i.unit) }));
+          else if (st === 'convert') fill(hint, h('span', { text: `${o?.name ?? i.name} isn’t measured in ${i.unit} yet: add it to that recipe’s yields.` }));
+          else fill(hint);
+        };
+        drawHint();
         row.append(amount, unitSlot, name, h('div', { class: 'num icost small' }),
-          h('button', { class: 'btn small-btn', 'aria-label': `Remove ${i.name || 'line'}`, text: '×', onclick: () => { c.ingredients.splice(n, 1); drawLines(); preview(); } }));
-        return [row, note];
+          h('div', { class: 'imove' },
+            h('button', { class: 'btn small-btn', 'aria-label': `Move ${i.name || 'line'} up`, text: '↑', disabled: n === 0 ? true : undefined, onclick: () => move(n, -1) }),
+            h('button', { class: 'btn small-btn', 'aria-label': `Move ${i.name || 'line'} down`, text: '↓', disabled: n === c.ingredients.length - 1 ? true : undefined, onclick: () => move(n, 1) }),
+            h('button', { class: 'btn small-btn', 'aria-label': `Remove ${i.name || 'line'}`, text: '×', onclick: () => { c.ingredients.splice(n, 1); drawLines(); preview(); } })));
+        return [row, note, hint, extra];
       }),
-      h('button', { class: 'btn small-btn', text: '+ Add a line', onclick: () => { c.ingredients.push({ amount: '', unit: '', name: '' }); drawLines(); lines.querySelector('.irow:last-of-type input[list]')?.focus(); } }));
+      h('button', { class: 'btn small-btn', text: '+ Add a line', onclick: () => { c.ingredients.push({ amount: '', unit: '', name: '' }); drawLines(); [...lines.querySelectorAll('.irow:not(.head) input[list]')].pop()?.focus(); } }));
   };
   const nameInput = h('input', { type: 'text', value: c.name, 'aria-label': 'Recipe name', placeholder: 'e.g. Negroni' });
   nameInput.addEventListener('change', () => { c.name = nameInput.value; });
   const kind = h('select', { 'aria-label': 'Kind' }, Object.entries(KIND_NAMES).map(([k, t]) => h('option', { value: k, text: t, selected: k === c.kind ? true : undefined })));
-  const yieldBox = h('div', { class: 'row wrap' });
-  const drawYield = () => {
-    if (c.kind !== 'prep' && c.kind !== 'barPrep') return fill(yieldBox);
-    const y = c.yields[0] ?? (c.yields[0] = { amount: 1, unit: 'qt' });
-    const amt = h('input', { inputmode: 'decimal', value: String(y.amount), 'aria-label': 'A batch makes', class: 'short' });
-    amt.addEventListener('change', () => { y.amount = Number(amt.value) || 0; preview(); });
-    const unit = h('select', { 'aria-label': 'Batch unit', class: 'fit' }, ['qt', 'pt', 'gal', 'floz', 'ml', 'l', 'cup', 'oz', 'lb', 'g', 'kg', 'each', 'bottle', 'portion', 'batch'].map((u) => h('option', { value: u, text: UNIT_LABEL(u), selected: u === y.unit ? true : undefined })));
-    unit.addEventListener('change', () => { y.unit = unit.value; preview(); });
-    fill(yieldBox, h('span', { class: 'small strong', text: 'A batch makes' }), amt, unit);
+  kind.addEventListener('change', () => { c.kind = kind.value; if (prepKind() && !c.yields.length) c.yields.push({ amount: '', unit: '' }); drawYields(); preview(); });
+
+  // Steps, numbered, in order (kept one per line in the recipe's method).
+  const steps = (c.method ?? '').split(/\n+/).map((x) => x.trim()).filter(Boolean);
+  const stepsBox = h('div', { class: 'steps' });
+  const drawSteps = () => {
+    if (!steps.length) steps.push('');
+    fill(stepsBox, steps.map((t, n) => {
+      const box = h('textarea', { rows: '2', 'aria-label': `Step ${n + 1}`, placeholder: n === 0 ? 'Mix the dry ingredients…' : 'Then…' });
+      box.value = t;
+      box.addEventListener('change', () => { steps[n] = box.value.replace(/\n+/g, ' ').trim(); });
+      const mv = (by) => { const m = n + by; if (m < 0 || m >= steps.length) return; const [x] = steps.splice(n, 1); steps.splice(m, 0, x); drawSteps(); };
+      return h('div', { class: 'step' }, h('div', { class: 'stepn', text: String(n + 1) }), box,
+        h('div', { class: 'imove' },
+          h('button', { class: 'btn small-btn', 'aria-label': `Move step ${n + 1} up`, text: '↑', disabled: n === 0 ? true : undefined, onclick: () => mv(-1) }),
+          h('button', { class: 'btn small-btn', 'aria-label': `Move step ${n + 1} down`, text: '↓', disabled: n === steps.length - 1 ? true : undefined, onclick: () => mv(1) }),
+          h('button', { class: 'btn small-btn', 'aria-label': `Remove step ${n + 1}`, text: '×', onclick: () => { steps.splice(n, 1); drawSteps(); } })));
+    }), h('button', { class: 'btn small-btn', text: '+ Add a step', onclick: () => { steps.push(''); drawSteps(); [...stepsBox.querySelectorAll('textarea')].pop()?.focus(); } }));
   };
-  kind.addEventListener('change', () => { c.kind = kind.value; drawYield(); preview(); });
-  const method = h('textarea', { 'aria-label': 'Method', rows: '3', placeholder: 'How it’s made (optional): build in a rocks glass over ice, stir, orange peel…' });
-  method.value = c.method ?? '';
-  method.addEventListener('change', () => { c.method = method.value; });
 
   // Buttons that sell it.
   const linkBox = h('div');
@@ -2468,13 +2641,15 @@ function cardEditor(me, d, card, start = {}) {
     row?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     row?.querySelector(field === 'amount' ? 'input[aria-label="Amount"]' : field === 'unit' ? 'select' : 'input[list]')?.focus({ preventScroll: true });
   };
-  const save = async () => {
+  const save = async (ready) => {
     err.textContent = '';
     const sent = c.ingredients.filter((i) => i.name || i.amount || i._amountText);
     // Caught here, before anything is sent: an amount that couldn't be read.
     const unread = sent.find((i) => i._amountText !== undefined);
     if (unread) return showLineError(unread, `Line ${c.ingredients.indexOf(unread) + 1}${unread.name ? `, ${unread.name}` : ''}: can’t read “${unread._amountText.trim()}”. Write it as 2, 1.5, 1 1/2 or ½.`, 'amount');
-    const body = { card: { name: nameInput.value, kind: c.kind, yields: c.yields, ingredients: sent.map(({ _err, _amountText, ...i }) => i), method: method.value }, ...(card ? { previousName: card.name } : {}),
+    const yields = prepKind() ? c.yields.filter((y) => Number(y.amount) > 0 && y.unit).map((y) => ({ amount: Number(y.amount), unit: y.unit })) : [];
+    const body = { card: { name: nameInput.value, kind: c.kind, yields, ingredients: sent.map(({ _err, _amountText, state, ...i }) => ({ ...i, amount: Number(i.amount) > 0 ? Number(i.amount) : 0, unit: i.unit ?? '' })), method: steps.map((x) => x.trim()).filter(Boolean).join('\n'), ...(ready ? { ready: true } : {}) },
+      ...(card ? { previousName: card.name } : {}),
       link: c.linked.filter((l) => !(card?.linked ?? []).some((x) => x.catalogId === l.catalogId && x.name === l.name)), unlink: unlinked };
     const res = await api('POST', '/api/cards', body);
     if (!res.ok) {
@@ -2496,19 +2671,24 @@ function cardEditor(me, d, card, start = {}) {
     if (back.rail === 'recipes') recipesScreen(me); else cardsScreen(me);
   } }) : null;
 
-  drawLines(); drawYield(); drawLinks(); preview();
+  drawLines(); drawYields(); drawSteps(); drawLinks(); preview();
   show(shell(me, back.rail, [
     h('header', { class: 'row wrap' },
-      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: card ? 'Recipe' : 'New recipe' }), h('h1', { text: card?.name ?? (c.name || 'New recipe') })),
+      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: card ? 'Recipe' : 'New recipe' }), h('div', { class: 'row tight wrap' }, h('h1', { text: card?.name ?? (c.name || 'New recipe') }), statusChip)),
       h('button', { class: 'btn', text: `← ${back.label}`, onclick: () => back.go() })),
     h('div', { class: 'page editor' },
       h('section', { class: 'card page-main' },
         h('div', { class: 'row wrap' }, h('label', { class: 'grow' }, 'Name', nameInput), h('label', {}, 'Kind', kind)),
-        yieldBox,
+        yieldBox, yieldList,
+        start.note && !card ? h('div', { class: 'note small', text: start.note }) : null,
         datalist, lines,
-        h('label', {}, 'Method', method),
+        h('div', { class: 'strong', text: 'Steps' }), stepsBox,
         err,
-        h('div', { class: 'row wrap' }, h('button', { class: 'btn dark', text: 'Save recipe', onclick: save }), h('button', { class: 'btn', text: 'Cancel', onclick: () => back.go() }), h('div', { class: 'grow' }), del)),
+        h('div', { class: 'row wrap' },
+          h('button', { class: 'btn dark', text: 'Save', onclick: () => save(false) }),
+          c.status === 'rough' ? h('button', { class: 'btn', text: 'Mark ready', title: 'Cooks see it from then on. Every line needs to be finished.', onclick: () => save(true) }) : null,
+          h('button', { class: 'btn', text: 'Cancel', onclick: () => back.go() }), h('div', { class: 'grow' }), del),
+        h('div', { class: 'small muted', text: c.status === 'rough' ? 'Saves as rough: you and managers see it, cooks don’t. Mark it ready when every line is finished.' : 'Ready: cooks see this recipe. If a change leaves a line unfinished, it goes back to rough.' })),
       h('aside', { class: 'page-side' },
         h('div', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Cost' }), total, totalNote),
         h('div', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Sells as' }), linkBox),
@@ -4161,6 +4341,7 @@ function brandCard(me) {
         const res = await api('POST', '/api/brand/logo', { dataUrl: canvas.toDataURL('image/png') });
         if (!res.ok) return (err.textContent = res.data.error ?? 'Not saved.');
         await loadBrand();
+        await makeIcon();
         home(me);
       } }),
       BRAND.logo ? h('button', { class: 'link', text: 'Remove', onclick: async () => { await api('POST', '/api/brand/logo', { dataUrl: null }); await loadBrand(); home(me); } }) : null),

@@ -67,3 +67,19 @@ test('weights read in pounds from a pound up', () => {
   assert.equal(weightText(300), '300 g');
   assert.equal(weightText(0), '');
 });
+
+test('bottles, cans and kegs bought by the each hold what their name or type says', async () => {
+  const { packSize, withPackSize } = await import('../src/core/packSizes.ts');
+  const { tryConvert } = await import('../src/core/units.ts');
+  assert.equal(packSize('Barbera d’Alba 2022', 'WINE', 'each')?.ml, 750);
+  assert.equal(packSize('Lambrusco 1.5L', 'WINE', 'each')?.ml, 1500);
+  assert.equal(packSize('Tito’s Vodka 1L', 'LIQUOR', 'bottle')?.ml, 1000);
+  near(packSize('Pilsner 1/6 bbl', 'BEER', 'keg')?.ml, 19560, 10);
+  near(packSize('Topo Chico 12 oz', 'NA_BEVERAGES', 'each')?.ml, 355, 1);
+  assert.equal(packSize('Mozzarella 5 lb', 'FOOD', 'each'), undefined);
+  // A glass of wine: 6 fl oz from a bottle bought as "each" is about a quarter bottle.
+  const conv = withPackSize(undefined, 'each', packSize('Barbera d’Alba', 'WINE', 'each'));
+  near(tryConvert({ amount: 6, unit: 'floz' }, 'each', conv), 0.2366, 0.001);
+  // What's already known wins.
+  assert.deepEqual(withPackSize({ customUnits: { bottle: { amount: 500, unit: 'ml' } } }, 'bottle', { ml: 750, why: 'x' }), { customUnits: { bottle: { amount: 500, unit: 'ml' } } });
+});

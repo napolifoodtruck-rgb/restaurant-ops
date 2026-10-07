@@ -285,6 +285,7 @@ export function menuView(model: Model, view: AreaView = ALL) {
     section: sectionFor(shownName(e), (e.recipeId && recipeCategory.get(e.recipeId)) || 'Other'),
     since: e.startsOn,
     hasCard: true,
+    ...(e.recipeId && model.rough?.has(e.recipeId) ? { rough: true } : {}),
     ...(e.recipeId ? { menuKey: e.recipeId } : {}),
     ...(e.quietSince ? { quiet: { since: e.quietSince, after: e.quietAfter } } : {}),
   }));

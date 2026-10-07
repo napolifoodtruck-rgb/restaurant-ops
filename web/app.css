@@ -223,7 +223,7 @@ label.inline { flex-direction: row; align-items: center; gap: 8px; }
   .crow.head { display: none; }
   .drow { grid-template-columns: 28px 1fr; }
   .drow > :nth-child(3), .drow > :nth-child(4) { grid-column: 2; }
-  .irow { grid-template-columns: 70px 90px 1fr 44px; }
+  .irow { grid-template-columns: 70px 100px 1fr auto; }
   .irow .icost, .irow.head > :nth-child(4) { display: none; }
 }
 .editor select.fit { width: auto; min-width: 100px; }
@@ -847,3 +847,36 @@ button.donut-row { display: flex; min-width: 0; }
 .sell-switch input:checked::after { left: 16px; }
 .sell-switch input:focus-visible { outline: 2px solid var(--ink, #111); outline-offset: 2px; }
 .online-find input[type=search] { flex: 1; min-width: 0; }
+
+/* Recipe editor: yields, moving lines, what a rough line still needs, steps. */
+.tag.rough { background: #FFF6E0; color: #8A5A00; }
+.tag.ok { background: #E8F3EC; color: var(--green); }
+.yields { display: flex; flex-direction: column; gap: 6px; }
+.yields input.short { width: 90px; height: 40px; }
+.yields input.yunit { width: 160px; height: 40px; }
+.irow { grid-template-columns: 64px 100px minmax(110px, 1fr) 58px auto; gap: 6px; }
+.imove { display: flex; gap: 3px; }
+.imove .btn.small-btn { min-width: 30px; width: 30px; padding: 0; }
+.irow-hint:empty { display: none; }
+.irow-hint { color: #8A5A00; font-size: 13px; margin: -2px 0 6px; }
+.irow-hint .link { font-size: 13px; color: #8A5A00; text-decoration: underline; }
+.newunit { padding: 8px 10px; background: #FFF8E6; margin: 0 0 8px; }
+.newunit input.short { width: 100px; height: 36px; }
+.steps { display: flex; flex-direction: column; gap: 8px; }
+.step { display: grid; grid-template-columns: 34px 1fr auto; gap: 8px; align-items: start; }
+.stepn { width: 30px; height: 30px; border-radius: 50%; background: var(--ink); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; margin-top: 6px; }
+.step textarea { min-height: 48px; }
+
+.steps-view { margin: 0; padding: 0; list-style: none; counter-reset: s; }
+.steps-view li { counter-increment: s; display: grid; grid-template-columns: 36px 1fr; gap: 8px; font-size: 17px; line-height: 1.45; margin: 10px 0; }
+.steps-view li::before { content: counter(s); width: 30px; height: 30px; border-radius: 50%; background: var(--ink); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; }
+.yeq { width: 12px; text-align: center; }
+
+/* The nightly count: a row of taps per item, the estimate beside it (never picked). */
+.countrow.tapped { flex-direction: column; align-items: stretch; gap: 8px; }
+.taps { display: flex; flex-wrap: wrap; gap: 6px; }
+.tap { min-width: 52px; height: 48px; padding: 0 10px; border: 1px solid var(--line); background: var(--card); font-size: 17px; font-weight: 600; cursor: pointer; }
+.tap.on { background: var(--ink); color: var(--card); border-color: var(--ink); }
+.tap.other { font-size: 13px; font-weight: 500; color: var(--muted); }
+.tap.other.on { color: var(--card); }
+.estimate { color: var(--blue); background: #EEF3FA; padding: 4px 8px; white-space: nowrap; }

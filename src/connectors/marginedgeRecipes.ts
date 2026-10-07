@@ -66,6 +66,11 @@ export interface RecipeCard {
   /** Lines in the ingredient list that couldn't be read. */
   unreadLines: string[];
   layout: 'card' | 'costing';
+  /**
+   * Rough: still being worked out (R&D). It may have lines not matched to anything yet, or with no
+   * amount or unit; managers see it, cooks don't. Absent: ready.
+   */
+  status?: 'rough';
 }
 
 const NUMBER = String.raw`\d+(?:\.\d+)?(?:\s+\d+\/\d+)?|\d+\/\d+`;
@@ -348,7 +353,13 @@ export function buildRecipes(cards: RecipeCard[], products: ImportedProduct[], o
     if (!primary) issues.push({ type: 'noYield', recipe: card.name });
 
     const ingredients: Ingredient[] = [];
+    const rough = card.status === 'rough';
     for (const ingredient of card.ingredients) {
+      // A rough line with no amount or unit yet: a gap in the cost until it's filled in.
+      if (!(ingredient.amount > 0) || !ingredient.unit) {
+        ingredients.push({ item: { kind: 'product', id: `unfinished:${normalizeName(ingredient.name)}` }, quantity: { amount: 1, unit: 'each' } });
+        continue;
+      }
       let share = ingredient.yieldPercent / 100;
       if (!(share > 0) || share > 1) {
         issues.push({ type: 'oddYieldPercent', recipe: card.name, ingredient: ingredient.name, yieldPercent: ingredient.yieldPercent });
@@ -364,7 +375,8 @@ export function buildRecipes(cards: RecipeCard[], products: ImportedProduct[], o
         ingredients.push({ item: { kind: 'product', id: productsByName.get(key)!.externalId }, quantity });
       } else {
         const candidates = [...byName.values()].map((c) => c.name).filter((n) => n !== card.name).concat(allProducts.map((p) => p.name));
-        issues.push({ type: 'unknownIngredient', recipe: card.name, ingredient: ingredient.name, suggestions: closestNames(ingredient.name, candidates) });
+        // A rough recipe's unmatched lines are on purpose (matched when it's finished): not a question.
+        if (!rough) issues.push({ type: 'unknownIngredient', recipe: card.name, ingredient: ingredient.name, suggestions: closestNames(ingredient.name, candidates) });
         // Kept in the recipe so the gap stays visible: it reports as an unknown item until matched.
         ingredients.push({ item: { kind: 'product', id: `unmatched:${key}` }, quantity });
       }

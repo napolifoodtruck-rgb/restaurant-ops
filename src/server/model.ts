@@ -8,7 +8,8 @@
 
 import type { Db } from './db.ts';
 import { blendedPrices, importMarginEdge, type ImportAnswers, type ImportedProduct, type ImportResult } from '../connectors/marginedge.ts';
-import { buildRecipes, FREE_PRODUCTS, type RecipeCard } from '../connectors/marginedgeRecipes.ts';
+import { buildRecipes, FREE_PRODUCTS, recipeId, type RecipeCard } from '../connectors/marginedgeRecipes.ts';
+import { packSize, withPackSize } from '../core/packSizes.ts';
 import { squareItemSales, squareMenuItems, squareModifierSales, type SquareCatalogObject } from '../connectors/square.ts';
 import { applyLinks, confirmLink, emptyLinkState, linkLookup, markNewDish, matchMenu, posName, type LinkQuestion, type PosMenuItem, type SoldItem } from '../core/menuLinks.ts';
 import { foldedTotals, priceFolds, type FoldedVariation } from '../core/priceVariations.ts';
@@ -214,6 +215,8 @@ export interface Model {
   folded: Map<string, FoldedVariation[]>;
   /** Managers' word on what's on the menu, by recipe id (or pos:<catalog id> for buttons with no recipe). */
   menuStatus: MenuStatusAnswer[];
+  /** Recipes still rough (R&D), by recipe id. */
+  rough: Set<string>;
 }
 
 const cache = new Map<string, { stamp: string; model: Promise<Model> }>();
@@ -277,11 +280,13 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     if (price === undefined && manual) {
       try { price = manual.price / convert(manual.per, p.baseUnit!, p.conversions); } catch {}
     }
+    // Drinks bought by the each or bottle: what one holds, assumed from its name or type when unknown.
+    const conversions = withPackSize(p.conversions, p.baseUnit!, packSize(p.name, (p as { categoryType?: string }).categoryType, p.baseUnit!));
     return {
       id: p.externalId,
       name: p.name,
       baseUnit: p.baseUnit!,
-      conversions: p.conversions,
+      conversions,
       ...(p.externalId.startsWith('free-') ? { cost: { price: 0, per: { amount: 1, unit: p.baseUnit! } } } : price !== undefined ? { cost: { price, per: { amount: 1, unit: p.baseUnit! } } } : {}),
     };
   });
@@ -393,5 +398,5 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     // A dish change already answered: a version on that button starts within a week of the suggested day.
     .filter((c) => !(c.kind === 'dishChanged' && c.catalogId && c.suggestedDate && [...linkAnswers.confirm, ...linkAnswers.newDish].some((v) => v.catalogId === c.catalogId && v.from && Math.abs(Date.parse(v.from) - Date.parse(c.suggestedDate!)) <= 7 * 86_400_000)));
 
-  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded, menuStatus: linkAnswers.menuStatus ?? [] };
+  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded, menuStatus: linkAnswers.menuStatus ?? [], rough: new Set((bookData.recipeCards ?? []).filter((c) => c.status === 'rough').map((c) => recipeId(c.name))) };
 }

@@ -154,9 +154,40 @@ export function createApp(config: AppConfig) {
     }
     if (path.startsWith('/api/order/') && await orderRoute(req, res, path)) return;
 
+    // What the home screen shows: the restaurant's name under its icon, opening full screen.
+    if (method === 'GET' && path === '/manifest.webmanifest') {
+      const r = (await db.query<{ name: string; has_icon: boolean }>('SELECT name, icon IS NOT NULL AS has_icon FROM restaurants LIMIT 1')).rows[0];
+      const name = r?.name ?? 'Kitchen';
+      res.writeHead(200, { 'content-type': 'application/manifest+json', 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' });
+      res.end(JSON.stringify({ name, short_name: name.length > 12 ? name.split(/\s+/)[0] : name, start_url: '/', scope: '/', display: 'standalone', background_color: '#000000', theme_color: '#000000',
+        ...(r?.has_icon ? { icons: [{ src: '/brand/icon', sizes: '512x512', type: 'image/png', purpose: 'any' }] } : {}) }));
+      return;
+    }
+    if (method === 'GET' && path === '/brand/icon') {
+      const r = (await db.query<{ icon: string | null }>('SELECT encode(icon, \'base64\') AS icon FROM restaurants LIMIT 1')).rows[0];
+      if (!r?.icon) throw new HttpError(404, 'No icon.');
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=3600', 'x-content-type-options': 'nosniff' });
+      res.end(Buffer.from(r.icon, 'base64'));
+      return;
+    }
+    if (method === 'POST' && path === '/api/brand/icon') {
+      const who = await signedIn(req);
+      if (!canAdminister(who)) throw new HttpError(403, 'Only the account owner or an administrator changes the icon.');
+      const b = await body(req, 2 * 1024 * 1024);
+      const m = typeof b.dataUrl === 'string' ? b.dataUrl.match(/^data:image\/png;base64,([A-Za-z0-9+/=]+)$/) : null;
+      if (!m || m[1]!.length > 1_000_000) throw new HttpError(400, 'A PNG icon, under 750 KB.');
+      await db.query('UPDATE restaurants SET icon = decode($1, \'base64\'), icon_updated_at = now() WHERE id = $2', [m[1], who.restaurantId]);
+      return send(res, 200, { ok: true });
+    }
+
     const web = WEB_FILES[path];
     if (method === 'GET' && web) {
-      const content = await readFile(new URL(web.file, WEB_DIR));
+      let content: Buffer | string = await readFile(new URL(web.file, WEB_DIR));
+      // The page carries the restaurant's name, so the home screen names it right.
+      if (web.file === 'index.html') {
+        const name = (await db.query<{ name: string }>('SELECT name FROM restaurants LIMIT 1')).rows[0]?.name ?? 'Kitchen';
+        content = content.toString('utf8').replaceAll('{{NAME}}', name.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]!)));
+      }
       res.writeHead(200, { 'content-type': web.type, 'cache-control': 'no-cache', 'content-security-policy': CSP, 'x-content-type-options': 'nosniff', 'referrer-policy': 'same-origin' });
       res.end(content);
       return;
@@ -164,8 +195,8 @@ export function createApp(config: AppConfig) {
 
     // The restaurant's own look. Public: the sign-in screens show it. (One restaurant per app for now.)
     if (method === 'GET' && path === '/api/brand') {
-      const r = (await db.query<{ name: string; has_logo: boolean; logo_updated_at: Date | null }>('SELECT name, logo IS NOT NULL AS has_logo, logo_updated_at FROM restaurants LIMIT 1')).rows[0];
-      return send(res, 200, r ? { name: r.name, logo: r.has_logo ? `/brand/logo?v=${r.logo_updated_at ? new Date(r.logo_updated_at).getTime() : 0}` : null } : { name: null, logo: null });
+      const r = (await db.query<{ name: string; has_logo: boolean; logo_updated_at: Date | null; icon_fresh: boolean }>('SELECT name, logo IS NOT NULL AS has_logo, logo_updated_at, (icon IS NOT NULL AND icon_updated_at >= coalesce(logo_updated_at, icon_updated_at)) AS icon_fresh FROM restaurants LIMIT 1')).rows[0];
+      return send(res, 200, r ? { name: r.name, logo: r.has_logo ? `/brand/logo?v=${r.logo_updated_at ? new Date(r.logo_updated_at).getTime() : 0}` : null, iconFresh: r.icon_fresh } : { name: null, logo: null });
     }
     if (method === 'GET' && path === '/brand/logo') {
       const r = (await db.query<{ logo: string | null; logo_type: string | null }>('SELECT encode(logo, \'base64\') AS logo, logo_type FROM restaurants LIMIT 1')).rows[0];

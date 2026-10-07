@@ -301,14 +301,14 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.equal((await call('POST', `/api/staff/${ownerId}/area`, { body: { area: 'kitchen' }, cookies: marcoOnExpo })).status, 403);
 
   // Recipe cards written in the app: a bar prep, a drink that uses it, linked to its button.
-  const syrup = { name: 'Simple Syrup', kind: 'barPrep', yields: [{ amount: 1, unit: 'qt' }], ingredients: [{ amount: 1, unit: 'qt', name: 'Water' }] };
+  const syrup = { name: 'Simple Syrup', kind: 'barPrep', yields: [{ amount: 1, unit: 'qt' }], ingredients: [{ amount: 1, unit: 'qt', name: 'Water' }], ready: true };
   assert.equal((await call('POST', '/api/cards', { body: { card: syrup }, cookies: marcoOnExpo })).status, 403); // managers write cards
   const unicorn = await call('POST', '/api/cards', { body: { card: { ...syrup, ingredients: [...syrup.ingredients, { amount: 1, unit: 'qt', name: 'Unicorn tears' }] } }, cookies: ownerSession });
   // The screen is told which line and which box to point at.
   assert.deepEqual([unicorn.status, unicorn.json.line, unicorn.json.field], [400, syrup.ingredients.length, 'name']);
   assert.match(unicorn.json.error, new RegExp(`^Line ${syrup.ingredients.length + 1}: “Unicorn tears” isn’t a product`));
   assert.equal((await call('POST', '/api/cards', { body: { card: syrup }, cookies: ownerSession })).status, 200);
-  const soda = { name: 'House Soda', kind: 'drink', ingredients: [{ amount: 1, unit: 'floz', name: 'Simple Syrup' }, { amount: 8, unit: 'floz', name: 'Water' }] };
+  const soda = { name: 'House Soda', kind: 'drink', ingredients: [{ amount: 1, unit: 'floz', name: 'Simple Syrup' }, { amount: 8, unit: 'floz', name: 'Water' }], ready: true };
   const button = { catalogId: 'V-SODA', itemName: 'House Soda' };
   assert.equal((await call('POST', '/api/cards', { body: { card: soda, link: [button] }, cookies: ownerSession })).status, 200);
   assert.equal((await call('POST', '/api/cards', { body: { card: { ...syrup, ingredients: [{ amount: 1, unit: 'floz', name: 'House Soda' }] }, previousName: 'Simple Syrup' }, cookies: ownerSession })).status, 400); // no loops
@@ -323,9 +323,32 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.deepEqual((typeof book === 'string' ? JSON.parse(book) : book).confirm.filter((c: any) => c.catalogId === 'V-SODA').map((c: any) => c.recipe), ['House Soda']);
   assert.equal((await call('POST', '/api/prep/stations', { body: { name: 'Bar' }, cookies: ownerSession })).status, 201);
 
+  // Rough recipes: saved half-written (lines not matched yet, no amount), for managers only until ready.
+  const rough = { name: 'Spring Spritz', kind: 'drink', ingredients: [{ amount: 2, unit: 'floz', name: 'Water' }, { amount: 0, unit: '', name: 'rhubarb shrub' }] };
+  const savedRough = (await call('POST', '/api/cards', { body: { card: rough }, cookies: ownerSession })).json;
+  assert.deepEqual([savedRough.status, savedRough.toFinish], ['rough', 1]);
+  assert.equal((await call('GET', '/api/recipes/Spring%20Spritz', { cookies: ownerSession })).json.rough, true);
+  const cookSees = await call('GET', '/api/recipes/Spring%20Spritz', { cookies: marcoOnExpo });
+  assert.deepEqual([cookSees.status, cookSees.json.error], [404, 'That recipe isn’t ready yet.']);
+  const inBook = (r: any) => [...r.kitchen, ...r.bar].some((sec: any) => sec.cards.some((c: any) => c.name === 'Spring Spritz'));
+  assert.equal(inBook((await call('GET', '/api/recipes', { cookies: marcoOnExpo })).json), false);
+  assert.equal(inBook((await call('GET', '/api/recipes', { cookies: ownerSession })).json), true);
+  const notYet = await call('POST', '/api/cards', { body: { card: { ...rough, ready: true }, previousName: 'Spring Spritz' }, cookies: ownerSession });
+  assert.deepEqual([notYet.status, notYet.json.line, notYet.json.field], [400, 1, 'name']); // ready needs every line finished
+  const done = (await call('POST', '/api/cards', { body: { card: { ...rough, ingredients: [rough.ingredients[0], { amount: 3, unit: 'floz', name: 'Water' }], ready: true }, previousName: 'Spring Spritz' }, cookies: ownerSession })).json;
+  assert.equal(done.status, 'ready');
+  assert.equal((await call('GET', '/api/recipes/Spring%20Spritz', { cookies: marcoOnExpo })).status, 200);
+  // A ready recipe stays ready through an edit that keeps it finished, and goes back to rough when a line isn't.
+  assert.equal((await call('POST', '/api/cards', { body: { card: { ...rough, ingredients: [rough.ingredients[0], { amount: 4, unit: 'floz', name: 'Water' }] }, previousName: 'Spring Spritz' }, cookies: ownerSession })).json.status, 'ready');
+  assert.equal((await call('POST', '/api/cards', { body: { card: rough, previousName: 'Spring Spritz' }, cookies: ownerSession })).json.status, 'rough');
+  // Yields: one batch said several ways opens every weight and volume unit wherever it's used.
+  await call('POST', '/api/cards', { body: { card: { name: 'Marinara', kind: 'prep', yields: [{ amount: 1, unit: 'batch' }, { amount: 12, unit: 'qt' }, { amount: 6, unit: 'kg' }, { amount: 30, unit: 'ball' }], ingredients: [{ amount: 1, unit: 'qt', name: 'Water' }] } }, cookies: ownerSession });
+  const marinara = (await call('GET', '/api/cards', { cookies: ownerSession })).json.allCards.find((c: any) => c.name === 'Marinara');
+  for (const u of ['batch', 'qt', 'kg', 'ball', 'oz', 'lb', 'floz', 'cup', 'g']) assert.ok(marinara.units.includes(u), u);
+
   // Tidy names: drinks take their Square name, preps are capitalized, references follow.
-  await call('POST', '/api/cards', { body: { card: { name: 'lemon juice', kind: 'barPrep', yields: [{ amount: 1, unit: 'qt' }], ingredients: [{ amount: 1, unit: 'qt', name: 'Water' }] } }, cookies: ownerSession });
-  await call('POST', '/api/cards', { body: { card: { name: 'house lemonade', kind: 'drink', ingredients: [{ amount: 2, unit: 'floz', name: 'lemon juice' }] }, link: [{ catalogId: 'V-LEM', itemName: 'Lemonade' }] }, cookies: ownerSession });
+  await call('POST', '/api/cards', { body: { card: { name: 'lemon juice', kind: 'barPrep', yields: [{ amount: 1, unit: 'qt' }], ingredients: [{ amount: 1, unit: 'qt', name: 'Water' }], ready: true } }, cookies: ownerSession });
+  await call('POST', '/api/cards', { body: { card: { name: 'house lemonade', kind: 'drink', ingredients: [{ amount: 2, unit: 'floz', name: 'lemon juice' }], ready: true }, link: [{ catalogId: 'V-LEM', itemName: 'Lemonade' }] }, cookies: ownerSession });
   const tidy = (await call('GET', '/api/cards/tidy', { cookies: ownerSession })).json.proposals;
   assert.deepEqual(tidy.map((t: any) => [t.from, t.to]), [['lemon juice', 'Lemon Juice'], ['house lemonade', 'Lemonade']]);
   assert.equal((await call('POST', '/api/cards/tidy', { body: { renames: tidy.map((t: any) => ({ ...t, from: 'stale' })) }, cookies: ownerSession })).status, 409);
