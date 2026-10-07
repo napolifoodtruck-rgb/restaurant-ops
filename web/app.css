@@ -822,3 +822,14 @@ button.donut-row { display: flex; min-width: 0; }
 .why-pop { display: none; position: absolute; left: -8px; top: 30px; z-index: 30; width: min(320px, 70vw); padding: 10px 12px; background: var(--card); color: var(--ink); border: 1px solid var(--line); box-shadow: 0 6px 18px rgba(0,0,0,.12); font-size: 13px; line-height: 1.4; font-weight: 400; text-align: left; white-space: normal; }
 .why-wrap.open .why-pop { display: block; }
 @media (hover: hover) { .why-wrap:hover .why-pop { display: block; } }
+
+/* Online ordering: pickup windows */
+.wlist { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
+.wcell { display: flex; flex-direction: column; gap: 4px; padding: 8px; border: 1px solid var(--soft); }
+.wcell.past { opacity: .5; }
+.wcell input.amount, .wgrid input.amount { width: 64px; height: 36px; text-align: center; }
+.wgrid-wrap { overflow-x: auto; }
+.wgrid { border-collapse: collapse; }
+.wgrid th, .wgrid td { padding: 4px 6px; text-align: center; }
+.wgrid tbody th { text-align: right; white-space: nowrap; }
+.wgrid tr.all td, .wgrid tr.all th { border-bottom: 1px solid var(--line); padding-bottom: 8px; }
