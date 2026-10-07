@@ -72,8 +72,34 @@ const cartTotal = () => cart.reduce((s, l) => s + linePrice(l), 0);
 /** Windows that can take an order of this many pizzas right now, first first. */
 const fitting = (pizzas) => M.windows.filter((w) => w.open && w.left >= pizzas);
 
-function header() {
-  return h('header', { class: 'top' }, brand.logo ? h('img', { src: brand.logo, alt: brand.name ?? '' }) : h('div', { class: 'word', text: brand.name ?? M?.restaurant ?? '' }));
+/** Links in the header, next to the cart, to Napoli's other pages. An entry without a link isn't shown. */
+const NAV = [
+  { label: 'Dine-in menu', href: null },
+  { label: 'Bar menu', href: null },
+  // Square's own eGift card page for this account.
+  { label: 'Gift cards', href: 'https://squareup.com/gift/7Y869N2QJ43W5/order' },
+];
+/** A wide photo under the header, like the top of the Square Online site. Unset: no banner. */
+const HEADER_IMAGE = null;
+const BAG = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 8h14l-1.2 12.1a1 1 0 0 1-1 .9H7.2a1 1 0 0 1-1-.9L5 8Z"/><path d="M9 8V6.5a3 3 0 0 1 6 0V8"/></svg>';
+
+/** `wide`: the menu's width, so the logo lines up with the first item. `cart`: show the cart button
+ *  (not while paying, when the way back is "Change the order"). */
+function header({ wide = false, cart: withCart = true } = {}) {
+  const links = NAV.filter((n) => n.href);
+  const link = (n) => h('a', { href: n.href, target: '_blank', rel: 'noopener', text: n.label });
+  const bag = withCart ? h('button', { type: 'button', class: 'bag', 'aria-label': `Your order, ${cartCount()} item${cartCount() === 1 ? '' : 's'}`, onclick: () => (cart.length ? cartView() : menuView()) }) : null;
+  if (bag) { const icon = h('span', { class: 'icon' }); icon.innerHTML = BAG; bag.append(icon, cartCount() ? h('span', { class: 'count', text: String(cartCount()) }) : null); }
+  return [
+    h('header', { class: 'top' },
+      h('div', { class: `top-in${wide ? ' wide' : ''}` },
+        h('a', { class: 'brand', href: '/order', 'aria-label': `${brand.name ?? M?.restaurant ?? ''} online ordering` },
+          brand.logo ? h('img', { src: brand.logo, alt: brand.name ?? '' }) : h('span', { class: 'word', text: brand.name ?? M?.restaurant ?? '' })),
+        links.length ? h('nav', { class: 'site', 'aria-label': 'Napoli' }, links.map(link)) : null,
+        links.length ? h('details', { class: 'site-menu' }, h('summary', { 'aria-label': 'More pages', text: '☰' }), h('div', { class: 'drop' }, links.map(link))) : null,
+        bag)),
+    HEADER_IMAGE && wide ? h('div', { class: 'banner' }, h('img', { src: HEADER_IMAGE, alt: '' })) : null,
+  ];
 }
 function partialNotice() {
   return h('div', { class: 'notice' }, h('b', { text: PARTIAL_TITLE }), ' ', PARTIAL_BODY, h('div', { class: 'small', style: 'margin-top:8px', text: IN_PERSON }));
@@ -124,23 +150,18 @@ function pickupChoice(redraw) {
       type: 'button', class: x.starts === chosen.starts ? 'on' : '', 'aria-pressed': String(x.starts === chosen.starts), text: x.label, onclick: () => pick(x.starts) }))) : null,
     moved ? h('div', { class: 'small', text: `${M.windows.find((x) => x.starts === later)?.label ?? 'That time'} has no room for this order anymore, so we moved it to ${chosen.label}.` }) : null);
 }
-function cartBar() {
-  if (!cart.length) return null;
-  return h('div', { class: 'cartbar' }, h('button', { class: 'btn dark', onclick: cartView }, `View order · ${cartCount()} · ${money(cartTotal())}`));
-}
 
 // ------------------------------------------------------------------ menu
 
 function menuView() {
   const cats = [...new Set(M.items.map((x) => x.category))];
   const slug = (c) => `cat-${c.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
-  show(header(), h('div', { class: 'wrap menu' },
+  show(header({ wide: true }), h('div', { class: 'wrap menu' },
     partialNotice(),
     pickupLine(),
     cats.length > 1 ? h('nav', { class: 'cats', 'aria-label': 'Menu sections' }, cats.map((c) => h('a', { href: `#${slug(c)}`, text: c }))) : null,
     M.items.length ? cats.map((c) => [h('h2', { id: slug(c), text: c }), h('div', { class: 'items' }, M.items.filter((x) => x.category === c).map(itemCard))])
-      : h('p', { class: 'muted', text: 'The online menu isn’t up yet.' })),
-    cartBar());
+      : h('p', { class: 'muted', text: 'The online menu isn’t up yet.' })));
   followSections();
 }
 /** Underline the section being read in the sticky section bar. */
@@ -152,7 +173,7 @@ function followSections() {
       for (const a of links) a.classList.toggle('on', a.getAttribute('href') === `#${e.target.id}`);
       document.querySelector('.cats a.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
-  }, { rootMargin: '-70px 0px -70% 0px' });
+  }, { rootMargin: '-150px 0px -65% 0px' });
   for (const a of links) { const sec = document.querySelector(a.getAttribute('href')); if (sec) seen.observe(sec); }
 }
 
@@ -347,7 +368,7 @@ async function payView(order) {
   const err = h('div', { class: 'error' });
   const pay = h('button', { class: 'btn dark wide', text: `Pay ${money2(order.total + order.tip)}`, disabled: true });
   const cardBox = h('div', { id: 'card-container' });
-  show(header(), h('div', { class: 'wrap' },
+  show(header({ cart: false }), h('div', { class: 'wrap' },
     h('h1', { text: 'Payment' }),
     h('div', { class: 'card' },
       h('div', { class: 'row' }, h('span', { class: 'grow', text: `Pickup tonight at ${order.window.label}` }), h('span', { class: 'strong', text: order.name })),
