@@ -35,6 +35,8 @@
  *   GET  /api/recipes[/:name]    the recipe book, for anyone signed in: see recipes.ts
  *   /api/orders/…                vendor orders: drafted, approved by a manager, then sent: see orders.ts
  *   /api/online/…                online ordering: what's sold online, pickup windows (manager or up): see online.ts
+ *   GET  /order, /order.js, /order.css   the customers' ordering page (public)
+ *   /api/order/…                 customers ordering online: menu, checkout, payment (public): see onlineCheckout.ts
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -56,6 +58,7 @@ import { SNOOZE_MORNING, todayView } from './today.ts';
 import { cardRoutes } from './cards.ts';
 import { orderRoutes } from './orders.ts';
 import { onlineRoutes } from './online.ts';
+import { checkoutRoutes, type CheckoutSettings } from './onlineCheckout.ts';
 import { reportRoutes } from './reports.ts';
 import { costRoutes } from './costs.ts';
 import { ideaRoutes } from './ideas.ts';
@@ -70,6 +73,8 @@ export interface AppConfig {
   /** Secure cookies (true everywhere but local development). */
   secureCookies: boolean;
   sync?: SyncSettings;
+  /** Square for online orders: unset = the ordering page shows but doesn't take orders. */
+  checkout?: CheckoutSettings;
 }
 
 const SESSION_COOKIE = 'ops_session';
@@ -90,8 +95,19 @@ const WEB_FILES: Record<string, { file: string; type: string }> = {
   '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
   '/app.css': { file: 'app.css', type: 'text/css; charset=utf-8' },
 };
+// The customers' ordering page: public, and the only page Square's card form runs on.
+const ORDER_FILES: Record<string, { file: string; type: string }> = {
+  '/order': { file: 'order.html', type: 'text/html; charset=utf-8' },
+  '/order.js': { file: 'order.js', type: 'text/javascript; charset=utf-8' },
+  '/order.css': { file: 'order.css', type: 'text/css; charset=utf-8' },
+};
 const WEB_DIR = new URL('../../web/', import.meta.url);
 const CSP = "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://*.s3.amazonaws.com https://*.s3.us-west-2.amazonaws.com https://*.squarecdn.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+
+// Square's Web Payments SDK loads from its CDN and puts the card fields in its own frames. The new
+// website may show the page in a frame of its own.
+const SQUARE_JS = 'https://web.squarecdn.com https://sandbox.web.squarecdn.com';
+const ORDER_CSP = `default-src 'self'; script-src 'self' ${SQUARE_JS}; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com ${SQUARE_JS}; font-src https://fonts.gstatic.com https://*.squarecdn.com; img-src 'self' data: https://*.s3.amazonaws.com https://*.s3.us-west-2.amazonaws.com https://*.squarecdn.com; frame-src https://*.squarecdn.com https://*.squareup.com https://*.squareupsandbox.com; connect-src 'self' https://*.squarecdn.com https://*.squareup.com https://*.squareupsandbox.com; frame-ancestors 'self' https://napolicarrboro.com https://*.napolicarrboro.com; base-uri 'none'; form-action 'self'`;
 
 function sameSecret(a: string, b: string): boolean {
   const x = Buffer.from(a), y = Buffer.from(b);
@@ -100,6 +116,8 @@ function sameSecret(a: string, b: string): boolean {
 
 export function createApp(config: AppConfig) {
   const { db, secureCookies } = config;
+
+  const orderRoute = checkoutRoutes(db, config.checkout);
 
   async function signedIn(req: IncomingMessage): Promise<SignedIn> {
     const who = await sessionFor(db, cookies(req)[SESSION_COOKIE]);
@@ -126,6 +144,15 @@ export function createApp(config: AppConfig) {
         if (host !== req.headers.host) throw new HttpError(403, 'Cross-site request.');
       }
     }
+
+    const orderPage = ORDER_FILES[path];
+    if (method === 'GET' && orderPage) {
+      const content = await readFile(new URL(orderPage.file, WEB_DIR));
+      res.writeHead(200, { 'content-type': orderPage.type, 'cache-control': 'no-cache', 'content-security-policy': ORDER_CSP, 'x-content-type-options': 'nosniff', 'referrer-policy': 'same-origin' });
+      res.end(content);
+      return;
+    }
+    if (path.startsWith('/api/order/') && await orderRoute(req, res, path)) return;
 
     const web = WEB_FILES[path];
     if (method === 'GET' && web) {
