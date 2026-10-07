@@ -17,13 +17,19 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   t.after(() => db!.close());
   await migrate(db!, fileURLToPath(new URL('../db/migrations', import.meta.url)));
 
-  // Square, faked: 7.5% tax on orders; a card token ending "declined" is declined.
+  // Square, faked: 7.5% tax on orders; a card token ending "declined" is declined; payments in `refunds` were refunded that much.
   const square: { path: string; body: any }[] = [];
+  const lookups: URL[] = [];
+  const refunds = new Map<string, number>();
   const fakeFetch: Fetch = async (url, init) => {
     const path = new URL(url).pathname;
+    const reply = (status: number, data: unknown) => ({ ok: status < 300, status, json: async () => data, text: async () => JSON.stringify(data) });
+    if (init.method === 'GET' && path === '/v2/payments') {
+      lookups.push(new URL(url));
+      return reply(200, { payments: [...refunds].map(([id, refunded]) => ({ id, total_money: { amount: 4000 }, refunded_money: { amount: refunded } })) });
+    }
     const body = JSON.parse(init.body ?? '{}');
     square.push({ path, body });
-    const reply = (status: number, data: unknown) => ({ ok: status < 300, status, json: async () => data, text: async () => JSON.stringify(data) });
     if (path === '/v2/orders') {
       const subtotal = body.order.line_items.reduce((s: number, l: any) => s + Number(l.quantity) * (l.base_price_money.amount + l.modifiers.reduce((m: number, x: any) => m + x.base_price_money.amount, 0)), 0);
       const tax = Math.round(subtotal * 0.075);
@@ -38,7 +44,7 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   const today = localNow('America/New_York').date;
   let time = '16:00';
   const app = createApp({ db: db!, setupToken: 'setup-secret', secureCookies: false,
-    checkout: { token: 'sandbox-token', applicationId: 'sandbox-app', locationId: 'loc-1', environment: 'sandbox', fetch: fakeFetch, now: () => ({ date: today, time }) } });
+    checkout: { token: 'sandbox-token', applicationId: 'sandbox-app', locationId: 'loc-1', environment: 'sandbox', fetch: fakeFetch, now: () => ({ date: today, time }), refundCheckMs: 0 } });
   const server = createServer(app);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());
@@ -154,4 +160,32 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   time = '17:05';
   menu = (await customer('GET', '/api/order/menu')).json;
   assert.deepEqual(menu.windows.slice(0, 3).map((w: any) => w.open), [false, false, true]);
+
+  // Refunded in full in Square: the order's pizzas go back to its window. A part refund keeps them.
+  const thirdPayment = (await db!.query<{ square_payment_id: string }>('SELECT square_payment_id FROM online_orders WHERE id = $1', [third.json.id])).rows[0]!.square_payment_id;
+  const firstPayment = (await db!.query<{ square_payment_id: string }>('SELECT square_payment_id FROM online_orders WHERE id = $1', [held.json.id])).rows[0]!.square_payment_id;
+  const leftBefore = (await customer('GET', '/api/order/menu')).json.windows[1].left;
+  refunds.set(thirdPayment, 4000).set(firstPayment, 500);
+  menu = (await customer('GET', '/api/order/menu')).json;
+  assert.equal(menu.windows[1].left, leftBefore + 1);
+  assert.equal(lookups.at(-1)!.searchParams.get('location_id'), 'loc-1');
+  assert.equal((await customer('GET', `/api/order/${third.json.id}`)).json.status, 'refunded');
+  assert.equal((await customer('GET', `/api/order/${held.json.id}`)).json.status, 'paid');
+
+  // Anyone on shift can pause online orders; customers can't start an order until it ends or someone resumes.
+  assert.deepEqual((await call('GET', '/api/online/pause')).json.paused, null);
+  assert.equal((await call('POST', '/api/online/pause', { minutes: 7 })).status, 400);
+  const paused = (await call('POST', '/api/online/pause', { minutes: 30 })).json.paused;
+  assert.equal(paused.tonight, false);
+  menu = (await customer('GET', '/api/order/menu')).json;
+  assert.deepEqual([menu.open, Boolean(menu.paused.until.label)], [false, true]);
+  const whilePaused = await customer('POST', '/api/order/checkout', { ...order, window: '18:00', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
+  assert.deepEqual([whilePaused.status, /very busy/.test(whilePaused.json.error)], [409, true]);
+  assert.equal((await call('POST', '/api/online/pause', { tonight: true })).json.paused.tonight, true);
+  menu = (await customer('GET', '/api/order/menu')).json;
+  assert.deepEqual([menu.open, menu.paused.until], [false, null]);
+  assert.equal((await call('POST', '/api/online/pause', { resume: true })).json.paused, null);
+  menu = (await customer('GET', '/api/order/menu')).json;
+  assert.deepEqual([menu.open, menu.paused], [true, null]);
+  assert.equal((await customer('POST', '/api/order/checkout', { ...order, window: '18:00', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 })).status, 201);
 });

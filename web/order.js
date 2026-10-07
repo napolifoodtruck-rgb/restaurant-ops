@@ -77,6 +77,7 @@ function finishSteps() {
 }
 function pickupLine() {
   const pizzas = Math.max(1, cartPizzas());
+  if (M.paused) return h('div', { class: 'pickup closed' }, h('span', { class: 'strong', text: M.paused.until ? `We’re very busy right now. Online orders open again at ${M.paused.until.label}.` : 'We’ve stopped taking online orders for tonight.' }));
   if (!M.open) return h('div', { class: 'pickup closed' }, h('span', { class: 'strong', text: 'Online ordering is closed tonight.' }));
   const w = fitting(pizzas)[0];
   if (!w) {

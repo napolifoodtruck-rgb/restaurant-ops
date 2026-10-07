@@ -8,20 +8,26 @@
  *   GET  /api/order/:id           where an order stands, for the confirmation page
  *
  * The cart is priced again here from the catalog, never taken from the browser. A hold lasts
- * HOLD_MINUTES; paying after it lapses works only if the window still has room.
+ * HOLD_MINUTES; paying after it lapses works only if the window still has room. While online orders
+ * are paused, no new order starts, but one already at checkout can still be paid.
+ *
+ * A paid order refunded in full in Square (or cancelled from the POS, which refunds it) gives its
+ * pizzas back: tonight's payments are looked up again at most once every REFUND_CHECK_MS, as
+ * customers load the menu or check out.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createHash } from 'node:crypto';
 import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
-import { loadOnlineMenu, loadWindows, localNow } from './online.ts';
+import { loadOnlineMenu, loadPause, loadWindows, localNow } from './online.ts';
 import { CartError, priceCart, publicMenu, tipProblem, type CartLineIn } from '../core/onlineCart.ts';
 import { fitOrder, fittingWindows, isWindowStart } from '../core/pickupWindows.ts';
 import { SquareCheckout, type SquareEnvironment } from '../connectors/squareCheckout.ts';
 import { SquareApiError, type Fetch } from '../connectors/squareApi.ts';
 
 export const HOLD_MINUTES = 10;
+export const REFUND_CHECK_MS = 60_000;
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export interface CheckoutSettings {
@@ -36,6 +42,8 @@ export interface CheckoutSettings {
   fetch?: Fetch;
   /** For tests: the restaurant's local date and time. */
   now?: (timezone: string) => { date: string; time: string };
+  /** For tests: how often to look for refunds (default REFUND_CHECK_MS). */
+  refundCheckMs?: number;
 }
 
 /** Ready to take payments: all three are set. */
@@ -59,7 +67,7 @@ export function rateLimiter(max: number, perMs: number) {
 }
 
 const clientOf = (req: IncomingMessage) => String(req.headers['x-forwarded-for'] ?? '').split(',')[0]!.trim() || req.socket.remoteAddress || '?';
-const clock = (hhmm: string) => { const [h, m] = hhmm.split(':').map(Number); return `${h! % 12 || 12}:${String(m).padStart(2, '0')} pm`; };
+const clock = (hhmm: string) => { const [h, m] = hhmm.split(':').map(Number); return `${h! % 12 || 12}:${String(m).padStart(2, '0')} ${h! < 12 ? 'am' : 'pm'}`; };
 const hhmm = (t: string) => t.slice(0, 5);
 
 interface OrderRow { id: string; day: string; window_starts: string; pizzas: number; status: string; hold_until: string; customer_name: string; customer_phone: string; customer_email: string | null; lines: unknown; subtotal_cents: number; tax_cents: number; total_cents: number; tip_cents: number; square_order_id: string | null; receipt_url: string | null; still_held: boolean }
@@ -90,6 +98,23 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
     return r;
   }
 
+  // Paid orders refunded in full in Square give their pizzas back. A failed look-up never stops anyone ordering.
+  let refundsCheckedAt = -Infinity;
+  async function noticeRefunds(restaurantId: string, day: string) {
+    if (!ready || Date.now() - refundsCheckedAt < (settings.refundCheckMs ?? REFUND_CHECK_MS)) return;
+    refundsCheckedAt = Date.now();
+    const paid = (await db.query<{ id: string; square_payment_id: string; paid_at: Date | string }>("SELECT id, square_payment_id, paid_at FROM online_orders WHERE restaurant_id = $1 AND day = $2 AND status = 'paid'", [restaurantId, day])).rows;
+    if (!paid.length) return;
+    const since = new Date(Math.min(...paid.map((o) => new Date(o.paid_at).getTime())) - 10 * 60_000).toISOString();
+    try {
+      const refunded = new Set((await ready.square.paymentsSince(ready.locationId, since)).filter((p) => p.refunded > 0 && p.refunded >= p.total).map((p) => p.id));
+      const ids = paid.filter((o) => refunded.has(o.square_payment_id)).map((o) => o.id);
+      if (ids.length) await db.query("UPDATE online_orders SET status = 'refunded', refunded_at = now() WHERE id IN (SELECT jsonb_array_elements_text($1::jsonb)::uuid) AND status = 'paid'", [JSON.stringify(ids)]);
+    } catch (err) {
+      console.error(`online orders: couldn’t check for refunds: ${(err as Error).message}`);
+    }
+  }
+
   async function loadOrder(id: string): Promise<OrderRow | undefined> {
     return (await db.query<OrderRow>('SELECT id, day::text AS day, window_starts::text AS window_starts, pizzas, status, hold_until, customer_name, customer_phone, customer_email, lines, subtotal_cents, tax_cents, total_cents, tip_cents, square_order_id, receipt_url, hold_until > now() AS still_held FROM online_orders WHERE id = $1', [id])).rows[0];
   }
@@ -104,13 +129,17 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       const r = await restaurant();
       const now = nowIn(r.timezone);
       const { menu } = await loadOnlineMenu(db, r.id, now.date);
+      await noticeRefunds(r.id, now.date);
       const windows = await loadWindows(db, r.id, now.date);
       const fit = fitOrder(windows, 1, now.time);
+      const pause = await loadPause(db, r.id, r.timezone);
       return send(res, 200, {
         restaurant: r.name,
         today: now.date,
         now: now.time,
-        open: Boolean(ready) && fit.kind !== 'closed',
+        open: Boolean(ready) && fit.kind !== 'closed' && !pause,
+        // Paused for a busy spell: back at that time, or not again tonight.
+        paused: pause ? { until: pause.tonight ? null : { starts: pause.untilTime, label: clock(pause.untilTime) } } : null,
         items: publicMenu(menu),
         // How much room each window has left, so the cart can show the earliest pickup as it fills.
         windows: windows.map((w) => ({ starts: w.starts, ends: w.ends, label: clock(w.starts), left: w.left, open: fittingWindows([w], 0, now.time).length > 0 })),
@@ -132,6 +161,8 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       const e164 = `+1${digits.slice(-10)}`;
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'That email doesn’t look right.');
       if (b.understood !== true) throw new HttpError(400, 'Please confirm you know the pizzas are partially cooked, to finish at home.');
+      const pause = await loadPause(db, r.id, r.timezone);
+      if (pause) throw new HttpError(409, pause.tonight ? 'Sorry, we’ve stopped taking online orders for tonight.' : `Sorry, we’re very busy right now. We’ll take online orders again from ${clock(pause.untilTime)}.`);
       if (typeof b.window !== 'string' || !isWindowStart(b.window)) throw new HttpError(400, 'Pick a pickup time.');
       if (!Array.isArray(b.lines)) throw new HttpError(400, 'Your cart is empty.');
 
@@ -148,6 +179,7 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       if (tipBad) throw new HttpError(400, tipBad);
 
       await db.query("UPDATE online_orders SET status = 'expired' WHERE restaurant_id = $1 AND status = 'held' AND hold_until < now() - interval '1 hour'", [r.id]);
+      await noticeRefunds(r.id, now.date);
       const windows = await loadWindows(db, r.id, now.date);
       const fit = fitOrder(windows, cart.pizzas, now.time);
       if (fit.kind === 'tooBig') throw new HttpError(409, `That’s more pizzas than we can make for one pickup online (${fit.mostAnyWindowTakes} at most). Please call us and we’ll sort it out.`);
