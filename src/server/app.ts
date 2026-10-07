@@ -701,9 +701,11 @@ export function createApp(config: AppConfig) {
     try {
       await route(req, res);
     } catch (err) {
-      if (err instanceof HttpError) return send(res, err.status, { error: err.message });
-      console.error(err);
-      send(res, 500, { error: 'Something went wrong on our side.' });
+      if (err instanceof HttpError) return send(res, err.status, { error: err.message, ...(err.details ?? {}) });
+      // A short reference, shown on screen and in the log, so a screenshot finds the log line.
+      const ref = Math.random().toString(36).slice(2, 7).toUpperCase();
+      console.error(`[error ${ref}] ${req.method} ${(req.url ?? '').split('?')[0]}`, err);
+      send(res, 500, { error: `Something went wrong on our side (ref ${ref}). Nothing on your screen was lost: try again in a moment.`, ref });
     }
   };
 }

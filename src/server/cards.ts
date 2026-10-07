@@ -66,21 +66,25 @@ function toStored(c: CardInput, before?: RecipeCard): RecipeCard {
   };
 }
 
-function cardProblem(c: any, model: Model, cards: RecipeCard[], previousName?: string): string | undefined {
-  if (!c || typeof c.name !== 'string' || !c.name.trim()) return 'Name the recipe.';
-  if (!['dish', 'drink', 'prep', 'barPrep'].includes(c.kind)) return 'Is it a dish, a drink or a prep?';
-  if (!Array.isArray(c.ingredients)) return 'Missing ingredients.';
+/** What's wrong with a card, and the ingredient line it's on (counted in the lines sent), if it's one line. */
+type CardProblem = { message: string; line?: number; field?: 'amount' | 'unit' | 'name' };
+function cardProblem(c: any, model: Model, cards: RecipeCard[], previousName?: string): CardProblem | undefined {
+  const p = (message: string, line?: number, field?: CardProblem['field']): CardProblem => ({ message, ...(line !== undefined ? { line } : {}), ...(field ? { field } : {}) });
+  if (!c || typeof c.name !== 'string' || !c.name.trim()) return p('Name the recipe.');
+  if (!['dish', 'drink', 'prep', 'barPrep'].includes(c.kind)) return p('Is it a dish, a drink or a prep?');
+  if (!Array.isArray(c.ingredients)) return p('Missing ingredients.');
   const key = cardKey(c.name);
-  if (cards.some((x) => cardKey(x.name) === key && (!previousName || cardKey(previousName) !== key))) return `There's already a recipe called ${c.name.trim()}.`;
-  if ((c.kind === 'prep' || c.kind === 'barPrep') && !(Array.isArray(c.yields) && c.yields.some((y: any) => y?.amount > 0 && y?.unit))) return 'Say what a batch makes (e.g. 2 qt).';
+  if (cards.some((x) => cardKey(x.name) === key && (!previousName || cardKey(previousName) !== key))) return p(`There's already a recipe called ${c.name.trim()}. Pick another name, or open that one to change it.`);
+  if ((c.kind === 'prep' || c.kind === 'barPrep') && !(Array.isArray(c.yields) && c.yields.some((y: any) => y?.amount > 0 && y?.unit))) return p('Say what a batch makes (e.g. 2 qt).');
   const products = new Set(model.products.map((p) => cardKey(p.name)));
   const cardNames = new Set(cards.filter((x) => !previousName || cardKey(x.name) !== cardKey(previousName)).map((x) => cardKey(x.name)));
-  for (const i of c.ingredients) {
-    if (typeof i?.name !== 'string' || !i.name.trim()) return 'Each line needs what goes in.';
-    if (!(Number(i.amount) > 0)) return `How much ${i.name}?`;
-    if (typeof i.unit !== 'string' || !i.unit) return `${i.name}: in what unit?`;
-    if (cardKey(i.name) === key) return 'A recipe can’t use itself.';
-    if (!products.has(cardKey(i.name)) && !cardNames.has(cardKey(i.name))) return `${i.name} isn’t a product on your invoices or another recipe. Pick it from the list.`;
+  for (const [n, i] of (c.ingredients as any[]).entries()) {
+    const where = `Line ${n + 1}`;
+    if (typeof i?.name !== 'string' || !i.name.trim()) return p(`${where} has an amount but nothing that goes in. Fill it in or remove the line.`, n, 'name');
+    if (!(Number(i.amount) > 0)) return p(`${where}, ${i.name}: how much? Write the amount as 2, 1.5, 1 1/2 or ½.`, n, 'amount');
+    if (typeof i.unit !== 'string' || !i.unit) return p(`${where}, ${i.name}: in what unit?`, n, 'unit');
+    if (cardKey(i.name) === key) return p(`${where}: a recipe can’t use itself.`, n, 'name');
+    if (!products.has(cardKey(i.name)) && !cardNames.has(cardKey(i.name))) return p(`${where}: “${i.name}” isn’t a product on your invoices or another recipe. Pick it from the list as you type.`, n, 'name');
   }
   // No loops through other cards: this card can't go into anything it uses.
   const byKey = new Map(cards.map((x) => [cardKey(x.name), x]));
@@ -92,7 +96,7 @@ function cardProblem(c: any, model: Model, cards: RecipeCard[], previousName?: s
     seen.add(k);
     return (byKey.get(k)?.ingredients ?? []).some((i) => walk(i.name));
   };
-  if (c.ingredients.some((i: any) => byKey.has(cardKey(i.name)) && walk(i.name))) return 'That would make a loop: one of those recipes already uses this one.';
+  if (c.ingredients.some((i: any) => byKey.has(cardKey(i.name)) && walk(i.name))) return p('That would make a loop: one of those recipes already uses this one.');
   return undefined;
 }
 
@@ -316,7 +320,7 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     for (const ch of list) {
       const prev = typeof ch.previousName === 'string' ? ch.previousName : undefined;
       const problem = cardProblem(ch.card, model, cards, prev);
-      if (problem) throw new HttpError(400, list.length > 1 ? `${ch.card?.name ?? 'A recipe'}: ${problem}` : problem);
+      if (problem) throw new HttpError(400, list.length > 1 ? `${ch.card?.name ?? 'A recipe'}: ${problem.message}` : problem.message, list.length > 1 ? undefined : { ...(problem.line !== undefined ? { line: problem.line } : {}), ...(problem.field ? { field: problem.field } : {}) });
       // Later cards in a batch may use earlier ones.
       cards = [...cards.filter((c) => cardKey(c.name) !== cardKey(prev ?? ch.card.name)), toStored(ch.card)];
     }

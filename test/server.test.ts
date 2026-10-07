@@ -303,7 +303,10 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   // Recipe cards written in the app: a bar prep, a drink that uses it, linked to its button.
   const syrup = { name: 'Simple Syrup', kind: 'barPrep', yields: [{ amount: 1, unit: 'qt' }], ingredients: [{ amount: 1, unit: 'qt', name: 'Water' }] };
   assert.equal((await call('POST', '/api/cards', { body: { card: syrup }, cookies: marcoOnExpo })).status, 403); // managers write cards
-  assert.equal((await call('POST', '/api/cards', { body: { card: { ...syrup, ingredients: [{ amount: 1, unit: 'qt', name: 'Unicorn tears' }] } }, cookies: ownerSession })).status, 400);
+  const unicorn = await call('POST', '/api/cards', { body: { card: { ...syrup, ingredients: [...syrup.ingredients, { amount: 1, unit: 'qt', name: 'Unicorn tears' }] } }, cookies: ownerSession });
+  // The screen is told which line and which box to point at.
+  assert.deepEqual([unicorn.status, unicorn.json.line, unicorn.json.field], [400, syrup.ingredients.length, 'name']);
+  assert.match(unicorn.json.error, new RegExp(`^Line ${syrup.ingredients.length + 1}: “Unicorn tears” isn’t a product`));
   assert.equal((await call('POST', '/api/cards', { body: { card: syrup }, cookies: ownerSession })).status, 200);
   const soda = { name: 'House Soda', kind: 'drink', ingredients: [{ amount: 1, unit: 'floz', name: 'Simple Syrup' }, { amount: 8, unit: 'floz', name: 'Water' }] };
   const button = { catalogId: 'V-SODA', itemName: 'House Soda' };

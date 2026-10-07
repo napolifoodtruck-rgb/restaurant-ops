@@ -58,6 +58,31 @@ function working(on) {
   else document.body.classList.remove('working');
 }
 
+/** What to say when the server answered with an error and no reason (a restart, a deploy, a time-out). */
+function failText(status) {
+  if (status === 401) return 'You’re signed out (error 401). Sign in again; this screen wasn’t saved.';
+  if (status === 403) return 'This sign-in isn’t allowed to do that (error 403).';
+  if (status === 404) return 'That’s no longer there (error 404). Go back and reload.';
+  if (status === 413) return 'That’s too big to save in one go (error 413).';
+  if (status >= 500) return `The app didn’t answer (error ${status}). It may be updating: wait a minute and try again. Nothing on this screen was lost.`;
+  return `Didn’t work (error ${status}). Try again.`;
+}
+
+/** An amount as cooks write it: 2, 1.5, 1,5, .5, 1/2, 1 1/2, ½, 1½. NaN when it can't be read; '' when empty. */
+const FRACTIONS = { '½': 0.5, '⅓': 1 / 3, '⅔': 2 / 3, '¼': 0.25, '¾': 0.75, '⅛': 0.125, '⅜': 0.375, '⅝': 0.625, '⅞': 0.875, '⅕': 0.2 };
+function parseAmount(text) {
+  const t = String(text ?? '').trim().replace(/(\d),(\d)/g, '$1.$2').replace(/(\d)\s*-\s*(\d+\s*\/)/, '$1 $2').replace(/\s+/g, ' ');
+  if (!t) return '';
+  const m = t.match(/^(\d*\.?\d+)?\s*(?:([½⅓⅔¼¾⅛⅜⅝⅞⅕])|(\d+)\s*\/\s*(\d+))?$/);
+  if (!m || (!m[1] && !m[2] && !m[3])) return NaN;
+  const whole = m[1] ? Number(m[1]) : 0;
+  const frac = m[2] ? FRACTIONS[m[2]] : m[3] ? Number(m[3]) / Number(m[4]) : 0;
+  if (m[3] && !(Number(m[4]) > 0)) return NaN;
+  // "1 1/2" is one and a half; a bare "3/4" is three quarters.
+  const v = whole + frac;
+  return Number.isFinite(v) ? v : NaN;
+}
+
 async function api(method, path, body) {
   const el = pressed && Date.now() - pressedAt < 500 && pressed.isConnected && !pressed.classList.contains('busy') ? pressed : null;
   if (el) { pressed = null; busy(el, true); working(true); }
@@ -65,6 +90,7 @@ async function api(method, path, body) {
     const res = await fetch(path, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin' });
     let data = {};
     try { data = await res.json(); } catch {}
+    if (!res.ok && !data.error) data.error = failText(res.status);
     return { ok: res.ok, status: res.status, data };
   } catch {
     return { ok: false, status: 0, data: { error: 'No connection. Check the wifi and try again.' } };
@@ -2321,16 +2347,33 @@ function cardEditor(me, d, card, start = {}) {
     sel.addEventListener('change', () => { i.unit = sel.value; preview(); });
     return sel;
   };
+  // A line's problem, shown under it until that line changes (from typing, or from the server on Save).
+  const markLine = (i, msg, field) => { i._err = msg ? { msg, field } : undefined; };
   const drawLines = () => {
     fill(lines, h('div', { class: 'irow head' }, h('div', { text: 'Amount' }), h('div', { text: 'Unit' }), h('div', { text: 'What goes in' }), h('div', { class: 'num', text: 'Cost' }), h('div')),
       c.ingredients.map((i, n) => {
-        const amount = h('input', { inputmode: 'decimal', value: i.amount === '' ? '' : String(i.amount), 'aria-label': 'Amount', placeholder: '0' });
-        amount.addEventListener('change', () => { i.amount = Number(amount.value) || ''; preview(); });
+        const amount = h('input', { inputmode: 'decimal', value: i._amountText ?? (i.amount === '' ? '' : String(i.amount)), 'aria-label': 'Amount', placeholder: '0' });
+        const note = h('div', { class: 'irow-msg', role: 'alert', text: i._err?.msg ?? '' });
+        const row = h('div', { class: `irow${i._err ? ' bad' : ''}${i._err?.field ? ` bad-${i._err.field}` : ''}` });
+        const setBad = (msg, field) => { markLine(i, msg, field); note.textContent = msg ?? ''; row.className = `irow${msg ? ` bad bad-${field}` : ''}`; };
+        amount.addEventListener('change', () => {
+          const v = parseAmount(amount.value);
+          if (Number.isNaN(v)) { i.amount = ''; i._amountText = amount.value; setBad(`Can’t read “${amount.value.trim()}”. Write it as 2, 1.5, 1 1/2 or ½.`, 'amount'); }
+          else { i.amount = v; delete i._amountText; setBad(); }
+          preview();
+        });
         const name = h('input', { type: 'text', list: listId, value: i.name, 'aria-label': 'Ingredient', placeholder: 'Start typing a product or recipe' });
         const unitSlot = h('div', {}, unitSelect(i));
-        name.addEventListener('change', () => { i.name = name.value.trim(); const o = byName.get(i.name.toLowerCase()); if (o) i.name = o.name; if (!o || !o.units.includes(i.unit)) i.unit = ''; fill(unitSlot, unitSelect(i)); preview(); });
-        return h('div', { class: 'irow' }, amount, unitSlot, name, h('div', { class: 'num icost small' }),
+        name.addEventListener('change', () => {
+          i.name = name.value.trim(); const o = byName.get(i.name.toLowerCase()); if (o) i.name = o.name; if (!o || !o.units.includes(i.unit)) i.unit = '';
+          fill(unitSlot, unitSelect(i));
+          if (i.name && !o) setBad(`“${i.name}” isn’t on the list yet: pick a product or recipe as you type.`, 'name'); else if (i._err?.field !== 'amount') setBad();
+          preview();
+        });
+        unitSlot.addEventListener('change', () => { if (i._err?.field === 'unit') setBad(); });
+        row.append(amount, unitSlot, name, h('div', { class: 'num icost small' }),
           h('button', { class: 'btn small-btn', 'aria-label': `Remove ${i.name || 'line'}`, text: '×', onclick: () => { c.ingredients.splice(n, 1); drawLines(); preview(); } }));
+        return [row, note];
       }),
       h('button', { class: 'btn small-btn', text: '+ Add a line', onclick: () => { c.ingredients.push({ amount: '', unit: '', name: '' }); drawLines(); lines.querySelector('.irow:last-of-type input[list]')?.focus(); } }));
   };
@@ -2366,12 +2409,34 @@ function cardEditor(me, d, card, start = {}) {
       c.kind === 'dish' || c.kind === 'drink' ? pick : null);
   };
 
+  // Point at the line: mark it, say what's wrong under it and beside Save, and scroll it into view.
+  const showLineError = (i, msg, field) => {
+    markLine(i, msg, field); drawLines(); preview();
+    err.textContent = msg;
+    const n = c.ingredients.indexOf(i);
+    const row = lines.querySelectorAll('.irow:not(.head)')[n];
+    row?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    row?.querySelector(field === 'amount' ? 'input[aria-label="Amount"]' : field === 'unit' ? 'select' : 'input[list]')?.focus({ preventScroll: true });
+  };
   const save = async () => {
     err.textContent = '';
-    const body = { card: { name: nameInput.value, kind: c.kind, yields: c.yields, ingredients: c.ingredients.filter((i) => i.name || i.amount), method: method.value }, ...(card ? { previousName: card.name } : {}),
+    const sent = c.ingredients.filter((i) => i.name || i.amount || i._amountText);
+    // Caught here, before anything is sent: an amount that couldn't be read.
+    const unread = sent.find((i) => i._amountText !== undefined);
+    if (unread) return showLineError(unread, `Line ${c.ingredients.indexOf(unread) + 1}${unread.name ? `, ${unread.name}` : ''}: can’t read “${unread._amountText.trim()}”. Write it as 2, 1.5, 1 1/2 or ½.`, 'amount');
+    const body = { card: { name: nameInput.value, kind: c.kind, yields: c.yields, ingredients: sent.map(({ _err, _amountText, ...i }) => i), method: method.value }, ...(card ? { previousName: card.name } : {}),
       link: c.linked.filter((l) => !(card?.linked ?? []).some((x) => x.catalogId === l.catalogId && x.name === l.name)), unlink: unlinked };
     const res = await api('POST', '/api/cards', body);
-    if (!res.ok) return (err.textContent = res.data.error ?? 'Not saved.');
+    if (!res.ok) {
+      // The server counts lines among those sent; ours include empty ones, so map it back.
+      if (Number.isInteger(res.data.line) && sent[res.data.line]) {
+        const i = sent[res.data.line];
+        return showLineError(i, res.data.error.replace(/^Line \d+/, `Line ${c.ingredients.indexOf(i) + 1}`), res.data.field);
+      }
+      err.textContent = res.data.error;
+      err.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      return;
+    }
     back.go(nameInput.value.trim());
   };
   const del = card && !card.usedBy?.length ? h('button', { class: 'link danger', text: 'Delete recipe', onclick: async () => {

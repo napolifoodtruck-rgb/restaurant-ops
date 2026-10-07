@@ -6,9 +6,12 @@ const MAX_BODY = 64 * 1024;
 
 export class HttpError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  /** More for the screen to point at the problem (e.g. which ingredient line). */
+  readonly details?: Record<string, unknown>;
+  constructor(status: number, message: string, details?: Record<string, unknown>) {
     super(message);
     this.status = status;
+    if (details) this.details = details;
   }
 }
 

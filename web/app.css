@@ -833,3 +833,8 @@ button.donut-row { display: flex; min-width: 0; }
 .wgrid th, .wgrid td { padding: 4px 6px; text-align: center; }
 .wgrid tbody th { text-align: right; white-space: nowrap; }
 .wgrid tr.all td, .wgrid tr.all th { border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+
+/* A recipe line with a problem: red where it is, the reason under it. */
+.irow-msg:empty { display: none; }
+.irow-msg { color: var(--danger, #B42318); font-size: 13px; margin: -2px 0 6px; }
+.irow.bad-amount input[aria-label="Amount"], .irow.bad-name input[list], .irow.bad-unit select { border-color: var(--danger, #B42318); box-shadow: 0 0 0 1px var(--danger, #B42318); }
