@@ -23,9 +23,17 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   const refunds = new Map<string, number>();
   const live = new Map<string, any>();
   const stock = new Map<string, number>();
+  // Orders paid in Square (order id → payment id); `dropAnswer`: the next charge goes through but its answer is lost.
+  const paidInSquare = new Map<string, string>();
+  let dropAnswer = false;
   const fakeFetch: Fetch = async (url, init) => {
     const path = new URL(url).pathname;
     const reply = (status: number, data: unknown) => ({ ok: status < 300, status, json: async () => data, text: async () => JSON.stringify(data) });
+    if (init.method === 'GET' && path.startsWith('/v2/orders/')) {
+      const id = decodeURIComponent(path.slice('/v2/orders/'.length));
+      const paidWith = paidInSquare.get(id);
+      return reply(200, { order: { id, tenders: paidWith ? [{ payment_id: paidWith }] : [], net_amount_due_money: { amount: paidWith ? 0 : 1000 } } });
+    }
     if (init.method === 'GET' && path === '/v2/payments') {
       lookups.push(new URL(url));
       return reply(200, { payments: [...refunds].map(([id, refunded]) => ({ id, total_money: { amount: 4000 }, refunded_money: { amount: refunded } })) });
@@ -41,6 +49,8 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
     }
     if (path === '/v2/payments') {
       if (body.source_id.endsWith('declined')) return reply(400, { errors: [{ code: 'GENERIC_DECLINE', category: 'PAYMENT_METHOD_ERROR' }] });
+      paidInSquare.set(body.order_id, `sq-pay-${square.length}`);
+      if (dropAnswer) { dropAnswer = false; return reply(500, {}); }
       return reply(200, { payment: { id: `sq-pay-${square.length}`, status: 'COMPLETED', receipt_url: 'https://squareup.com/receipt/x' } });
     }
     return reply(404, {});
@@ -200,6 +210,38 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.equal((await customer('GET', `/api/order/${lastOne.json.id}`)).json.status, 'failed');
   live.clear();
   stock.clear();
+
+  // Going back to change the order gives up the first hold: the pizzas aren't held twice.
+  const left20 = async () => (await customer('GET', '/api/order/menu')).json.windows.find((w: any) => w.starts === '18:20').left;
+  const room = await left20();
+  const first = await customer('POST', '/api/order/checkout', { ...order, window: '18:20', lines: [{ variationId: 'var-marg', quantity: 2 }], tip: 0 });
+  assert.equal(await left20(), room - 2);
+  const changed = await customer('POST', '/api/order/checkout', { ...order, window: '18:20', lines: [{ variationId: 'var-marg', quantity: 3 }], tip: 0, replaces: first.json.id });
+  assert.equal(changed.status, 201);
+  assert.equal(await left20(), room - 3);
+  assert.equal((await customer('GET', `/api/order/${first.json.id}`)).json.status, 'released');
+  assert.equal((await customer('POST', `/api/order/${first.json.id}/pay`, { sourceId: 'cnon:card-ok-4' })).status, 409);
+  // Or straight from the payment page.
+  assert.equal((await customer('POST', `/api/order/${changed.json.id}/release`)).json.status, 'released');
+  assert.equal(await left20(), room);
+
+  // The signal drops after Pay: the charge went through, the answer didn't. Pressing Pay again (a new card token) doesn't charge twice.
+  const dropped = await customer('POST', '/api/order/checkout', { ...order, window: '18:20', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
+  dropAnswer = true;
+  const lost = await customer('POST', `/api/order/${dropped.json.id}/pay`, { sourceId: 'cnon:card-ok-5' });
+  assert.deepEqual([lost.status, /won’t be charged twice/.test(lost.json.error)], [502, true]);
+  const charges = square.filter((x) => x.path === '/v2/payments').length;
+  const again2 = await customer('POST', `/api/order/${dropped.json.id}/pay`, { sourceId: 'cnon:card-ok-6' });
+  assert.deepEqual([again2.status, again2.json.status], [200, 'paid']);
+  assert.equal(square.filter((x) => x.path === '/v2/payments').length, charges);
+  // A payment already with Square: a second Pay waits rather than charging.
+  const busy = await customer('POST', '/api/order/checkout', { ...order, window: '18:20', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
+  await db!.query('UPDATE online_orders SET paying_since = now() WHERE id = $1', [busy.json.id]);
+  const waits = await customer('POST', `/api/order/${busy.json.id}/pay`, { sourceId: 'cnon:card-ok-7' });
+  assert.deepEqual([waits.status, waits.json.paying], [409, true]);
+  assert.equal((await customer('POST', `/api/order/${busy.json.id}/release`)).json.status, 'held');
+  await db!.query("UPDATE online_orders SET paying_since = now() - interval '5 minutes' WHERE id = $1", [busy.json.id]);
+  assert.equal((await customer('POST', `/api/order/${busy.json.id}/pay`, { sourceId: 'cnon:card-ok-7' })).json.status, 'paid');
 
   // Anyone on shift can pause online orders; customers can't start an order until it ends or someone resumes.
   assert.deepEqual((await call('GET', '/api/online/pause')).json.paused, null);
