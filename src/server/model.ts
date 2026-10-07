@@ -218,6 +218,8 @@ export interface Model {
   menuStatus: MenuStatusAnswer[];
   /** Recipes still rough (R&D), by recipe id. */
   rough: Set<string>;
+  /** Products priced from MarginEdge's last price, not a recent invoice. */
+  olderPrices: Set<string>;
 }
 
 const cache = new Map<string, { stamp: string; model: Promise<Model> }>();
@@ -331,12 +333,17 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     if (recipe && product) recipes = withIngredientAmount(recipes, recipe.id, { kind: 'product', id: product.externalId }, { amount: p.amount, unit: p.unit });
   }
   const blended = blendedPrices(imported.prices, today);
+  // Where a price comes from: recent invoices first, then one entered in the app, then MarginEdge's
+  // own last price (a product bought before the invoices we read, like a case of San Pellegrino).
+  const olderPrices = new Set<string>();
   const products: Product[] = [...allProducts, ...FREE_PRODUCTS].filter((p) => p.baseUnit).map((p) => {
     let price = blended.get(p.externalId);
     const manual = answers.manualPrices?.[p.externalId];
     if (price === undefined && manual) {
       try { price = manual.price / convert(manual.per, p.baseUnit!, p.conversions); } catch {}
     }
+    const reference = (p as { referencePrice?: number }).referencePrice;
+    if (price === undefined && reference && reference > 0) { price = reference; olderPrices.add(p.externalId); }
     // Drinks bought by the each or bottle: what one holds, assumed from its name or type when unknown.
     const conversions = withPackSize(p.conversions, p.baseUnit!, packSize(p.name, (p as { categoryType?: string }).categoryType, p.baseUnit!));
     return {
@@ -435,5 +442,5 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     // A dish change already answered: a version on that button starts within a week of the suggested day.
     .filter((c) => !(c.kind === 'dishChanged' && c.catalogId && c.suggestedDate && [...linkAnswers.confirm, ...linkAnswers.newDish].some((v) => v.catalogId === c.catalogId && v.from && Math.abs(Date.parse(v.from) - Date.parse(c.suggestedDate!)) <= 7 * 86_400_000)));
 
-  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded, menuStatus: linkAnswers.menuStatus ?? [], rough: new Set((bookData.recipeCards ?? []).filter((c) => c.status === 'rough').map((c) => recipeId(c.name))) };
+  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded, menuStatus: linkAnswers.menuStatus ?? [], rough: new Set((bookData.recipeCards ?? []).filter((c) => c.status === 'rough').map((c) => recipeId(c.name))), olderPrices };
 }

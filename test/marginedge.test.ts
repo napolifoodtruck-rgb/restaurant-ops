@@ -237,3 +237,21 @@ test('imported prices cost recipes directly', () => {
   // 2 fl oz of a $29.95, 750 ml bottle.
   close(book.portionCost('spritz').total, 29.95 * (2 * 29.5735295625) / 750);
 });
+
+test('dry pantry bought by the pound prices by the teaspoon (a typical weight), but not fresh produce', async () => {
+  const { typicalDensity } = await import('../src/connectors/marginedgeUnits.ts');
+  assert.equal(typicalDensity('Spice, Cinnamon Ground'), 0.53);
+  assert.equal(typicalDensity('Cinnamon Sticks'), undefined);
+  assert.equal(typicalDensity('Pepper, Black Ground'), 0.47);
+  assert.equal(typicalDensity('Pepper, Bell Red'), undefined);
+  assert.equal(typicalDensity('Salt, Kosher Diamond Crystal'), 0.57);
+  assert.equal(typicalDensity('Sugar, Brown Light'), 0.93);
+  assert.equal(typicalDensity('Sugar, Granulated'), 0.85);
+  assert.equal(typicalDensity('Flour, Tipo 00'), 0.53);
+});
+
+test('a product on no invoice we read still has MarginEdge’s last price to fall back on', () => {
+  const r = importMarginEdge({ categories: [], vendors: [], vendorItems: [], invoices: [],
+    products: [{ companyConceptProductId: 'pell', productName: 'San Pellegrino 750ML Bottle', reportByUnit: 'Bottle', latestPrice: 1.65 }] } as unknown as MarginEdgeExport, {});
+  assert.equal(r.products.find((p) => p.externalId === 'pell')?.referencePrice, 1.65);
+});

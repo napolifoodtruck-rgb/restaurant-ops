@@ -2641,13 +2641,19 @@ function cardEditor(me, d, card, start = {}) {
       const usable = c.ingredients.filter((i) => i.name);
       const res = await api('POST', '/api/cards/preview', { card: { ingredients: usable } });
       if (!res.ok) return;
+      const hints = [...lines.querySelectorAll('.irow-hint')];
       [...lines.querySelectorAll('.icost')].forEach((el, n) => {
         const i = c.ingredients[n];
         const l = res.data.lines[usable.indexOf(i)] ?? {};
         const st = stateOf(i);
-        el.textContent = l.cost !== undefined ? money2(l.cost) : st && st !== 'ok' ? 'to finish' : '';
+        el.textContent = l.cost !== undefined && !l.problem ? money2(l.cost) : st && st !== 'ok' ? 'to finish' : l.problem ? 'no cost' : '';
         el.title = l.problem ?? '';
         el.classList.toggle('warn-text', Boolean(l.problem) || (st && st !== 'ok'));
+        // A finished line that still can't be costed says why, under it (a tooltip never shows on an iPad).
+        const hint = hints[n];
+        if (!hint || st !== 'ok') return;
+        if (st === 'ok' && (l.problem || l.olderPrice)) { hint.dataset.cost = '1'; fill(hint, costHint(i, l)); }
+        else if (hint.dataset.cost === '1') { delete hint.dataset.cost; fill(hint); }
       });
       total.textContent = `${money2(res.data.total)}${toFinish() ? '+' : ''}`;
       const y = c.yields.find((x) => Number(x.amount) > 0 && x.unit);
@@ -2655,6 +2661,35 @@ function cardEditor(me, d, card, start = {}) {
       const price = card?.averagePrice;
       totalNote.textContent = `${per}${price && !prepKind() ? ` · ${pct(res.data.total / price)} of the ${money2(price)} it sells for` : ''}${toFinish() ? ` · ${toFinish()} line${toFinish() === 1 ? '' : 's'} not costed yet` : res.data.complete ? '' : ' · some lines can’t be priced yet'}`;
     }, 250);
+  };
+
+  // Why a finished line has no cost: no price for the product (set one here), or a unit that won't convert.
+  const costHint = (i, l) => {
+    if (l.needsPrice) {
+      const p = l.needsPrice;
+      const o = byName.get(p.name.toLowerCase());
+      return h('span', { class: 'warn-text' }, `No price for ${p.name}: it isn’t on an invoice we’ve read, and MarginEdge has no last price for it. `,
+        h('button', { class: 'link', text: 'Set a price', onclick: (e) => priceForm(e.currentTarget.parentElement, p, o) }));
+    }
+    if (l.cantConvert) return h('span', { class: 'warn-text', text: `No cost: ${l.problem}. Try another unit, or set how much one ${UNIT_LABEL(i.unit)} is.` });
+    if (l.problem) return h('span', { class: 'warn-text', text: `No cost yet: ${l.problem}.` });
+    if (l.olderPrice) return h('span', { class: 'muted', text: 'Priced from MarginEdge’s last price: it isn’t on a recent invoice.' });
+    return null;
+  };
+  const priceForm = (slot, p, o) => {
+    const price = h('input', { inputmode: 'decimal', class: 'short', placeholder: '0.00', 'aria-label': `Price of ${p.name}` });
+    const unit = h('select', { 'aria-label': 'Per' }, (o?.units ?? [p.unit]).map((u) => h('option', { value: u, text: UNIT_LABEL(u), selected: u === p.unit ? true : undefined })));
+    const msg = h('span', { class: 'small error' });
+    const set = async () => {
+      const v = parseAmount(price.value.replace('$', ''));
+      if (!(v > 0)) return (msg.textContent = 'A price like 1.65');
+      const res = await api('POST', '/api/answers', { type: 'price', productId: p.productId, price: v, amount: 1, unit: unit.value });
+      if (!res.ok) return (msg.textContent = res.data.error ?? 'Not saved.');
+      preview();
+    };
+    fill(slot, h('span', { class: 'row tight wrap' }, h('span', { text: '$' }), price, h('span', { text: 'per' }), unit,
+      h('button', { class: 'btn small-btn dark', text: 'Set', onclick: set }), msg));
+    price.focus();
   };
 
   // Yields: what one batch makes, said every way it's measured (1 batch · 12 qt · 6 kg · 30 balls).
@@ -2752,9 +2787,10 @@ function cardEditor(me, d, card, start = {}) {
         });
         // What a rough line still needs, said where it is (not an error: it saves as rough).
         const drawHint = () => {
+          delete hint.dataset.cost;
           const st = stateOf(i), o = byName.get(String(i.name).toLowerCase());
           if (st === 'unmatched') fill(hint, h('span', { text: 'Not matched yet: pick it from the list as you type, or ' }), h('button', { class: 'link', text: 'make it a prep recipe', onclick: () => makePrep(i) }));
-          else if (st === 'convert' && o?.kind === 'product') fill(hint, h('span', { text: `How much is one ${i.unit} of ${o.name}? ` }), h('button', { class: 'link', text: 'Set it once', onclick: () => newUnitForm(i, o, extra, i.unit) }));
+          else if (st === 'convert' && o?.kind === 'product') fill(hint, h('span', { class: 'warn-text', text: `No cost yet: ${o.name} is bought by the ${UNIT_LABEL(o.unit)}, and the app doesn’t know how much one ${UNIT_LABEL(i.unit)} of it is. Pick another unit, or ` }), h('button', { class: 'link', text: `set what one ${UNIT_LABEL(i.unit)} is`, onclick: () => newUnitForm(i, o, extra, i.unit) }));
           else if (st === 'convert') fill(hint, h('span', { text: `${o?.name ?? i.name} isn’t measured in ${i.unit} yet: add it to that recipe’s yields.` }));
           else fill(hint);
         };

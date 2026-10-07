@@ -389,7 +389,16 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
       const item = product ? { kind: 'product' as const, id: product.id } : card ? { kind: 'recipe' as const, id: recipeId(card.name) } : undefined;
       if (!item) return { problem: 'Not a product or recipe' };
       const r = model.book.costOf(item, { amount, unit: String(i.unit) });
-      return { cost: Math.round(r.total * 100) / 100, ...(r.complete ? {} : { problem: [...new Set(r.issues.map(issueText))].join('; ') }) };
+      // Said where the line is, not in a tooltip: why it has no cost, and what fixes it.
+      const own = product && r.issues.some((x) => x.type === 'missingCost' && x.productId === product.id);
+      const convert = r.issues.find((x) => x.type === 'missingConversion');
+      return {
+        cost: Math.round(r.total * 100) / 100,
+        ...(r.complete ? {} : { problem: [...new Set(r.issues.map(issueText))].join('; ') }),
+        ...(product && own ? { needsPrice: { productId: product.id, name: product.name, unit: product.baseUnit } } : {}),
+        ...(convert ? { cantConvert: true } : {}),
+        ...(product && model.olderPrices?.has(product.id) ? { olderPrice: true } : {}),
+      };
     });
     const total = lines.reduce((s, l: any) => s + (l.cost ?? 0), 0);
     return send(res, 200, { lines, total: Math.round(total * 100) / 100, complete: lines.every((l: any) => l.cost !== undefined && !l.problem) }), true;

@@ -234,6 +234,30 @@ const DENSITIES: [RegExp, number][] = [
   [/\bjuice\b/i, 1.04],
   [/\b(wine|pinot|grigio|vermouth)\b/i, 0.99],
   [/\b(stock|broth)\b/i, 1.0],
+  // Dry pantry, by what a level teaspoon weighs (÷ 4.93 ml), so a recipe in tsp or cups prices
+  // against a spice or flour bought by the pound. A weighed or stated size always wins.
+  [/^(?!.*stick).*\bcinnamon\b/i, 0.53], // 2.6 g a tsp
+  [/\bcumin\b(?!.*\bseed)/i, 0.43], // 2.1 g
+  [/\bpaprika\b/i, 0.47], // 2.3 g
+  [/\b(chili|chile) powder\b/i, 0.53], // 2.6 g
+  [/\b(cayenne|crushed red pepper|red pepper flake|chili flake|chile flake)/i, 0.37], // 1.8 g
+  [/\bpepper\b.*\bground\b|\bground\b.*\bpepper\b/i, 0.47], // black or white, ground: 2.3 g
+  [/\bgarlic powder\b|\bpowder,? garlic\b|\bgranulated garlic\b/i, 0.63], // 3.1 g
+  [/\bonion powder\b|\bpowder,? onion\b/i, 0.49], // 2.4 g
+  [/\bnutmeg\b/i, 0.45], // 2.2 g
+  [/\bginger\b.*\bground\b|\bground ginger\b/i, 0.37], // 1.8 g
+  [/\boregano\b.*\bdried\b|\bdried oregano\b|^spice,? oregano/i, 0.2], // 1 g
+  [/\bkosher salt\b|\bsalt,? kosher\b/i, 0.57], // Diamond Crystal: 2.8 g
+  [/\b(table|fine|iodized)\b.*\bsalt\b|\bsalt\b.*\b(table|fine|iodized)\b/i, 1.22], // 6 g
+  [/\bbrown sugar\b|\bsugar,? brown\b/i, 0.93], // packed: 4.6 g
+  [/\b(powdered|confectioner)/i, 0.51], // powdered sugar: 2.5 g
+  [/\bsugar\b/i, 0.85], // granulated: 4.2 g
+  [/\bbaking soda\b/i, 0.93], // 4.6 g
+  [/\bbaking powder\b/i, 0.81], // 4 g
+  [/\byeast\b/i, 0.63], // dry: 3.1 g
+  [/\bcocoa\b/i, 0.36], // 1.8 g
+  [/\b(cornstarch|corn starch)\b/i, 0.53], // 2.6 g
+  [/\bflour\b/i, 0.53], // all-purpose, spooned: 125 g a cup
 ];
 
 export function typicalDensity(name: string): number | undefined {
