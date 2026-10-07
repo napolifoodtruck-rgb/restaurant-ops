@@ -55,10 +55,26 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
     }
     return reply(404, {});
   };
+  // Resend, faked: the confirmation emails sent; `emailDown` makes the next send fail.
+  const emails: { to: string; subject: string; text: string; key: string }[] = [];
+  let emailDown = false;
+  const fakeResend: Fetch = async (_url, init) => {
+    if (emailDown) { emailDown = false; return { ok: false, status: 500, json: async () => ({}), text: async () => 'down' }; }
+    const b = JSON.parse(init.body!);
+    emails.push({ to: b.to[0], subject: b.subject, text: b.text, key: init.headers['idempotency-key']! });
+    return { ok: true, status: 200, json: async () => ({ id: 'e' }), text: async () => '{}' };
+  };
+  // Emails go out in the background: give them a moment.
+  const emailsFor = async (id: string, want = 1) => {
+    for (let i = 0; i < 40 && emails.filter((e) => e.key.endsWith(id)).length < want; i++) await new Promise((r) => setTimeout(r, 25));
+    await new Promise((r) => setTimeout(r, 50));
+    return emails.filter((e) => e.key.endsWith(id));
+  };
   const today = localNow('America/New_York').date;
   let time = '16:00';
   const app = createApp({ db: db!, setupToken: 'setup-secret', secureCookies: false,
-    checkout: { token: 'sandbox-token', applicationId: 'sandbox-app', locationId: 'loc-1', environment: 'sandbox', fetch: fakeFetch, now: () => ({ date: today, time }), refundCheckMs: 0, catalogCheckMs: 0, triesPerFiveMinutes: 100 } });
+    checkout: { token: 'sandbox-token', applicationId: 'sandbox-app', locationId: 'loc-1', environment: 'sandbox', fetch: fakeFetch, now: () => ({ date: today, time }), refundCheckMs: 0, catalogCheckMs: 0, triesPerFiveMinutes: 100,
+      email: { apiKey: 're_test', from: 'Napoli <orders@example.com>', fetch: fakeResend } } });
   const server = createServer(app);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());
@@ -103,9 +119,12 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.deepEqual(menu.items.map((x: any) => [x.name, x.isPizza, x.notes]), [['Soda', false, []], ['Margherita', true, ['Partially cooked']]]);
   assert.deepEqual(menu.windows.slice(0, 2).map((w: any) => [w.starts, w.label, w.left, w.open]), [['17:00', '5:00 pm', 2, true], ['17:20', '5:20 pm', 4, true]]);
 
-  const order = { lines: [{ variationId: 'var-marg', quantity: 2, optionIds: ['m-arugula'] }, { variationId: 'var-soda', quantity: 1 }], window: '17:00', name: 'Ada', phone: '(919) 555-0100', email: 'ada@example.com', tip: 300, understood: true };
+  const order = { lines: [{ variationId: 'var-marg', quantity: 2, optionIds: ['m-arugula'] }, { variationId: 'var-soda', quantity: 1 }], window: '17:00', firstName: 'Ada', lastName: 'Lovelace', phone: '(919) 555-0100', email: 'ada@example.com', tip: 300, understood: true };
   // What a customer has to give us.
   assert.equal((await customer('POST', '/api/order/checkout', { ...order, understood: false })).status, 400);
+  assert.equal((await customer('POST', '/api/order/checkout', { ...order, lastName: ' ' })).status, 400);
+  assert.equal((await customer('POST', '/api/order/checkout', { ...order, email: '' })).status, 400);
+  assert.equal((await customer('POST', '/api/order/checkout', { ...order, firstName: undefined, lastName: undefined, name: 'Ada' })).status, 400);
   assert.equal((await customer('POST', '/api/order/checkout', { ...order, phone: '555-0100' })).status, 400);
   assert.equal((await customer('POST', '/api/order/checkout', { ...order, window: '17:10' })).status, 400);
   assert.equal((await customer('POST', '/api/order/checkout', { ...order, tip: 99999 })).status, 400);
@@ -123,6 +142,7 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.equal(sent.idempotency_key, held.json.id);
   assert.deepEqual(sent.order.line_items.map((l: any) => [l.name, l.quantity, l.base_price_money.amount, l.modifiers.map((m: any) => m.name)]), [['Margherita', '2', 1500, ['Partially cooked', 'Arugula']], ['Soda', '1', 300, []]]);
   const pickup = sent.order.fulfillments[0].pickup_details;
+  assert.equal(pickup.recipient.display_name, 'Ada Lovelace');
   assert.deepEqual([pickup.recipient.phone_number, pickup.schedule_type, pickup.pickup_at.endsWith('Z')], ['+19195550100', 'SCHEDULED', true]);
   assert.equal(new Date(pickup.pickup_at).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }), '5:00 PM');
 
@@ -146,6 +166,14 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   const again = await customer('POST', `/api/order/${held.json.id}/pay`, { sourceId: 'cnon:card-ok' });
   assert.deepEqual([again.status, again.json.status], [200, 'paid']);
   assert.equal(square.filter((s) => s.path === '/v2/payments').length, 2);
+  // Paid: one confirmation email, however many times Pay is pressed.
+  const mail = await emailsFor(held.json.id);
+  assert.equal(mail.length, 1);
+  assert.deepEqual([mail[0]!.to, mail[0]!.subject], ['ada@example.com', 'Your Napoli order: pickup today at 5:00 pm']);
+  assert.match(mail[0]!.text, /2 × Margherita  \$34\.00\n   Partially cooked, Arugula/);
+  assert.match(mail[0]!.text, /Tip: \$3\.00\nTotal paid: \$42\.78/);
+  assert.match(mail[0]!.text, /Preheat your oven to 450°F/);
+  assert.match(mail[0]!.text, /squareup\.com\/receipt\/x/);
   assert.equal((await customer('GET', `/api/order/${held.json.id}`)).json.status, 'paid');
   assert.equal((await customer('GET', '/api/order/00000000-0000-0000-0000-000000000000')).status, 404);
 
@@ -234,6 +262,8 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   const again2 = await customer('POST', `/api/order/${dropped.json.id}/pay`, { sourceId: 'cnon:card-ok-6' });
   assert.deepEqual([again2.status, again2.json.status], [200, 'paid']);
   assert.equal(square.filter((x) => x.path === '/v2/payments').length, charges);
+  // Paid with the charge whose answer was lost: still confirmed, once.
+  assert.equal((await emailsFor(dropped.json.id)).length, 1);
   // A payment already with Square: a second Pay waits rather than charging.
   const busy = await customer('POST', '/api/order/checkout', { ...order, window: '18:20', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
   await db!.query('UPDATE online_orders SET paying_since = now() WHERE id = $1', [busy.json.id]);
@@ -242,6 +272,19 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.equal((await customer('POST', `/api/order/${busy.json.id}/release`)).json.status, 'held');
   await db!.query("UPDATE online_orders SET paying_since = now() - interval '5 minutes' WHERE id = $1", [busy.json.id]);
   assert.equal((await customer('POST', `/api/order/${busy.json.id}/pay`, { sourceId: 'cnon:card-ok-7' })).json.status, 'paid');
+
+  // A page from before first and last name sends one name. Email down: tried again when the order is next looked at.
+  const later = await customer('POST', '/api/order/checkout', { ...order, firstName: undefined, lastName: undefined, name: 'Ada  King Lovelace', window: '18:40', lines: [{ variationId: 'var-soda', quantity: 1 }], tip: 0 });
+  assert.equal(later.json.name, 'Ada King Lovelace');
+  emailDown = true;
+  assert.equal((await customer('POST', `/api/order/${later.json.id}/pay`, { sourceId: 'cnon:card-ok-9' })).json.status, 'paid');
+  assert.equal((await emailsFor(later.json.id)).length, 0);
+  await customer('GET', `/api/order/${later.json.id}`);
+  const retried = await emailsFor(later.json.id);
+  assert.equal(retried.length, 1);
+  assert.doesNotMatch(retried[0]!.text, /partially cooked/i);
+  await customer('GET', `/api/order/${later.json.id}`);
+  assert.equal((await emailsFor(later.json.id, 2)).length, 1);
 
   // Anyone on shift can pause online orders; customers can't start an order until it ends or someone resumes.
   assert.deepEqual((await call('GET', '/api/online/pause')).json.paused, null);

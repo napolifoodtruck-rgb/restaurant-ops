@@ -170,6 +170,8 @@ legend + * { clear: both; }
 label.field { display: block; margin: 14px 0; font-size: 14px; font-weight: 500; }
 label.field input, label.field select { display: block; width: 100%; margin-top: 6px; height: 50px; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 0 14px; font-size: 16px; font-weight: 400; background: var(--card); transition: border-color .15s, box-shadow .15s; }
 label.field input:focus, label.field select:focus { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px rgba(17, 17, 17, .08); }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 14px 0; }
+.pair label.field { margin: 0; }
 .tips { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; }
 .tips button { min-height: 56px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--card); cursor: pointer; line-height: 1.25; transition: border-color .15s, background .15s; }
 .tips button:hover { border-color: var(--ink); }
