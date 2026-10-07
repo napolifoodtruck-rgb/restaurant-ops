@@ -95,7 +95,7 @@ export function lineState(i: { amount?: number | string; unit?: string; name?: s
   return units.includes(i.unit) ? 'ok' : 'convert';
 }
 
-function toStored(c: CardInput, before?: RecipeCard, ready?: boolean): RecipeCard {
+function toStored(c: CardInput, before?: RecipeCard, ready?: boolean, by?: string): RecipeCard {
   const prep = c.kind === 'prep' || c.kind === 'barPrep';
   const yields = prep ? (c.yields ?? []).filter((y) => y.amount > 0 && y.unit) : [{ amount: 1, unit: 'each' }];
   return {
@@ -110,6 +110,7 @@ function toStored(c: CardInput, before?: RecipeCard, ready?: boolean): RecipeCar
     layout: 'card',
     ...(before?.shelfLifeDays ? { shelfLifeDays: before.shelfLifeDays } : {}),
     ...(ready ? {} : { status: 'rough' as const }),
+    ...(by ? { updatedAt: new Date().toISOString(), updatedBy: by } : before?.updatedAt ? { updatedAt: before.updatedAt, ...(before.updatedBy ? { updatedBy: before.updatedBy } : {}) } : {}),
   };
 }
 
@@ -256,7 +257,7 @@ async function saveCards(db: Db, who: SignedIn, changes: { card: CardInput; prev
   let importChanged = false;
   for (const ch of changes) {
     const prev = ch.previousName ? cards.find((c) => cardKey(c.name) === cardKey(ch.previousName!)) : cards.find((c) => cardKey(c.name) === cardKey(ch.card.name));
-    const stored = toStored(ch.card, prev, ch.card.ready === true);
+    const stored = toStored(ch.card, prev, ch.card.ready === true, who.name);
     cards = prev ? cards.map((c) => (c === prev ? stored : c)) : [...cards, stored];
     // A rename follows the card everywhere it's named.
     if (prev && prev.name !== stored.name) {
@@ -407,7 +408,7 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     let next = cards.map((c) => {
       if ((only && !only.has(c.name)) || !c.ingredients.some((i) => isFrom(i.name))) return c;
       changed.push(c.name);
-      return { ...c, ingredients: c.ingredients.map((i) => (isFrom(i.name) ? { ...i, name: to.name } : i)) };
+      return { ...c, ingredients: c.ingredients.map((i) => (isFrom(i.name) ? { ...i, name: to.name } : i)), updatedAt: new Date().toISOString(), updatedBy: who.name };
     });
     if (!changed.length) throw new HttpError(409, `No recipe${only ? ' of those' : ''} uses ${from.name} any more.`);
     next = next.map((c) => {

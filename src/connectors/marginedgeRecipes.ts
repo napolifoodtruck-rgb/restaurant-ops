@@ -71,6 +71,9 @@ export interface RecipeCard {
    * amount or unit; managers see it, cooks don't. Absent: ready.
    */
   status?: 'rough';
+  /** When it was last saved in the app, and by whom (for "recently changed"). */
+  updatedAt?: string;
+  updatedBy?: string;
 }
 
 const NUMBER = String.raw`\d+(?:\.\d+)?(?:\s+\d+\/\d+)?|\d+\/\d+`;
