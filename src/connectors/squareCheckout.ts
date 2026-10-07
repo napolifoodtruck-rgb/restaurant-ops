@@ -1,7 +1,8 @@
 /**
- * Square writes for online orders, and nothing else: create a pickup order, and take its payment
- * with the one-time card token the Web Payments SDK made in the customer's browser. Card numbers
- * never come here. The nightly sync keeps its own read-only client (squareApi.ts).
+ * Square calls for online orders, and nothing else: create a pickup order, take its payment with
+ * the one-time card token the Web Payments SDK made in the customer's browser, and look up which
+ * payments were refunded since. Card numbers never come here. The nightly sync keeps its own
+ * read-only client (squareApi.ts).
  *
  * In the sandbox, Square's test account doesn't have the restaurant's catalog, so lines go in by
  * name and price instead of catalog id. In production they go by catalog id, so Square applies
@@ -26,6 +27,8 @@ export interface PickupOrderIn {
 
 export interface SquareOrderOut { id: string; version?: number; total: number; tax: number }
 export interface SquarePaymentOut { id: string; status: string; receiptUrl?: string }
+/** A payment as it stands now: what it came to, tip included, and how much was refunded. */
+export interface SquarePaymentState { id: string; total: number; refunded: number }
 
 const money = (amount: number) => ({ amount, currency: 'USD' });
 
@@ -47,14 +50,19 @@ export class SquareCheckout {
   }
 
   async #post(path: string, body: unknown): Promise<any> {
-    const headers: Record<string, string> = { authorization: `Bearer ${this.#token}`, accept: 'application/json', 'content-type': 'application/json' };
+    return this.#call('POST', path, body);
+  }
+
+  async #call(method: 'GET' | 'POST', path: string, body?: unknown): Promise<any> {
+    const headers: Record<string, string> = { authorization: `Bearer ${this.#token}`, accept: 'application/json' };
+    if (body !== undefined) headers['content-type'] = 'application/json';
     if (this.#version) headers['square-version'] = this.#version;
-    const res = await this.#fetch(this.#base + path, { method: 'POST', headers, body: JSON.stringify(body) });
+    const res = await this.#fetch(this.#base + path, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
     let data: any = {};
     try { data = await res.json(); } catch {}
     if (res.ok) return data;
     const errors: { code?: string; detail?: string; category?: string }[] = data.errors ?? [];
-    const err = new SquareApiError(res.status, `Square POST ${path} failed (${res.status})${errors.length ? `: ${errors.map((e) => e.detail ?? e.code).join('; ')}` : ''}`);
+    const err = new SquareApiError(res.status, `Square ${method} ${path} failed (${res.status})${errors.length ? `: ${errors.map((e) => e.detail ?? e.code).join('; ')}` : ''}`);
     (err as SquareApiError & { codes?: string[] }).codes = errors.map((e) => e.code ?? '').filter(Boolean);
     throw err;
   }
@@ -104,5 +112,19 @@ export class SquareCheckout {
     });
     const payment = data.payment ?? {};
     return { id: payment.id, status: payment.status, ...(payment.receipt_url ? { receiptUrl: payment.receipt_url } : {}) };
+  }
+
+  /** Every payment taken at the location since `since` (an ISO time), with what's been refunded of each. */
+  async paymentsSince(locationId: string, since: string): Promise<SquarePaymentState[]> {
+    const out: SquarePaymentState[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const q = new URLSearchParams({ location_id: locationId, begin_time: since, limit: '100', ...(cursor ? { cursor } : {}) });
+      const data = await this.#call('GET', `/v2/payments?${q}`);
+      for (const p of data.payments ?? []) out.push({ id: p.id, total: Number(p.total_money?.amount ?? p.amount_money?.amount ?? 0), refunded: Number(p.refunded_money?.amount ?? 0) });
+      cursor = data.cursor;
+      if (!cursor) break;
+    }
+    return out;
   }
 }

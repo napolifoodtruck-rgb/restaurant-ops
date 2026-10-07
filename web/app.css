@@ -880,3 +880,8 @@ button.donut-row { display: flex; min-width: 0; }
 .tap.other { font-size: 13px; font-weight: 500; color: var(--muted); }
 .tap.other.on { color: var(--card); }
 .estimate { color: var(--blue); background: #EEF3FA; padding: 4px 8px; white-space: nowrap; }
+
+/* Pause online orders, on Today. */
+.online-pause { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; text-align: left; }
+.online-pause > .grow { flex: 1 1 260px; }
+.online-pause[hidden] { display: none; }

@@ -1,7 +1,10 @@
 /**
  * Online ordering settings over HTTP. Managers only: what's sold online, and how many pizzas each
- * pickup window takes. Customers order through onlineCheckout.ts.
+ * pickup window takes. Anyone signed in can pause online orders when the kitchen is slammed.
+ * Customers order through onlineCheckout.ts.
  *
+ *   GET  /api/online/pause                     whether online orders are paused, and whether any are being taken tonight
+ *   POST /api/online/pause                     { minutes: 15 | 30 | 60 } or { tonight: true } or { resume: true }
  *   GET  /api/online/menu                      every Square item with its online settings, and problems that would stop an order
  *   POST /api/online/items/:itemId             { published?, countsAsPizza? (true | false | null = from its category), soldOutToday? }
  *   POST /api/online/modifiers/:modifierId     { mode: 'shown' | 'hidden' | 'always' }
@@ -17,7 +20,7 @@ import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { MODIFIER_MODES, modifierProblems, onlineMenu, type CatalogObject, type ModifierMode, type OnlineMenuItem } from '../core/onlineMenu.ts';
-import { isWindowStart, pizzaLimitProblem, windowStarts, windowsFor, type DayCell, type PickupWindow, type PlanCell } from '../core/pickupWindows.ts';
+import { LAST_WINDOW_ENDS, isWindowStart, pizzaLimitProblem, stillOpen, windowStarts, windowsFor, type DayCell, type PickupWindow, type PlanCell } from '../core/pickupWindows.ts';
 import { addDays } from '../core/forecast.ts';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -56,11 +59,51 @@ export async function loadWindows(db: Db, restaurantId: string, day: string, exc
   return windowsFor(day, await loadPlan(db, restaurantId), await loadDay(db, restaurantId, day), taken);
 }
 
+export interface Pause {
+  /** When it ends, as an ISO time. */
+  until: string;
+  /** The restaurant's time it ends (HH:MM). */
+  untilTime: string;
+  /** For the rest of tonight, not a few minutes. */
+  tonight: boolean;
+}
+
+export const PAUSE_MINUTES = [15, 30, 60];
+
+/** The pause on online orders, while it lasts. */
+export async function loadPause(db: Db, restaurantId: string, timezone: string): Promise<Pause | undefined> {
+  const r = (await db.query<{ until: Date | string }>('SELECT until FROM online_pause WHERE restaurant_id = $1 AND until > now()', [restaurantId])).rows[0];
+  if (!r) return undefined;
+  const until = new Date(r.until);
+  const now = localNow(timezone);
+  const end = localNow(timezone, until);
+  return { until: until.toISOString(), untilTime: end.time, tonight: end.date !== now.date || end.time >= LAST_WINDOW_ENDS };
+}
+
 export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResponse, path: string, url: URL, who: SignedIn, timezone: string): Promise<boolean> {
   if (!path.startsWith('/api/online/')) return false;
-  if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
   const method = req.method ?? 'GET';
   const now = localNow(timezone);
+
+  // Anyone on shift can pause: it's the cooks who see the slam coming.
+  if (path === '/api/online/pause') {
+    if (method === 'POST') {
+      const b = await body(req);
+      if (b.resume === true) await db.query('DELETE FROM online_pause WHERE restaurant_id = $1', [who.restaurantId]);
+      else {
+        if (b.tonight !== true && !PAUSE_MINUTES.includes(b.minutes as number)) throw new HttpError(400, `Pause for ${PAUSE_MINUTES.join(', ')} minutes, or the rest of tonight.`);
+        // "The rest of tonight" runs to midnight, the restaurant's time.
+        await db.query(`INSERT INTO online_pause (restaurant_id, until, paused_by)
+          VALUES ($1, CASE WHEN $2::boolean THEN ($3::date + 1)::timestamp AT TIME ZONE $4 ELSE now() + make_interval(mins => $5::int) END, $6)
+          ON CONFLICT (restaurant_id) DO UPDATE SET until = EXCLUDED.until, paused_by = EXCLUDED.paused_by, paused_at = now()`,
+        [who.restaurantId, b.tonight === true, now.date, timezone, b.tonight === true ? 0 : b.minutes, who.staffId]);
+      }
+    } else if (method !== 'GET') throw new HttpError(404, 'Not found.');
+    const windows = await loadWindows(db, who.restaurantId, now.date);
+    return send(res, 200, { now: now.time, paused: (await loadPause(db, who.restaurantId, timezone)) ?? null, takingOrders: windows.some((w) => stillOpen(w, now.time)) }), true;
+  }
+
+  if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
   let m: RegExpMatchArray | null;
 
   if (method === 'GET' && path === '/api/online/menu') {

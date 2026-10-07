@@ -2868,6 +2868,7 @@ async function todayScreen(me, filter = 'all') {
   });
   let errorFor = null;
   const showError = (text, key) => { errorFor = { text, key }; if (here()) draw(); };
+  const pauseBar = onlinePauseBar();
   const itemRow = (i) => {
     const row = h('article', { class: `todo ${TONE_CLASS[i.tone] ?? ''}${i.answers?.length ? ' has-answers' : ''}` });
     const actions = h('div', { class: 'todo-actions' });
@@ -2951,6 +2952,7 @@ async function todayScreen(me, filter = 'all') {
       h('header', { class: 'row wrap' },
         h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${longDay(t.today)} · ${me.restaurantName}` }), h('h1', { text: 'Today' }), h('div', { class: 'sub', text: sub })),
         h('div', { class: 'row wrap' }, sides)),
+      pauseBar,
       t.glance ? homeTiles(me, t, side, onSide) : null,
       page([h('div', { class: 'row wrap todo-head' }, h('h2', { class: 'grow', text: 'To do' })),
         h('section', { class: 'todos', 'aria-label': 'To do' }, sections.length ? sections : h('div', { class: 'card small muted', text: asleep.length ? 'All clear, apart from what’s snoozed.' : 'All clear.' }), asleepBox)],
@@ -2959,6 +2961,37 @@ async function todayScreen(me, filter = 'all') {
     errorFor = null;
   }
   draw();
+}
+
+/**
+ * Pause online orders, on Today for everyone on shift: the cooks see the slam coming. Shows only on
+ * nights online ordering is taking orders, or while it's paused.
+ */
+function onlinePauseBar() {
+  const box = h('section', { class: 'card online-pause', hidden: true, 'aria-label': 'Online orders' });
+  const draw = (p) => {
+    box.hidden = !p.paused && !p.takingOrders;
+    const save = async (btn, body) => {
+      busy(btn, true);
+      const r = await api('POST', '/api/online/pause', body);
+      if (!r.ok) { busy(btn, false); return box.append(h('div', { class: 'error small', text: r.data.error ?? 'That didn’t save.' })); }
+      draw(r.data);
+    };
+    const button = (text, body, cls = '') => h('button', { class: `btn small-btn ${cls}`, text, onclick: (e) => save(e.currentTarget, body) });
+    if (p.paused) {
+      fill(box, h('div', { class: 'grow' },
+        h('div', { class: 'strong', text: p.paused.tonight ? 'Online orders are paused for tonight' : `Online orders are paused until ${clock12(p.paused.untilTime)}` }),
+        h('div', { class: 'small muted', text: 'Customers can’t start new orders. Orders already placed still come through.' })),
+        h('div', { class: 'row wrap' }, button('Resume online orders', { resume: true }, 'dark')));
+    } else {
+      fill(box, h('div', { class: 'grow' },
+        h('div', { class: 'strong', text: 'Online orders are on' }),
+        h('div', { class: 'small muted', text: 'Slammed? Pause new online orders for a while.' })),
+        h('div', { class: 'row wrap' }, [15, 30, 60].map((m) => button(`Pause ${m} min`, { minutes: m })), button('Rest of tonight', { tonight: true })));
+    }
+  };
+  api('GET', '/api/online/pause').then((r) => { if (r.ok) draw(r.data); });
+  return box;
 }
 
 /** Each tab's color: the edge of its tile on Today, its tag on a to-do, its icon in the rail. */
