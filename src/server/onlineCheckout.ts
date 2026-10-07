@@ -2,9 +2,11 @@
  * Online ordering for customers. Public: no sign-in. Same day, pickup only.
  *
  *   GET  /api/order/menu          the published menu, tonight's windows, and what the card form needs
- *   POST /api/order/checkout      { lines: [{ variationId, quantity, optionIds? }], window, name, phone, email?, tip, understood: true }
- *                                 holds the pizzas in that window, creates the Square order; returns its total
+ *   POST /api/order/checkout      { lines: [{ variationId, quantity, optionIds? }], window, name, phone, email?, tip, understood: true, replaces? }
+ *                                 holds the pizzas in that window, creates the Square order; returns its total.
+ *                                 `replaces`: the customer's earlier unpaid order, whose hold is given up first
  *   POST /api/order/:id/pay       { sourceId, verificationToken? }  the card token from the Web Payments SDK
+ *   POST /api/order/:id/release   gives up a held order's pickup slot (the customer went back to change it)
  *   GET  /api/order/:id           where an order stands, for the confirmation page
  *
  * The cart is priced again here from the catalog, never taken from the browser. A hold lasts
@@ -14,6 +16,10 @@
  * Published items are read from Square as they are now (price, sold out) at most once every
  * CATALOG_CHECK_MS, on top of the nightly copy of the catalog; if Square can't be reached, the
  * last read (or the copy) stands.
+ *
+ * Paying is one at a time per order, and asks Square first whether the order is already paid: a Pay
+ * pressed again after the connection dropped (with a new card token, so a new idempotency key) gets
+ * the payment that went through, never a second charge.
  *
  * Right before an order is created in Square, and again right before the card is charged, the
  * items in it are read from Square afresh: anything switched off on the POS, or with fewer left
@@ -36,6 +42,8 @@ import { SquareCheckout, type SquareEnvironment } from '../connectors/squareChec
 import { SquareApiError, type Fetch } from '../connectors/squareApi.ts';
 
 export const HOLD_MINUTES = 10;
+/** A payment still marked as with Square after this long is taken to have died with its request. */
+export const PAYING_MINUTES = 2;
 export const REFUND_CHECK_MS = 60_000;
 export const CATALOG_CHECK_MS = 60_000;
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -158,6 +166,12 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
     if (problem) throw new HttpError(409, problem, { backToOrder: true });
   }
 
+  // Gives up an unpaid order's hold, unless a payment for it is with Square right now.
+  async function release(id: string) {
+    await db.query(`UPDATE online_orders SET status = 'released' WHERE id = $1 AND status IN ('held', 'expired')
+      AND (paying_since IS NULL OR paying_since < now() - make_interval(mins => $2::int))`, [id, PAYING_MINUTES]);
+  }
+
   async function loadOrder(id: string): Promise<OrderRow | undefined> {
     return (await db.query<OrderRow>('SELECT id, restaurant_id, day::text AS day, window_starts::text AS window_starts, pizzas, status, hold_until, customer_name, customer_phone, customer_email, lines, subtotal_cents, tax_cents, total_cents, tip_cents, square_order_id, receipt_url, hold_until > now() AS still_held FROM online_orders WHERE id = $1', [id])).rows[0];
   }
@@ -223,6 +237,8 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       await confirmStock(r.id, now.date, cart.lines);
 
       await db.query("UPDATE online_orders SET status = 'expired' WHERE restaurant_id = $1 AND status = 'held' AND hold_until < now() - interval '1 hour'", [r.id]);
+      // Went back to change the order: the earlier one's pizzas aren't held twice.
+      if (typeof b.replaces === 'string' && ID.test(b.replaces)) await release(b.replaces);
       await noticeRefunds(r.id, now.date);
       const windows = await loadWindows(db, r.id, now.date);
       const fit = fitOrder(windows, cart.pizzas, now.time);
@@ -255,38 +271,64 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       if (!order || !order.square_order_id) throw new HttpError(404, 'That order isn’t here. Start again from the menu.');
       if (order.status === 'paid') return send(res, 200, summary(order)), true;
       if (order.status !== 'held' && order.status !== 'expired') throw new HttpError(409, 'That order can’t be paid any more. Start again from the menu.');
-      if (!order.still_held || order.status === 'expired') {
-        // The hold lapsed while they were paying: fine if the window still has room.
-        const r = await restaurant();
-        const now = nowIn(r.timezone);
-        const windows = await loadWindows(db, r.id, order.day, order.id);
-        if (order.day !== now.date || !fittingWindows(windows, order.pizzas, now.time).some((w) => w.starts === hhmm(order.window_starts))) {
-          await db.query("UPDATE online_orders SET status = 'expired' WHERE id = $1 AND status = 'held'", [order.id]);
-          throw new HttpError(409, 'Sorry, that pickup time filled up while you were paying. You haven’t been charged: start again to pick another time.');
+      // One payment at a time: a second Pay while the first is with Square waits for it.
+      const claimed = await db.query(`UPDATE online_orders SET paying_since = now() WHERE id = $1 AND status IN ('held', 'expired')
+        AND (paying_since IS NULL OR paying_since < now() - make_interval(mins => $2::int)) RETURNING id`, [order.id, PAYING_MINUTES]);
+      if (!claimed.rows.length) {
+        const now = (await loadOrder(order.id))!;
+        if (now.status === 'paid') return send(res, 200, summary(now)), true;
+        throw new HttpError(409, 'Your payment is still going through. Give it a moment.', { paying: true });
+      }
+      try {
+        // Already paid in Square (an earlier Pay went through, but its answer never got back): no second charge.
+        let already;
+        try { already = await ready.square.paidWith(order.square_order_id); } catch (err) { console.error(`online order ${order.id}: couldn’t ask Square whether it’s paid: ${(err as Error).message}`); }
+        if (already) {
+          await db.query("UPDATE online_orders SET status = 'paid', square_payment_id = $2, paid_at = now(), failure = NULL WHERE id = $1", [order.id, already.id]);
+          return send(res, 200, summary((await loadOrder(order.id))!)), true;
         }
-        await db.query("UPDATE online_orders SET status = 'held', hold_until = now() + make_interval(mins => $2::int) WHERE id = $1", [order.id, HOLD_MINUTES]);
-      }
-      try {
-        await confirmStock(order.restaurant_id, order.day, (typeof order.lines === 'string' ? JSON.parse(order.lines) : order.lines) as CartLine[]);
-      } catch (err) {
-        if (err instanceof HttpError) await db.query("UPDATE online_orders SET status = 'failed', failure = $2 WHERE id = $1 AND status = 'held'", [order.id, err.message]);
-        throw err;
-      }
-      // One key per card token: pressing Pay twice can't charge twice, and a declined card can be retried with another.
-      const key = `${order.id}:${createHash('sha256').update(sourceId).digest('hex').slice(0, 8)}`;
-      try {
-        const payment = await ready.square.payOrder({ idempotencyKey: key, orderId: order.square_order_id, locationId: ready.locationId, sourceId, amount: order.total_cents, tip: order.tip_cents, ...(typeof b.verificationToken === 'string' ? { verificationToken: b.verificationToken } : {}), ...(order.customer_email ? { email: order.customer_email } : {}) });
-        if (payment.status !== 'COMPLETED' && payment.status !== 'APPROVED') throw new HttpError(402, 'The payment didn’t go through. Try another card.');
-        await db.query("UPDATE online_orders SET status = 'paid', square_payment_id = $2, receipt_url = $3, paid_at = now(), failure = NULL WHERE id = $1", [order.id, payment.id, payment.receiptUrl ?? null]);
-      } catch (err) {
-        if (err instanceof HttpError) throw err;
-        const codes = (err as { codes?: string[] }).codes ?? [];
-        await db.query('UPDATE online_orders SET failure = $2 WHERE id = $1', [order.id, (err as Error).message.slice(0, 500)]);
-        if (err instanceof SquareApiError && err.status >= 400 && err.status < 500 && codes.length) throw new HttpError(402, codes.some((c) => /CVV|ADDRESS|POSTAL|EXPIRATION/.test(c)) ? 'The card details didn’t match. Check them and try again.' : 'The card was declined. Try another card.');
-        console.error(`online order ${order.id} payment: ${(err as Error).message}`);
-        throw new HttpError(502, 'We couldn’t take the payment. You haven’t been charged: try again, or call us.');
+        if (!order.still_held || order.status === 'expired') {
+          // The hold lapsed while they were paying: fine if the window still has room.
+          const r = await restaurant();
+          const now = nowIn(r.timezone);
+          const windows = await loadWindows(db, r.id, order.day, order.id);
+          if (order.day !== now.date || !fittingWindows(windows, order.pizzas, now.time).some((w) => w.starts === hhmm(order.window_starts))) {
+            await db.query("UPDATE online_orders SET status = 'expired' WHERE id = $1 AND status = 'held'", [order.id]);
+            throw new HttpError(409, 'Sorry, that pickup time filled up while you were paying. You haven’t been charged: start again to pick another time.');
+          }
+          await db.query("UPDATE online_orders SET status = 'held', hold_until = now() + make_interval(mins => $2::int) WHERE id = $1", [order.id, HOLD_MINUTES]);
+        }
+        try {
+          await confirmStock(order.restaurant_id, order.day, (typeof order.lines === 'string' ? JSON.parse(order.lines) : order.lines) as CartLine[]);
+        } catch (err) {
+          if (err instanceof HttpError) await db.query("UPDATE online_orders SET status = 'failed', failure = $2 WHERE id = $1 AND status = 'held'", [order.id, err.message]);
+          throw err;
+        }
+        // One key per card token: pressing Pay twice can't charge twice, and a declined card can be retried with another.
+        const key = `${order.id}:${createHash('sha256').update(sourceId).digest('hex').slice(0, 8)}`;
+        try {
+          const payment = await ready.square.payOrder({ idempotencyKey: key, orderId: order.square_order_id, locationId: ready.locationId, sourceId, amount: order.total_cents, tip: order.tip_cents, ...(typeof b.verificationToken === 'string' ? { verificationToken: b.verificationToken } : {}), ...(order.customer_email ? { email: order.customer_email } : {}) });
+          if (payment.status !== 'COMPLETED' && payment.status !== 'APPROVED') throw new HttpError(402, 'The payment didn’t go through. Try another card.');
+          await db.query("UPDATE online_orders SET status = 'paid', square_payment_id = $2, receipt_url = $3, paid_at = now(), failure = NULL WHERE id = $1", [order.id, payment.id, payment.receiptUrl ?? null]);
+        } catch (err) {
+          if (err instanceof HttpError) throw err;
+          const codes = (err as { codes?: string[] }).codes ?? [];
+          await db.query('UPDATE online_orders SET failure = $2 WHERE id = $1', [order.id, (err as Error).message.slice(0, 500)]);
+          if (err instanceof SquareApiError && err.status >= 400 && err.status < 500 && codes.length) throw new HttpError(402, codes.some((c) => /CVV|ADDRESS|POSTAL|EXPIRATION/.test(c)) ? 'The card details didn’t match. Check them and try again.' : 'The card was declined. Try another card.');
+          console.error(`online order ${order.id} payment: ${(err as Error).message}`);
+          throw new HttpError(502, 'We couldn’t finish the payment. Try again in a moment: you won’t be charged twice.');
+        }
+      } finally {
+        await db.query('UPDATE online_orders SET paying_since = NULL WHERE id = $1', [order.id]);
       }
       return send(res, 200, summary((await loadOrder(order.id))!)), true;
+    }
+
+    if (method === 'POST' && (m = path.match(/^\/api\/order\/([0-9a-f-]{36})\/release$/)) && ID.test(m[1]!)) {
+      await release(m[1]!);
+      const order = await loadOrder(m[1]!);
+      if (!order) throw new HttpError(404, 'That order isn’t here.');
+      return send(res, 200, summary(order)), true;
     }
 
     if (method === 'GET' && (m = path.match(/^\/api\/order\/([0-9a-f-]{36})$/)) && ID.test(m[1]!)) {

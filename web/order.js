@@ -223,6 +223,8 @@ function checkoutView() {
       lines: cart.map((l) => ({ variationId: l.variationId, quantity: l.quantity, optionIds: l.optionIds })),
       window: when.value, name: name.value, phone: phone.value, email: email.value || undefined,
       tip: Math.round(subtotal * tipPct / 100), understood: true,
+      // An order started earlier and not paid gives up its pickup slot to this one.
+      replaces: store.get('pending') ?? undefined,
     });
     go.disabled = false;
     if (!r.ok) {
@@ -231,6 +233,7 @@ function checkoutView() {
       if (r.data.backToOrder) cartView(r.data.error);
       return;
     }
+    store.set('pending', r.data.id);
     payView(r.data);
   });
   show(header(), h('div', { class: 'wrap' },
@@ -279,7 +282,7 @@ async function payView(order) {
         h('div', { class: 'total' }, h('span', { text: 'Total' }), h('span', { text: money2(order.total + order.tip) })))),
     h('p', { class: 'small muted', text: `Your pickup time is held for ${order.holdMinutes} minutes while you pay.` }),
     cardBox, err, pay,
-    h('button', { class: 'link', style: 'margin-top:16px', text: 'Change the order', onclick: cartView })));
+    h('button', { class: 'link', style: 'margin-top:16px', text: 'Change the order', onclick: changeOrder })));
   let card;
   try {
     const payments = await loadSquare();
@@ -296,18 +299,45 @@ async function payView(order) {
     try {
       const t = await card.tokenize();
       if (t.status !== 'OK') { pay.disabled = false; return (err.textContent = t.errors?.[0]?.message ?? 'Check the card details.'); }
-      const r = await api('POST', `/api/order/${order.id}/pay`, { sourceId: t.token });
+      let r = await api('POST', `/api/order/${order.id}/pay`, { sourceId: t.token });
+      // The answer didn't come back (signal dropped) or a payment is still going through: see where the order stands before anything else.
+      if (r.status === 0 || r.data.paying) r = await settled(order.id, r);
       if (r.data.backToOrder) { await refreshMenu().catch(() => {}); return cartView(`${r.data.error} You haven’t been charged.`); }
-      if (!r.ok) { pay.disabled = false; return (err.textContent = r.data.error ?? 'The payment didn’t go through.'); }
-      cart = [];
-      saveCart();
-      store.set('lastOrder', r.data.id);
-      doneView(r.data);
+      if (!r.ok || r.data.status !== 'paid') { pay.disabled = false; return (err.textContent = r.data.error ?? 'The payment didn’t go through.'); }
+      paid(r.data);
     } catch {
+      const r = await settled(order.id, { ok: false, status: 0, data: {} });
+      if (r.ok && r.data.status === 'paid') return paid(r.data);
       pay.disabled = false;
-      err.textContent = 'The payment didn’t go through. Try again.';
+      err.textContent = 'We couldn’t reach the payment. Check your signal and try again: you won’t be charged twice.';
     }
   });
+}
+
+function paid(order) {
+  cart = [];
+  saveCart();
+  store.set('pending', null);
+  store.set('lastOrder', order.id);
+  doneView(order);
+}
+
+/** Asks a few times whether the order got paid, while a payment may still be going through. */
+async function settled(id, last) {
+  for (let i = 0; i < 6; i++) {
+    await new Promise((ok) => setTimeout(ok, 2000));
+    const r = await api('GET', `/api/order/${id}`);
+    if (r.ok && r.data.status === 'paid') return r;
+  }
+  return last.status === 0 ? { ok: false, status: 0, data: { error: 'We couldn’t reach the payment. Check your signal and try again: you won’t be charged twice.' } } : last;
+}
+
+/** Back from payment to change the order: its pickup slot isn't held twice. */
+async function changeOrder() {
+  const id = store.get('pending');
+  if (id) { await api('POST', `/api/order/${id}/release`); store.set('pending', null); }
+  await refreshMenu().catch(() => {});
+  cartView();
 }
 
 function doneView(order) {
@@ -348,6 +378,13 @@ async function start() {
   }
   if (saved?.day !== M.today) { cart = []; saveCart(); }
   document.title = `${brand.name ?? M.restaurant} · Order online`;
+  // Paid, but the page never heard back (signal dropped, page closed): show it's in rather than the cart.
+  const pending = store.get('pending');
+  if (pending) {
+    const o = await api('GET', `/api/order/${pending}`);
+    if (o.ok && o.data.status === 'paid') return paid(o.data);
+    if (!o.ok || !['held', 'expired'].includes(o.data.status)) store.set('pending', null);
+  }
   menuView();
 }
 

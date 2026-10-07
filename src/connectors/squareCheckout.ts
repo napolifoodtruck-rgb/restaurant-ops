@@ -121,6 +121,15 @@ export class SquareCheckout {
     return { id: order.id, version: order.version, total: Number(order.total_money?.amount ?? 0), tax: Number(order.total_tax_money?.amount ?? 0) };
   }
 
+  /** The payment an order is already paid with in Square, if it's paid in full. */
+  async paidWith(orderId: string): Promise<SquarePaymentOut | undefined> {
+    const data = await this.#call('GET', `/v2/orders/${encodeURIComponent(orderId)}`);
+    const order = data.order ?? {};
+    const tender = (order.tenders ?? []).find((t: any) => t.payment_id);
+    if (!tender || Number(order.net_amount_due_money?.amount ?? 1) > 0) return undefined;
+    return { id: tender.payment_id, status: 'COMPLETED' };
+  }
+
   /** Charges the order with the card token; the tip goes on top of the order's total. */
   async payOrder(p: { idempotencyKey: string; orderId: string; locationId: string; sourceId: string; amount: number; tip: number; verificationToken?: string; email?: string }): Promise<SquarePaymentOut> {
     const data = await this.#post('/v2/payments', {

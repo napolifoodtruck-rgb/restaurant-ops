@@ -2142,6 +2142,7 @@ async function onlineMenuCard(me) {
       .sort((a, b) => Number(a.published) - Number(b.published) || a.name.localeCompare(b.name)).slice(0, 20);
     fill(results, hits.length ? hits.map(libraryRow) : h('div', { class: 'small muted', text: 'No Square item by that name.' }));
   }
+  const folded = new Set();
   // The order page as customers see it: drag sections and items, saved as they drop.
   function arrangeView(online) {
     const saveOrder = async () => {
@@ -2161,16 +2162,34 @@ async function onlineMenuCard(me) {
     const section = (cat) => {
       const rows = h('div', { class: 'arr-items' }, online.filter((x) => x.category === cat).map(itemRow));
       sortable(rows, '.arr-item', saveOrder);
-      return h('div', { class: 'arr-cat', 'data-key': cat }, h('div', { class: 'arr-cat-head' }, dragHandle(`Move ${cat}`), h('h3', { text: cat })), rows);
+      const box = h('div', { class: 'arr-cat', 'data-key': cat });
+      const toggle = h('button', { type: 'button', class: 'arr-fold', onclick: () => fold(box, !box.classList.contains('folded')) });
+      box.append(h('div', { class: 'arr-cat-head' }, dragHandle(`Move ${cat}`), h('h3', { text: cat }), toggle), rows);
+      fold(box, folded.has(cat));
+      return box;
     };
-    const view = h('div', { class: 'arrange' }, [...new Set(online.map((x) => x.category))].map(section));
+    const fold = (box, shut) => {
+      const n = box.querySelectorAll('.arr-item').length;
+      box.classList.toggle('folded', shut);
+      shut ? folded.add(box.dataset.key) : folded.delete(box.dataset.key);
+      const toggle = box.querySelector('.arr-fold');
+      toggle.textContent = shut ? `▸ Show ${n} item${n === 1 ? '' : 's'}` : '▾ Collapse';
+      toggle.setAttribute('aria-expanded', String(!shut));
+      if (view) foldAll.textContent = view.querySelector('.arr-cat:not(.folded)') ? 'Collapse all' : 'Expand all';
+    };
+    let view = null;
+    const foldAll = h('button', { class: 'btn small-btn', title: 'Fold sections to their names, handy for moving whole sections',
+      onclick: () => { const shut = !!view.querySelector('.arr-cat:not(.folded)'); view.querySelectorAll('.arr-cat').forEach((c) => fold(c, shut)); } });
+    view = h('div', { class: 'arrange' }, [...new Set(online.map((x) => x.category))].map(section));
+    foldAll.textContent = view.querySelector('.arr-cat:not(.folded)') ? 'Collapse all' : 'Expand all';
     sortable(view, '.arr-cat', saveOrder);
     const slowFirst = () => {
       for (const rows of view.querySelectorAll('.arr-items')) [...rows.children].sort((a, b) => Number(a.dataset.sold) - Number(b.dataset.sold)).forEach((k) => rows.append(k));
       saveOrder();
     };
     return h('div', { class: 'stack' },
-      h('div', { class: 'row wrap' }, h('div', { class: 'small muted grow', text: 'Drag sections and items into the order customers see. It saves as you drop.' }),
+      h('div', { class: 'small muted', text: 'Drag sections and items into the order customers see. It saves as you drop.' }),
+      h('div', { class: 'row wrap' }, foldAll,
         h('button', { class: 'btn small-btn', text: 'Slowest sellers first', title: 'In each section, put the items that sold least in the last 30 days on top', onclick: slowFirst })),
       view);
   }
