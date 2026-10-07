@@ -269,6 +269,9 @@ export function menuView(model: Model, view: AreaView = ALL) {
 
   // Square's photo of the dish, when it has one.
   const imageFor = (e: { recipeId?: string }) => { const c = e.recipeId ? posNameOf.get(e.recipeId)?.catalogId : undefined; const url = c ? model.imageOf(c) : undefined; return url ? { image: url } : {}; };
+  // The Square item behind a line (sales are by variation), for selling it online from the Menu screen.
+  const itemIdOf = new Map(model.menuItems.filter((m) => m.itemId).map((m) => [m.catalogId, m.itemId!]));
+  const squareItemFor = (catalogId?: string) => { const id = catalogId ? itemIdOf.get(catalogId) : undefined; return id ? { squareItemId: id } : {}; };
   // Discount buttons folded into this one: shown on its line, each able to be kept apart.
   const includesFor = (catalogId?: string) => { const f = catalogId ? model.folded.get(catalogId) : undefined; return f?.length ? { includes: f, catalogId } : {}; };
   const lastSoldOf = new Map<string, string>();
@@ -277,6 +280,7 @@ export function menuView(model: Model, view: AreaView = ALL) {
     ...(e.recipeId && lastSoldOf.get(e.recipeId) ? { lastSold: lastSoldOf.get(e.recipeId) } : {}),
     ...imageFor(e),
     ...includesFor(e.recipeId ? posNameOf.get(e.recipeId)?.catalogId : undefined),
+    ...squareItemFor(e.recipeId ? posNameOf.get(e.recipeId)?.catalogId : undefined),
     name: shownName(e),
     section: sectionFor(shownName(e), (e.recipeId && recipeCategory.get(e.recipeId)) || 'Other'),
     since: e.startsOn,
@@ -302,7 +306,7 @@ export function menuView(model: Model, view: AreaView = ALL) {
     const section = categoryOf.get(s.catalogId) ?? 'Other';
     if (!inArea(view, section) || s.quantity <= 0) continue;
     const menuKey = `pos:${s.catalogId}`;
-    const item = { name: s.name, section: sectionFor(s.name, section), hasCard: false, pos: posItem(s.catalogId, s.name), menuKey, ...includesFor(s.catalogId), ...(model.imageOf(s.catalogId) ? { image: model.imageOf(s.catalogId)! } : {}) };
+    const item = { name: s.name, section: sectionFor(s.name, section), hasCard: false, pos: posItem(s.catalogId, s.name), menuKey, ...includesFor(s.catalogId), ...squareItemFor(s.catalogId), ...(model.imageOf(s.catalogId) ? { image: model.imageOf(s.catalogId)! } : {}) };
     const a = statusOf.get(menuKey);
     if (a?.status === 'off' && s.last <= a.date) { cameOff.push({ ...item, from: s.first, to: a.date >= s.first ? a.date : s.last }); continue; }
     const after = quietThreshold(posDays.get(`${s.catalogId}|${s.name}`) ?? []);

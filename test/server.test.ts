@@ -380,7 +380,10 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   const ownerBook = (await call('GET', '/api/recipes', { cookies: ownerSession })).json;
   assert.deepEqual(Object.keys(ownerBook.coverage), ['kitchen', 'bar']);
   assert.equal(typeof ownerBook.coverage.bar.complete, 'number');
-  assert.equal(typeof (await call('GET', '/api/menu?area=bar', { cookies: ownerSession })).json.coverage.noCard, 'number');
+  const barMenu = (await call('GET', '/api/menu?area=bar', { cookies: ownerSession })).json;
+  assert.equal(typeof barMenu.coverage.noCard, 'number');
+  // Each line carries its Square item, so it can be sold online from the Menu screen.
+  assert.equal(barMenu.current.find((x: any) => x.name === 'House Soda').squareItemId, 'I-SODA');
   const sodaForCook = (await call('GET', '/api/recipes/House%20Soda', { cookies: marcoOnExpo })).json;
   assert.deepEqual([sodaForCook.ingredients[0].card, sodaForCook.cost, sodaForCook.canEdit], ['Simple Syrup 1:1', undefined, false]);
   const syrupScaled = (await call('GET', '/api/recipes/Simple%20Syrup%201%3A1?amount=2&unit=qt', { cookies: marcoOnExpo })).json;
