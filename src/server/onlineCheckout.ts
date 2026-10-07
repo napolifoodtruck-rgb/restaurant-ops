@@ -28,6 +28,10 @@
  * A paid order refunded in full in Square (or cancelled from the POS, which refunds it) gives its
  * pizzas back: tonight's payments are looked up again at most once every REFUND_CHECK_MS, as
  * customers load the menu or check out.
+ *
+ * A paid order with an email gets one confirmation email (when email is set up), sent after the
+ * customer has their answer so it never slows paying down. A failed send is tried again when the
+ * order is next looked at, up to CONFIRMATION_TRIES times.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -40,12 +44,15 @@ import { CartError, priceCart, publicMenu, stockProblem, tipProblem, type CartLi
 import { fitOrder, fittingWindows, isWindowStart } from '../core/pickupWindows.ts';
 import { SquareCheckout, type SquareEnvironment } from '../connectors/squareCheckout.ts';
 import { SquareApiError, type Fetch } from '../connectors/squareApi.ts';
+import { emailSender, type EmailSettings } from '../connectors/email.ts';
+import { confirmationEmail } from '../core/orderConfirmation.ts';
 
 export const HOLD_MINUTES = 10;
 /** A payment still marked as with Square after this long is taken to have died with its request. */
 export const PAYING_MINUTES = 2;
 export const REFUND_CHECK_MS = 60_000;
 export const CATALOG_CHECK_MS = 60_000;
+export const CONFIRMATION_TRIES = 3;
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export interface CheckoutSettings {
@@ -66,6 +73,8 @@ export interface CheckoutSettings {
   catalogCheckMs?: number;
   /** For tests: how many tries one address gets in five minutes (default 20). */
   triesPerFiveMinutes?: number;
+  /** Order confirmation emails. Unset = none sent. */
+  email?: EmailSettings;
 }
 
 /** Ready to take payments: all three are set. */
@@ -112,6 +121,7 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
   const ready = checkoutFrom(settings);
   const allowed = rateLimiter(settings.triesPerFiveMinutes ?? 20, 5 * 60_000);
   const nowIn = settings.now ?? localNow;
+  const sendEmail = emailSender(settings.email);
 
   async function restaurant() {
     // One restaurant per app for now, as with the brand.
@@ -171,6 +181,25 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
     await db.query(`UPDATE online_orders SET status = 'released' WHERE id = $1 AND status IN ('held', 'expired')
       AND (paying_since IS NULL OR paying_since < now() - make_interval(mins => $2::int))`, [id, PAYING_MINUTES]);
   }
+
+  // The confirmation email, once per order: claimed first so two requests can't both send it.
+  async function confirm(id: string) {
+    if (!sendEmail) return;
+    const o = (await db.query<OrderRow>(`UPDATE online_orders SET confirmation_sent_at = now(), confirmation_tries = confirmation_tries + 1
+      WHERE id = $1 AND status = 'paid' AND customer_email IS NOT NULL AND confirmation_sent_at IS NULL AND confirmation_tries < $2
+      RETURNING id, window_starts::text AS window_starts, customer_name, customer_email, lines, subtotal_cents, tax_cents, total_cents, tip_cents, receipt_url`, [id, CONFIRMATION_TRIES])).rows[0];
+    if (!o) return;
+    try {
+      const r = await restaurant();
+      const s = summary(o);
+      await sendEmail(o.customer_email!, confirmationEmail({ id: o.id, restaurant: r.name, name: s.name, pickup: s.window.label, lines: s.lines, subtotal: s.subtotal, tax: s.tax, tip: s.tip, total: s.total, receiptUrl: o.receipt_url }), `order-confirmation/${o.id}`);
+    } catch (err) {
+      await db.query('UPDATE online_orders SET confirmation_sent_at = NULL WHERE id = $1', [id]).catch(() => {});
+      console.error(`online order ${id}: couldn’t send the confirmation email: ${(err as Error).message}`);
+    }
+  }
+  /** Sends the confirmation in the background: paying never waits on it. */
+  const confirmLater = (id: string) => { confirm(id).catch((err) => console.error(`online order ${id}: confirmation email: ${(err as Error).message}`)); };
 
   async function loadOrder(id: string): Promise<OrderRow | undefined> {
     return (await db.query<OrderRow>('SELECT id, restaurant_id, day::text AS day, window_starts::text AS window_starts, pizzas, status, hold_until, customer_name, customer_phone, customer_email, lines, subtotal_cents, tax_cents, total_cents, tip_cents, square_order_id, receipt_url, hold_until > now() AS still_held FROM online_orders WHERE id = $1', [id])).rows[0];
@@ -269,14 +298,14 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       if (!sourceId || sourceId.length > 500) throw new HttpError(400, 'The card details didn’t come through. Try again.');
       const order = await loadOrder(m[1]!);
       if (!order || !order.square_order_id) throw new HttpError(404, 'That order isn’t here. Start again from the menu.');
-      if (order.status === 'paid') return send(res, 200, summary(order)), true;
+      if (order.status === 'paid') return confirmLater(order.id), send(res, 200, summary(order)), true;
       if (order.status !== 'held' && order.status !== 'expired') throw new HttpError(409, 'That order can’t be paid any more. Start again from the menu.');
       // One payment at a time: a second Pay while the first is with Square waits for it.
       const claimed = await db.query(`UPDATE online_orders SET paying_since = now() WHERE id = $1 AND status IN ('held', 'expired')
         AND (paying_since IS NULL OR paying_since < now() - make_interval(mins => $2::int)) RETURNING id`, [order.id, PAYING_MINUTES]);
       if (!claimed.rows.length) {
         const now = (await loadOrder(order.id))!;
-        if (now.status === 'paid') return send(res, 200, summary(now)), true;
+        if (now.status === 'paid') return confirmLater(now.id), send(res, 200, summary(now)), true;
         throw new HttpError(409, 'Your payment is still going through. Give it a moment.', { paying: true });
       }
       try {
@@ -285,7 +314,7 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
         try { already = await ready.square.paidWith(order.square_order_id); } catch (err) { console.error(`online order ${order.id}: couldn’t ask Square whether it’s paid: ${(err as Error).message}`); }
         if (already) {
           await db.query("UPDATE online_orders SET status = 'paid', square_payment_id = $2, paid_at = now(), failure = NULL WHERE id = $1", [order.id, already.id]);
-          return send(res, 200, summary((await loadOrder(order.id))!)), true;
+          return confirmLater(order.id), send(res, 200, summary((await loadOrder(order.id))!)), true;
         }
         if (!order.still_held || order.status === 'expired') {
           // The hold lapsed while they were paying: fine if the window still has room.
@@ -321,7 +350,7 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       } finally {
         await db.query('UPDATE online_orders SET paying_since = NULL WHERE id = $1', [order.id]);
       }
-      return send(res, 200, summary((await loadOrder(order.id))!)), true;
+      return confirmLater(order.id), send(res, 200, summary((await loadOrder(order.id))!)), true;
     }
 
     if (method === 'POST' && (m = path.match(/^\/api\/order\/([0-9a-f-]{36})\/release$/)) && ID.test(m[1]!)) {
@@ -334,6 +363,7 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
     if (method === 'GET' && (m = path.match(/^\/api\/order\/([0-9a-f-]{36})$/)) && ID.test(m[1]!)) {
       const order = await loadOrder(m[1]!);
       if (!order) throw new HttpError(404, 'That order isn’t here.');
+      if (order.status === 'paid') confirmLater(order.id);
       return send(res, 200, summary(order)), true;
     }
 

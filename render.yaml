@@ -31,6 +31,13 @@ services:
         sync: false
       - key: SQUARE_ENVIRONMENT
         value: sandbox
+      # Order confirmation emails (Resend). Unset = none sent.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: ORDER_EMAIL_FROM
+        sync: false
+      - key: ORDER_EMAIL_REPLY_TO
+        sync: false
 
 databases:
   - name: restaurant-ops-db

@@ -14,6 +14,9 @@
  *   SQUARE_APPLICATION_ID        online orders: the Square app the card form belongs to
  *   SQUARE_CHECKOUT_LOCATION_ID  online orders: the location they're placed at
  *   SQUARE_ENVIRONMENT           'production' to take real payments; anything else is Square's sandbox
+ *   RESEND_API_KEY               online orders: confirmation emails through Resend; unset = none sent
+ *   ORDER_EMAIL_FROM             e.g. "Napoli <orders@napolicarrboro.com>" (domain verified in Resend)
+ *   ORDER_EMAIL_REPLY_TO         optional: where customers' replies go
  */
 
 import { createServer } from 'node:http';
@@ -43,6 +46,7 @@ const checkout = {
   locationId: process.env.SQUARE_CHECKOUT_LOCATION_ID || undefined,
   environment: process.env.SQUARE_ENVIRONMENT === 'production' ? 'production' as const : 'sandbox' as const,
   version: process.env.SQUARE_VERSION || undefined,
+  email: { apiKey: process.env.RESEND_API_KEY, from: process.env.ORDER_EMAIL_FROM || undefined, replyTo: process.env.ORDER_EMAIL_REPLY_TO || undefined },
 };
 const handle = createApp({ db, setupToken: process.env.SETUP_TOKEN || undefined, secureCookies: process.env.NODE_ENV === 'production', sync, checkout });
 const stopScheduler = startScheduler(db, sync);

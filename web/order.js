@@ -10,6 +10,7 @@ const root = document.getElementById('order');
 const PARTIAL_TITLE = 'Every online pizza is partially cooked.';
 const PARTIAL_BODY = 'You finish it in your own oven at home, just before eating, so it tastes the way it does here. True Neapolitan pizza is ruined within minutes in a closed box.';
 // Napoli's own instructions for finishing a partially cooked pizza at home.
+// The confirmation email repeats these words (src/core/orderConfirmation.ts): change both.
 const FINISH_STEPS = [
   'Preheat your oven to 450°F on convection, or higher.',
   'Once it’s preheated, put the pizza directly on the rack.',
