@@ -23,7 +23,7 @@ import { guessArea, loadAreas } from './areas.ts';
 import { ordersDue } from './orders.ts';
 import { view as stationDay } from './prep.ts';
 import { blendedPrices } from '../connectors/marginedge.ts';
-import { notBoughtKey, recipeChecks } from './recipeChecks.ts';
+import { notBoughtKey, quietVendorKey, recipeChecks } from './recipeChecks.ts';
 
 export interface TodayItem {
   key: string;
@@ -252,6 +252,14 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string, 
         go: { to: 'recipeChecks', side }, button: 'Recipe checks' });
     }
     if (stale.length > shown) items.push({ key: `recipe:notBought:more:${side}`, group: 'costs', label: 'Recipe checks', tone: 'ask', dollars: stale.slice(shown).reduce((a, x) => a + (x.dollarsPerWeek ?? 0) * 13, 0), title: `${stale.length - shown} more ingredients the menu uses but you haven’t bought lately`, detail: list(stale.slice(shown).map((x) => x.name), 4), go: { to: 'recipeChecks', side }, button: 'Recipe checks' });
+    // A vendor gone quiet: their invoices may not be reaching MarginEdge, so food cost reads low.
+    for (const v of checks.quietVendors.filter((x) => x.side === side)) {
+      items.push({ key: `vendor:quiet:${v.vendorId}`, group: 'costs', label: 'Invoices', tone: 'alert', dollars: 10_000,
+        title: `No ${v.vendor} invoice since ${shortDate(v.lastDate)}`,
+        detail: `They usually come every ${v.usualGap} day${v.usualGap === 1 ? '' : 's'} (${v.invoices} in the 6 months before). If deliveries are still coming, their invoices aren’t reaching MarginEdge, and food cost reads low until they do.`,
+        answers: [{ label: 'We stopped buying from them', body: { type: 'dismiss', dedupeKey: quietVendorKey(v.vendorId, v.lastDate), note: `${v.vendor}: stopped buying from them` } }],
+        go: { to: 'recipeChecks', side }, button: 'Recipe checks' });
+    }
     // The bar's wines and spirits aren't in recipes until the drinks are drafted: that's asked about already.
     const unused = checks.notInRecipes.filter((x) => x.side === side);
     const barUndrafted = side === 'bar' && model.margins.unlinked.some((u) => u.catalogId && u.netSales > 0 && areaOf(u.category) === 'bar');

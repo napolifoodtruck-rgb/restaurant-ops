@@ -4,17 +4,20 @@
  * no recipe. Shown on Recipe checks and in Needs you; answered there (swap, or "it's right").
  */
 
-import { boughtNotInRecipes, notBoughtLately, type Bought, type CheckProduct, type NotBought, type NotInRecipes, type WeeklyUse } from '../core/ingredientChecks.ts';
+import { boughtNotInRecipes, notBoughtLately, quietVendors, type QuietVendor, type ProductKind, type Bought, type CheckProduct, type NotBought, type NotInRecipes, type WeeklyUse } from '../core/ingredientChecks.ts';
 import { purchaseKind } from '../core/costReports.ts';
 import { dimensionOf } from '../core/units.ts';
 import type { Model } from './model.ts';
 
 export const notBoughtKey = (productId: string) => `ingredient:notBought:${productId}`;
 export const notInRecipesKey = (productId: string) => `ingredient:notInRecipe:${productId}`;
+/** Keyed by the last invoice too: answered once, it asks again if they go quiet again later. */
+export const quietVendorKey = (vendorId: string, lastDate: string) => `vendor:quiet:${vendorId}:${lastDate}`;
 
 export interface RecipeChecks {
   notBought: (NotBought & { side: 'kitchen' | 'bar'; recipes: string[] })[];
   notInRecipes: (NotInRecipes & { side: 'kitchen' | 'bar' })[];
+  quietVendors: (QuietVendor & { side: 'kitchen' | 'bar' })[];
 }
 
 const memo = new WeakMap<Model, Map<string, RecipeChecks>>();
@@ -70,6 +73,12 @@ export function recipeChecks(model: Model, today: string, dismissed: string[] = 
     notBought: notBoughtLately(input).filter((x) => !gone.has(notBoughtKey(x.productId)))
       .map((x) => ({ ...x, side: sideOf(kindOf.get(x.productId) ?? 'food'), recipes: (recipesOf.get(x.productId) ?? []).sort() })),
     notInRecipes: boughtNotInRecipes(input).filter((x) => !gone.has(notInRecipesKey(x.productId))).map((x) => ({ ...x, side: sideOf(x.kind) })),
+    // Vendors gone quiet: food and bar only (a cleaning supplier skipping a month doesn't touch food cost).
+    quietVendors: quietVendors(model.imported.invoices.filter((i) => i.invoiceDate && !i.isCredit && (i.vendorExternalId || i.vendorName)).map((i) => {
+      const kinds = i.lines.map((l) => (l.productExternalId ? kindOf.get(l.productExternalId) : undefined)).filter((k): k is ProductKind => Boolean(k));
+      const kind = (['food', 'bar', 'other'] as const).map((k) => [k, kinds.filter((x) => x === k).length] as const).sort((a, b) => b[1] - a[1])[0]!;
+      return { vendorId: i.vendorExternalId ?? i.vendorName!, vendor: (i.vendorName ?? 'A vendor').replace(/\s+/g, ' ').trim(), date: i.invoiceDate!, kind: kind[1] ? kind[0] : 'other' };
+    }), today).filter((v) => v.kind !== 'other' && !gone.has(quietVendorKey(v.vendorId, v.lastDate))).map((v) => ({ ...v, side: sideOf(v.kind) })),
   };
   const m = memo.get(model) ?? new Map<string, RecipeChecks>();
   m.set(key, result);

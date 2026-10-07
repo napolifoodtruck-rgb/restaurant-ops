@@ -70,3 +70,16 @@ test('bought on invoice after invoice, in no recipe: listed; supplies are not', 
   assert.deepEqual(list.map((x) => x.name), ['Cream, Heavy 40%', 'Mushrooms, Royal Trumpet']);
   assert.equal(list[0]!.times, 8);
 });
+
+test('a vendor who invoiced every week and then stopped is flagged; a monthly one a month late is not', async () => {
+  const { quietVendors } = await import('../src/core/ingredientChecks.ts');
+  const every = (vendorId: string, vendor: string, from: string, n: number, step: number) =>
+    Array.from({ length: n }, (_, k) => ({ vendorId, vendor, kind: 'food' as const, date: new Date(Date.parse(`${from}T12:00:00Z`) + k * step * 86_400_000).toISOString().slice(0, 10) }));
+  const invoices = [
+    ...every('home', 'Homeland Creamery', '2025-12-04', 26, 7), // weekly, last on May 28
+    ...every('sysco', 'Sysco', '2026-04-01', 27, 7), // weekly, still coming
+    ...every('rare', 'Spice House', '2026-01-10', 8, 30), // monthly, last Aug 7: two months is under 3 gaps
+  ];
+  const quiet = quietVendors(invoices, '2026-10-07');
+  assert.deepEqual(quiet.map((q) => [q.vendor, q.lastDate, q.usualGap]), [['Homeland Creamery', '2026-05-28', 7]]);
+});

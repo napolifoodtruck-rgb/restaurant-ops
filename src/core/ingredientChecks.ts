@@ -187,3 +187,40 @@ export function boughtNotInRecipes(input: CheckInput, days = 60): NotInRecipes[]
   }
   return out.sort((a, b) => b.dollars - a.dollars);
 }
+
+/**
+ * A vendor gone quiet: invoiced regularly, then nothing for far longer than their usual gap. The
+ * deliveries may still be coming with their invoices never reaching the books (Homeland's cream,
+ * delivered twice a week, with no invoice since May), so food cost reads low until it's found.
+ *
+ *   regular: 5 or more invoice days in the 6 months before the last one
+ *   flagged: no invoice for 3 times the usual gap (the median), and at least 3 weeks
+ */
+export interface VendorInvoice { vendorId: string; vendor: string; date: string; kind: ProductKind }
+export interface QuietVendor { vendorId: string; vendor: string; kind: ProductKind; lastDate: string; usualGap: number; days: number; invoices: number }
+
+export function quietVendors(invoices: VendorInvoice[], today: string): QuietVendor[] {
+  const byVendor = new Map<string, { vendor: string; days: Set<string>; kinds: Map<ProductKind, number> }>();
+  for (const i of invoices) {
+    const day = i.date.slice(0, 10);
+    if (!day || day > today) continue;
+    const v = byVendor.get(i.vendorId) ?? { vendor: i.vendor, days: new Set<string>(), kinds: new Map<ProductKind, number>() };
+    v.days.add(day);
+    v.kinds.set(i.kind, (v.kinds.get(i.kind) ?? 0) + 1);
+    byVendor.set(i.vendorId, v);
+  }
+  const out: QuietVendor[] = [];
+  for (const [vendorId, v] of byVendor) {
+    const days = [...v.days].sort();
+    const last = days.at(-1)!;
+    const recent = days.filter((d) => daysBetween(d, last) <= 182);
+    if (recent.length < 5) continue;
+    const gaps = recent.slice(1).map((d, k) => daysBetween(recent[k]!, d)).sort((a, b) => a - b);
+    const usualGap = gaps[Math.floor(gaps.length / 2)]!;
+    const since = daysBetween(last, today);
+    if (since < Math.max(21, 3 * usualGap)) continue;
+    const kind = [...v.kinds].sort((a, b) => b[1] - a[1])[0]![0];
+    out.push({ vendorId, vendor: v.vendor, kind, lastDate: last, usualGap: Math.round(usualGap), days: Math.floor(since), invoices: recent.length });
+  }
+  return out.sort((a, b) => b.invoices / Math.max(1, b.usualGap) - a.invoices / Math.max(1, a.usualGap));
+}

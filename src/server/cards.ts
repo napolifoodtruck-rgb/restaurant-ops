@@ -383,7 +383,7 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     const area = url.searchParams.get('area');
     const mine = <T extends { side: string }>(xs: T[]) => (area === 'kitchen' || area === 'bar' ? xs.filter((x) => x.side === area) : xs);
     return send(res, 200, {
-      notBought: mine(checks.notBought), notInRecipes: mine(checks.notInRecipes),
+      notBought: mine(checks.notBought), notInRecipes: mine(checks.notInRecipes), quietVendors: mine(checks.quietVendors),
       // To pick a replacement by hand: everything bought, newest first.
       products: productsView(model).filter((p) => p.type !== 'FREE').map((p) => ({ id: p.id, name: p.name, unit: p.unit, ...(p.lastBought ? { lastBought: p.lastBought } : {}) })),
     }), true;

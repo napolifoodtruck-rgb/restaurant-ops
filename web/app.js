@@ -2665,13 +2665,26 @@ async function recipeChecksScreen(me, opts = {}) {
         h('button', { class: 'btn small-btn', text: 'Not for the menu', title: 'Staff meal, cleaning, or something sold as is: stop asking', onclick: () => dismiss(row, `ingredient:notInRecipe:${x.productId}`, `${x.name}: not for the menu`, `${x.name}: not for the menu. It won’t be listed again.`) })));
     return row;
   };
-  const stale = d.notBought, unused = d.notInRecipes;
+  const quietRow = (v) => {
+    const row = h('article', { class: 'rcheck' });
+    fill(row,
+      h('div', { class: 'row wrap' }, h('h3', { class: 'grow', text: v.vendor }), h('span', { class: 'small warn-text', text: `${v.days} days without an invoice` })),
+      h('div', { class: 'small', text: `Last invoice ${dateWithYear(v.lastDate)}. They usually come every ${v.usualGap} day${v.usualGap === 1 ? '' : 's'} (${v.invoices} in the 6 months before). If deliveries are still coming, their invoices aren’t reaching MarginEdge, and food cost reads low until they do.` }),
+      h('div', { class: 'row tight wrap' },
+        h('button', { class: 'btn small-btn', text: 'We stopped buying from them', onclick: () => dismiss(row, `vendor:quiet:${v.vendorId}:${v.lastDate}`, `${v.vendor}: stopped buying from them`, `${v.vendor}: stopped buying from them. It asks again if they invoice and go quiet again.`) })));
+    return row;
+  };
+  const stale = d.notBought, unused = d.notInRecipes, quiet = d.quietVendors ?? [];
   show(shell(me, rail, [
     h('header', { class: 'row wrap' },
       h('div', { class: 'grow' }, h('div', { class: 'kicker', text: AREA_NAMES[side] }), h('h1', { text: 'Recipe checks' })),
       h('div', { class: 'row wrap' }, sideSwitch(me, again), from ? h('button', { class: 'btn', text: `← ${from.label}`, onclick: () => from.go() }) : null)),
     page([
       productList,
+      quiet.length ? h('section', { class: 'card' },
+        h('h2', { text: 'Vendors gone quiet' }),
+        h('div', { class: 'small muted', text: 'They invoiced regularly, then stopped. Check MarginEdge for their invoices before trusting food cost.' }),
+        h('div', { class: 'rchecks' }, quiet.map(quietRow))) : null,
       h('section', { class: 'card' },
         h('h2', { text: 'Used on the menu, not bought lately' }),
         h('div', { class: 'small muted', text: 'Sales run through your recipes say these get used every week, but no invoice has brought them in for far longer than a pack lasts. Usually the recipe names a product you’ve stopped buying.' }),
