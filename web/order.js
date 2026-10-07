@@ -185,12 +185,14 @@ function lineView(l, actions = true) {
       h('button', { class: 'link', text: 'Remove', onclick: () => { cart = cart.filter((x) => x !== l); saveCart(); cart.length ? cartView() : menuView(); } })) : null);
 }
 
-function cartView() {
+/** `problem`: why the order couldn't go ahead (something just sold out), shown at the top. */
+function cartView(problem) {
   closeSheet();
   const fits = fitting(cartPizzas());
   show(header(), h('div', { class: 'wrap' },
     h('button', { class: 'link', style: 'margin-top:16px', text: '← Back to the menu', onclick: menuView }),
     h('h1', { text: 'Your order' }),
+    typeof problem === 'string' ? h('p', { class: 'error', role: 'alert', text: problem }) : null,
     h('div', { class: 'card' }, cart.map((l) => lineView(l)), h('div', { class: 'totals' }, h('div', { class: 'total' }, h('span', { text: 'Subtotal' }), h('span', { text: money2(cartTotal()) })))),
     pickupLine(),
     h('button', { class: 'btn dark wide', disabled: !fits.length ? true : undefined, text: 'Checkout', onclick: checkoutView })));
@@ -226,6 +228,7 @@ function checkoutView() {
     if (!r.ok) {
       err.textContent = r.data.error ?? 'Something went wrong. Try again, or call us.';
       if (r.status === 409) await refreshMenu();
+      if (r.data.backToOrder) cartView(r.data.error);
       return;
     }
     payView(r.data);
@@ -294,6 +297,7 @@ async function payView(order) {
       const t = await card.tokenize();
       if (t.status !== 'OK') { pay.disabled = false; return (err.textContent = t.errors?.[0]?.message ?? 'Check the card details.'); }
       const r = await api('POST', `/api/order/${order.id}/pay`, { sourceId: t.token });
+      if (r.data.backToOrder) { await refreshMenu().catch(() => {}); return cartView(`${r.data.error} You haven’t been charged.`); }
       if (!r.ok) { pay.disabled = false; return (err.textContent = r.data.error ?? 'The payment didn’t go through.'); }
       cart = [];
       saveCart();

@@ -21,6 +21,8 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   const square: { path: string; body: any }[] = [];
   const lookups: URL[] = [];
   const refunds = new Map<string, number>();
+  const live = new Map<string, any>();
+  const stock = new Map<string, number>();
   const fakeFetch: Fetch = async (url, init) => {
     const path = new URL(url).pathname;
     const reply = (status: number, data: unknown) => ({ ok: status < 300, status, json: async () => data, text: async () => JSON.stringify(data) });
@@ -29,6 +31,8 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
       return reply(200, { payments: [...refunds].map(([id, refunded]) => ({ id, total_money: { amount: 4000 }, refunded_money: { amount: refunded } })) });
     }
     const body = JSON.parse(init.body ?? '{}');
+    if (path === '/v2/inventory/counts/batch-retrieve') return reply(200, { counts: body.catalog_object_ids.filter((id: string) => stock.has(id)).map((id: string) => ({ catalog_object_id: id, state: 'IN_STOCK', quantity: String(stock.get(id)) })) });
+    if (path === '/v2/catalog/batch-retrieve') return reply(200, { objects: body.object_ids.map((id: string) => live.get(id)).filter(Boolean) });
     square.push({ path, body });
     if (path === '/v2/orders') {
       const subtotal = body.order.line_items.reduce((s: number, l: any) => s + Number(l.quantity) * (l.base_price_money.amount + l.modifiers.reduce((m: number, x: any) => m + x.base_price_money.amount, 0)), 0);
@@ -44,7 +48,7 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   const today = localNow('America/New_York').date;
   let time = '16:00';
   const app = createApp({ db: db!, setupToken: 'setup-secret', secureCookies: false,
-    checkout: { token: 'sandbox-token', applicationId: 'sandbox-app', locationId: 'loc-1', environment: 'sandbox', fetch: fakeFetch, now: () => ({ date: today, time }), refundCheckMs: 0 } });
+    checkout: { token: 'sandbox-token', applicationId: 'sandbox-app', locationId: 'loc-1', environment: 'sandbox', fetch: fakeFetch, now: () => ({ date: today, time }), refundCheckMs: 0, catalogCheckMs: 0, triesPerFiveMinutes: 100 } });
   const server = createServer(app);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());
@@ -171,6 +175,31 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.equal(lookups.at(-1)!.searchParams.get('location_id'), 'loc-1');
   assert.equal((await customer('GET', `/api/order/${third.json.id}`)).json.status, 'refunded');
   assert.equal((await customer('GET', `/api/order/${held.json.id}`)).json.status, 'paid');
+
+  // Items are read from Square as they are now: a new price shows, and sold out in Square at this location takes it off.
+  const marg = objects.find((o) => o.id === 'item-marg')!;
+  const margNow = (variation: object) => ({ ...marg, item_data: { ...marg.item_data, variations: [{ id: 'var-marg', item_variation_data: { name: 'Regular', price_money: { amount: 1600 }, ...variation } }] } });
+  live.set('item-marg', margNow({}));
+  assert.equal((await customer('GET', '/api/order/menu')).json.items.find((x: any) => x.itemId === 'item-marg').variations[0].price, 1600);
+  live.set('item-marg', margNow({ location_overrides: [{ location_id: 'loc-1', sold_out: true }] }));
+  assert.equal((await customer('GET', '/api/order/menu')).json.items.find((x: any) => x.itemId === 'item-marg').soldOut, true);
+  const gone = await customer('POST', '/api/order/checkout', { ...order, window: '18:00', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
+  assert.deepEqual([gone.status, /sold out/.test(gone.json.error)], [400, true]);
+  // Square counts it: not more than it has. And switched off on the POS after checkout: not charged.
+  live.set('item-marg', margNow({ location_overrides: [{ location_id: 'loc-1', track_inventory: true }] }));
+  stock.set('var-marg', 1);
+  const tooMany = await customer('POST', '/api/order/checkout', { ...order, window: '18:00', lines: [{ variationId: 'var-marg', quantity: 2 }], tip: 0 });
+  assert.deepEqual([tooMany.status, tooMany.json.backToOrder, /only have 1 Margherita left/.test(tooMany.json.error)], [409, true, true]);
+  const lastOne = await customer('POST', '/api/order/checkout', { ...order, window: '18:00', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
+  assert.equal(lastOne.status, 201);
+  live.set('item-marg', margNow({ location_overrides: [{ location_id: 'loc-1', sold_out: true }] }));
+  const paymentsBefore = square.filter((x) => x.path === '/v2/payments').length;
+  const offNow = await customer('POST', `/api/order/${lastOne.json.id}/pay`, { sourceId: 'cnon:card-ok-3' });
+  assert.deepEqual([offNow.status, offNow.json.backToOrder, /just sold out/.test(offNow.json.error)], [409, true, true]);
+  assert.equal(square.filter((x) => x.path === '/v2/payments').length, paymentsBefore);
+  assert.equal((await customer('GET', `/api/order/${lastOne.json.id}`)).json.status, 'failed');
+  live.clear();
+  stock.clear();
 
   // Anyone on shift can pause online orders; customers can't start an order until it ends or someone resumes.
   assert.deepEqual((await call('GET', '/api/online/pause')).json.paused, null);

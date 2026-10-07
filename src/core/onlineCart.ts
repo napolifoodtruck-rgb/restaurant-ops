@@ -31,6 +31,9 @@ const cents = (dollars: number) => Math.round(dollars * 100);
 /** What customers see: published items, their prices, and the options they get to choose. */
 export function publicMenu(menu: readonly OnlineMenuItem[]): PublicItem[] {
   return menu.filter((x) => x.published && x.variations.some((v) => v.price !== undefined)).map((x) => {
+    const sizes = x.variations.filter((v) => v.price !== undefined);
+    // Sizes sold out in Square drop off; with all of them out, the item shows sold out.
+    const inStock = sizes.filter((v) => !v.soldOut);
     const notes = x.modifierLists.flatMap((l) => l.modifiers.filter((m) => m.mode === 'always').map((m) => m.name));
     const optionLists = x.modifierLists
       // A list with something always on is decided already (partially cooked); its other choices aren't offered.
@@ -43,9 +46,9 @@ export function publicMenu(menu: readonly OnlineMenuItem[]): PublicItem[] {
       category: x.category,
       ...(x.description ? { description: x.description } : {}),
       ...(x.image ? { image: x.image } : {}),
-      variations: x.variations.filter((v) => v.price !== undefined).map((v) => ({ id: v.id, name: v.name, price: cents(v.price!) })),
+      variations: (inStock.length ? inStock : sizes).map((v) => ({ id: v.id, name: v.name, price: cents(v.price!) })),
       isPizza: x.countsAsPizza,
-      soldOut: x.soldOutToday,
+      soldOut: x.soldOutToday || !inStock.length,
       notes,
       optionLists,
     };
@@ -83,7 +86,7 @@ export function priceCart(menu: readonly OnlineMenuItem[], lines: readonly CartL
     const item = menu.find((x) => x.variations.some((v) => v.id === line.variationId));
     const variation = item?.variations.find((v) => v.id === line.variationId);
     if (!item || !variation || !item.published || variation.price === undefined) throw new CartError('Something in your cart isn’t on the online menu any more.');
-    if (item.soldOutToday) throw new CartError(`Sorry, ${item.name} is sold out tonight.`);
+    if (item.soldOutToday || variation.soldOut) throw new CartError(`Sorry, ${item.name}${variation.soldOut && !item.soldOutInSquare ? ` (${variation.name})` : ''} is sold out tonight.`);
     if (!Number.isInteger(line.quantity) || line.quantity < 1 || line.quantity > MAX_QUANTITY) throw new CartError(`Pick 1 to ${MAX_QUANTITY} of ${item.name}.`);
     const chosen = new Set(line.optionIds ?? []);
     const modifiers: CartLine['modifiers'] = [];
@@ -112,4 +115,23 @@ export function priceCart(menu: readonly OnlineMenuItem[], lines: readonly CartL
 /** A tip someone picked: a whole number of cents, up to the order itself. */
 export function tipProblem(tip: unknown, subtotal: number): string | undefined {
   return Number.isInteger(tip) && (tip as number) >= 0 && (tip as number) <= Math.max(subtotal, 0) ? undefined : 'That tip doesn’t look right.';
+}
+
+/**
+ * Whether the cart can still be had, by Square's word right before payment: nothing in it switched
+ * off on the POS, and enough left of anything Square keeps a count of. `counts` is what Square has in
+ * stock at the location, by size; a size with no count isn't held back. A customer-facing reason, or
+ * nothing when it's all there.
+ */
+export function stockProblem(menu: readonly OnlineMenuItem[], lines: readonly Pick<CartLine, 'variationId' | 'quantity' | 'name' | 'variationName'>[], counts: ReadonlyMap<string, number>): string | undefined {
+  const wanted = new Map<string, number>();
+  for (const l of lines) wanted.set(l.variationId, (wanted.get(l.variationId) ?? 0) + l.quantity);
+  for (const l of lines) {
+    const variation = menu.flatMap((x) => x.variations).find((v) => v.id === l.variationId);
+    const what = l.variationName && l.variationName !== 'Regular' ? `${l.name} (${l.variationName})` : l.name;
+    const left = variation?.counted ? counts.get(l.variationId) : undefined;
+    if (!variation || variation.soldOut || (left !== undefined && left < 1)) return `Sorry, ${what} just sold out.`;
+    if (left !== undefined && left < wanted.get(l.variationId)!) return `Sorry, we only have ${Math.floor(left)} ${what} left. Change your order to carry on.`;
+  }
+  return undefined;
 }

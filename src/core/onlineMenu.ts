@@ -10,6 +10,11 @@
  * The restaurant's own labels in Square are rules here too: a modifier named "… (NOT AVAILABLE
  * ONLINE)" is always hidden, whatever is set, so a fully cooked pizza can never be ordered online.
  * One named "… (ONLY OPTION ONLINE)" starts always on, and gluten-sensitive options start hidden.
+ *
+ * A size marked sold out in Square at the restaurant's location isn't sold online either, and an
+ * item with every size sold out shows as sold out. A price set for the location wins, as it does at
+ * the register. Sizes whose stock Square counts at the location are marked, so checkout can check
+ * the count (see stockProblem in onlineCart.ts).
  */
 
 export type ModifierMode = 'shown' | 'hidden' | 'always';
@@ -29,7 +34,7 @@ export interface CatalogObject {
     categories?: { id: string }[];
     reporting_category?: { id: string };
     image_ids?: string[];
-    variations?: { id: string; is_deleted?: boolean; item_variation_data?: { name?: string; ordinal?: number; price_money?: { amount?: number | string } } }[];
+    variations?: { id: string; is_deleted?: boolean; item_variation_data?: { name?: string; ordinal?: number; price_money?: { amount?: number | string }; track_inventory?: boolean; location_overrides?: { location_id?: string; sold_out?: boolean; track_inventory?: boolean; price_money?: { amount?: number | string } }[] } }[];
     modifier_list_info?: { modifier_list_id: string; enabled?: boolean; hidden_from_customer?: boolean; min_selected_modifiers?: number; max_selected_modifiers?: number; ordinal?: number }[];
   };
   category_data?: { name?: string };
@@ -72,20 +77,26 @@ export interface OnlineMenuItem {
   category: string;
   description?: string;
   image?: string;
-  variations: { id: string; name: string; price?: number }[];
+  /** soldOut: marked sold out in Square at the location. counted: Square keeps a stock count of it there. */
+  variations: { id: string; name: string; price?: number; soldOut?: true; counted?: true }[];
   published: boolean;
   countsAsPizza: boolean;
   /** Counts as a pizza only because of its category, not because someone said so. */
   pizzaFromCategory: boolean;
   soldOutToday: boolean;
+  /** Every size is marked sold out in Square. */
+  soldOutInSquare: boolean;
   modifierLists: OnlineModifierList[];
 }
 
 const dollars = (amount?: number | string): number | undefined => (amount === undefined ? undefined : Number(amount) / 100);
 export const pizzaCategory = (category: string): boolean => /\bpizzas?\b/i.test(category);
 
-/** Every live Square item with its online settings, by category, for the manager's screen. */
-export function onlineMenu(objects: readonly CatalogObject[], items: readonly OnlineItemSetting[], modifierModes: Readonly<Record<string, ModifierMode>>, today: string): OnlineMenuItem[] {
+/**
+ * Every live Square item with its online settings, by category, for the manager's screen. Sold out
+ * in Square means at `locationId`; without one, at any location.
+ */
+export function onlineMenu(objects: readonly CatalogObject[], items: readonly OnlineItemSetting[], modifierModes: Readonly<Record<string, ModifierMode>>, today: string, locationId?: string): OnlineMenuItem[] {
   const live = objects.filter((o) => !o.is_deleted);
   const categories = new Map(live.filter((o) => o.type === 'CATEGORY').map((o) => [o.id, o.category_data?.name ?? '']));
   const images = new Map(live.filter((o) => o.type === 'IMAGE').map((o) => [o.id, o.image_data?.url]));
@@ -99,8 +110,13 @@ export function onlineMenu(objects: readonly CatalogObject[], items: readonly On
     const variations = (d.variations ?? []).filter((v) => !v.is_deleted)
       .sort((a, b) => (a.item_variation_data?.ordinal ?? 0) - (b.item_variation_data?.ordinal ?? 0))
       .map((v) => {
-        const price = dollars(v.item_variation_data?.price_money?.amount);
-        return { id: v.id, name: v.item_variation_data?.name ?? '', ...(price !== undefined ? { price } : {}) };
+        const vd = v.item_variation_data;
+        const overrides = vd?.location_overrides ?? [];
+        const here = locationId ? overrides.find((l) => l.location_id === locationId) : undefined;
+        const price = dollars(here?.price_money?.amount ?? vd?.price_money?.amount);
+        const soldOut = overrides.some((l) => l.sold_out && (!locationId || l.location_id === locationId));
+        const counted = Boolean(locationId) && (here?.track_inventory ?? vd?.track_inventory ?? false);
+        return { id: v.id, name: vd?.name ?? '', ...(price !== undefined ? { price } : {}), ...(soldOut ? { soldOut: true as const } : {}), ...(counted ? { counted: true as const } : {}) };
       });
     if (!variations.length) continue;
     const categoryId = d.reporting_category?.id ?? d.categories?.[0]?.id ?? d.category_id;
@@ -138,6 +154,7 @@ export function onlineMenu(objects: readonly CatalogObject[], items: readonly On
       countsAsPizza: s?.countsAsPizza ?? pizzaCategory(category),
       pizzaFromCategory: s?.countsAsPizza === undefined && pizzaCategory(category),
       soldOutToday: s?.soldOutOn === today,
+      soldOutInSquare: variations.every((v) => v.soldOut),
       modifierLists,
     });
   }

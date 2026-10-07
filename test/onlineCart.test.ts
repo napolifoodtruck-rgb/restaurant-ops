@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { onlineMenu, type CatalogObject } from '../src/core/onlineMenu.ts';
-import { CartError, priceCart, publicMenu, tipProblem } from '../src/core/onlineCart.ts';
+import { CartError, priceCart, publicMenu, stockProblem, tipProblem } from '../src/core/onlineCart.ts';
 
 const catalog: CatalogObject[] = [
   { type: 'CATEGORY', id: 'cat-pizza', category_data: { name: 'Pizza' } },
@@ -59,6 +59,21 @@ test('a cart that asks for what isn’t offered online is refused, by name', () 
   assert.throws(() => priceCart(soldOut, [{ variationId: 'var-marg', quantity: 1 }]), /sold out tonight/);
 });
 
+test('sizes sold out in Square aren’t sold online', () => {
+  const twoSizes: CatalogObject[] = catalog.map((o) => (o.id !== 'item-marg' ? o : { ...o, item_data: { ...o.item_data, variations: [
+    { id: 'var-marg', item_variation_data: { name: 'Regular', price_money: { amount: 1500 }, location_overrides: [{ location_id: 'loc-1', sold_out: true }] } },
+    { id: 'var-big', item_variation_data: { name: 'Big', price_money: { amount: 2000 } } },
+  ] } }));
+  const menu = onlineMenu(twoSizes, [{ itemId: 'item-marg', published: true }], { 'm-part': 'always' }, '2026-10-10', 'loc-1');
+  const marg = publicMenu(menu).find((x) => x.itemId === 'item-marg')!;
+  assert.deepEqual([marg.variations.map((v) => v.id), marg.soldOut], [['var-big'], false]);
+  assert.throws(() => priceCart(menu, [{ variationId: 'var-marg', quantity: 1 }]), /Margherita \(Regular\) is sold out tonight/);
+  assert.equal(priceCart(menu, [{ variationId: 'var-big', quantity: 1 }]).subtotal, 2000 + 0);
+  const allOut = onlineMenu(twoSizes.map((o) => (o.id !== 'item-marg' ? o : { ...o, item_data: { ...o.item_data, variations: o.item_data!.variations!.map((v) => ({ ...v, item_variation_data: { ...v.item_variation_data, location_overrides: [{ location_id: 'loc-1', sold_out: true }] } })) } })), [{ itemId: 'item-marg', published: true }], { 'm-part': 'always' }, '2026-10-10', 'loc-1');
+  assert.equal(publicMenu(allOut).find((x) => x.itemId === 'item-marg')!.soldOut, true);
+  assert.throws(() => priceCart(allOut, [{ variationId: 'var-big', quantity: 1 }]), /Margherita is sold out tonight/);
+});
+
 test('tips are whole cents, up to the order', () => {
   assert.equal(tipProblem(0, 1500), undefined);
   assert.equal(tipProblem(1500, 1500), undefined);
@@ -88,4 +103,23 @@ test('an option Square labels "not available online" can never be ordered, whate
     assert.throws(() => priceCart(wrong, [{ variationId: 'var-apricot', quantity: 1, optionIds: ['m-full'] }]), CartError);
     assert.ok(publicMenu(wrong)[0]!.optionLists.every((l) => l.options.every((o) => o.id !== 'm-full')));
   }
+});
+
+test('right before payment: switched off on the POS, or not enough left', () => {
+  const counted: CatalogObject[] = catalog.map((o) => (o.id !== 'item-marg' ? o : { ...o, item_data: { ...o.item_data, variations: [
+    { id: 'var-marg', item_variation_data: { name: 'Regular', price_money: { amount: 1500 }, track_inventory: false, location_overrides: [{ location_id: 'loc-1', track_inventory: true, price_money: { amount: 1700 } }] } },
+  ] } }));
+  const menu = onlineMenu(counted, [{ itemId: 'item-marg', published: true }], { 'm-part': 'always' }, '2026-10-10', 'loc-1');
+  // The location's own price wins, as at the register; its count is checked.
+  assert.deepEqual(menu.find((x) => x.itemId === 'item-marg')!.variations, [{ id: 'var-marg', name: 'Regular', price: 17, counted: true }]);
+  const line = { variationId: 'var-marg', name: 'Margherita', variationName: 'Regular', quantity: 2 };
+  assert.equal(stockProblem(menu, [line], new Map([['var-marg', 5]])), undefined);
+  assert.equal(stockProblem(menu, [line], new Map()), undefined);
+  assert.match(stockProblem(menu, [line, { ...line, quantity: 1 }], new Map([['var-marg', 2]]))!, /only have 2 Margherita left/);
+  assert.match(stockProblem(menu, [line], new Map([['var-marg', 0]]))!, /Margherita just sold out/);
+  // Counts at a location that doesn't count it are ignored.
+  const notCounted = onlineMenu(counted, [{ itemId: 'item-marg', published: true }], { 'm-part': 'always' }, '2026-10-10', 'loc-2');
+  assert.equal(stockProblem(notCounted, [line], new Map([['var-marg', 0]])), undefined);
+  const off = onlineMenu(counted.map((o) => (o.id !== 'item-marg' ? o : { ...o, item_data: { ...o.item_data, variations: [{ id: 'var-marg', item_variation_data: { name: 'Regular', price_money: { amount: 1500 }, location_overrides: [{ location_id: 'loc-1', sold_out: true }] } }] } })), [{ itemId: 'item-marg', published: true }], {}, '2026-10-10', 'loc-1');
+  assert.match(stockProblem(off, [line], new Map())!, /just sold out/);
 });
