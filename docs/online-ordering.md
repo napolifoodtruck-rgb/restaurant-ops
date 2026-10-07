@@ -14,7 +14,7 @@ The Menu screen gets an **Online** column. Nothing is online until a manager tur
 
 - **Per dish:** online on or off, the online description and photo (from Square at first), and **counts as a pizza** (on by default for the Pizza category).
 - **Per modifier:** shown online or hidden. Gluten-sensitive crust and "fully cooked & sliced" are hidden.
-- **Sold out tonight:** a one-tap 86 for online only, which resets the next day.
+- **Pause online tonight:** a one-tap 86 for the online order page only (not Square or the POS), which resets the next day. Customers see it as sold out tonight.
 - **Freshness:** prices and items still come from Square. The catalog is refreshed when Square says it changed (catalog webhook), not only in the nightly sync, so a price change shows online within minutes.
 
 ## 3. Partially cooked, said plainly
