@@ -6,6 +6,10 @@
  * Each modifier is shown, hidden, or always on. "Always" is for a choice online customers don't
  * get to make: every online pizza is partially cooked, so that option is put on the order for them
  * and its list isn't shown. A modifier Square already hides online starts hidden.
+ *
+ * The restaurant's own labels in Square are rules here too: a modifier named "… (NOT AVAILABLE
+ * ONLINE)" is always hidden, whatever is set, so a fully cooked pizza can never be ordered online.
+ * One named "… (ONLY OPTION ONLINE)" starts always on, and gluten-sensitive options start hidden.
  */
 
 export type ModifierMode = 'shown' | 'hidden' | 'always';
@@ -47,7 +51,19 @@ export interface OnlineItemSetting {
   soldOutOn?: string;
 }
 
-export interface OnlineModifier { id: string; name: string; price: number; mode: ModifierMode; squareHidesOnline: boolean }
+export interface OnlineModifier { id: string; name: string; price: number; mode: ModifierMode; squareHidesOnline: boolean; /** Its Square name says it's never online. */ locked?: true }
+
+const NEVER_ONLINE = /not available online/i;
+const ONLY_ONLINE = /only option online/i;
+const GLUTEN = /gluten/i;
+
+/** How a modifier shows online: its Square label first, then what a manager set, then a default. */
+export function modeOf(name: string, set: ModifierMode | undefined, squareHidesOnline: boolean): { mode: ModifierMode; locked?: true } {
+  if (NEVER_ONLINE.test(name)) return { mode: 'hidden', locked: true };
+  if (set) return { mode: set };
+  if (ONLY_ONLINE.test(name)) return { mode: 'always' };
+  return { mode: squareHidesOnline || GLUTEN.test(name) ? 'hidden' : 'shown' };
+}
 export interface OnlineModifierList { id: string; name: string; single: boolean; min?: number; max?: number; modifiers: OnlineModifier[] }
 
 export interface OnlineMenuItem {
@@ -101,7 +117,8 @@ export function onlineMenu(objects: readonly CatalogObject[], items: readonly On
           .sort((a, b) => (a.modifier_data?.ordinal ?? 0) - (b.modifier_data?.ordinal ?? 0))
           .map((m) => {
             const squareHidesOnline = Boolean(m.modifier_data?.hidden_online || info.hidden_from_customer);
-            return { id: m.id, name: m.modifier_data?.name ?? '', price: dollars(m.modifier_data?.price_money?.amount) ?? 0, mode: modifierModes[m.id] ?? (squareHidesOnline ? 'hidden' : 'shown'), squareHidesOnline };
+            const name = m.modifier_data?.name ?? '';
+            return { id: m.id, name, price: dollars(m.modifier_data?.price_money?.amount) ?? 0, ...modeOf(name, modifierModes[m.id], squareHidesOnline), squareHidesOnline };
           });
         const min = info.min_selected_modifiers !== undefined && info.min_selected_modifiers >= 0 ? info.min_selected_modifiers : undefined;
         const max = info.max_selected_modifiers !== undefined && info.max_selected_modifiers >= 0 ? info.max_selected_modifiers : undefined;

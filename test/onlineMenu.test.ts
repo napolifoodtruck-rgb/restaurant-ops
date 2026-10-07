@@ -55,7 +55,10 @@ test('pizzas count against the windows by category, unless someone says otherwis
 test('modifier lists in Square order; a modifier Square hides online starts hidden', () => {
   const marg = onlineMenu(catalog, [], {}, '2026-10-10')[0]!;
   assert.deepEqual(marg.modifierLists.map((l) => l.name), ['How would you like it cooked?', 'Gluten Sensitive Crust?', 'Toppings Vegetables']);
-  assert.deepEqual(marg.modifierLists[0]!.modifiers.map((m) => m.mode), ['shown', 'shown']);
+  // Square's own labels decide before anyone sets anything: partially cooked on, fully cooked and gluten-sensitive off.
+  assert.deepEqual(marg.modifierLists[0]!.modifiers.map((m) => [m.mode, m.locked]), [['hidden', true], ['always', undefined]]);
+  assert.deepEqual(marg.modifierLists[1]!.modifiers.map((m) => m.mode), ['hidden']);
+  assert.deepEqual(modifierProblems(marg), []);
   assert.deepEqual(marg.modifierLists[0]!, { ...marg.modifierLists[0]!, single: true, min: 1, max: 1 });
   assert.deepEqual(marg.modifierLists[2]!.modifiers.map((m) => [m.name, m.price, m.mode, m.squareHidesOnline]), [['++ Arugula', 2, 'shown', false], ['++ Pesto', 3, 'hidden', true]]);
 });
@@ -71,8 +74,9 @@ test('partially cooked always on, fully cooked and gluten-sensitive hidden', () 
 test('a required choice with every option hidden would stop the order', () => {
   const marg = onlineMenu(catalog, [{ itemId: 'item-marg', published: true }], { 'm-part': 'hidden', 'm-full': 'hidden' }, '2026-10-10')[0]!;
   assert.deepEqual(modifierProblems(marg), ['How would you like it cooked?: needs a choice, but every option is hidden online.']);
-  const twoAlways = onlineMenu(catalog, [{ itemId: 'item-marg', published: true }], { 'm-part': 'always', 'm-full': 'always' }, '2026-10-10')[0]!;
-  assert.deepEqual(modifierProblems(twoAlways), ['How would you like it cooked?: only one choice can always be on.']);
+  // "Not available online" stays hidden whatever is set: fully cooked can't be ordered online.
+  const fullOn = onlineMenu(catalog, [{ itemId: 'item-marg', published: true }], { 'm-part': 'shown', 'm-full': 'always' }, '2026-10-10')[0]!;
+  assert.deepEqual(fullOn.modifierLists[0]!.modifiers.map((m) => m.mode), ['hidden', 'shown']);
 });
 
 test('sold out online for today only', () => {

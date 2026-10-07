@@ -2036,7 +2036,7 @@ async function onlineMenuCard(me) {
   const options = (x) => h('div', { class: 'stack' }, x.modifierLists.map((l) => h('div', { class: 'small' },
     h('div', { class: 'strong', text: `${l.name}${l.min ? ' (required)' : ''}` }),
     l.modifiers.map((mod) => {
-      const pick = h('select', { class: 'small-select', 'aria-label': `${mod.name} online` }, ['shown', 'hidden', 'always'].map((k) => h('option', { value: k, text: MODE_LABELS[k], selected: mod.mode === k ? true : undefined })));
+      const pick = h('select', { class: 'small-select', 'aria-label': `${mod.name} online`, disabled: mod.locked, title: mod.locked ? 'Its name in Square says it’s not available online' : undefined }, ['shown', 'hidden', 'always'].map((k) => h('option', { value: k, text: MODE_LABELS[k], selected: mod.mode === k ? true : undefined })));
       pick.addEventListener('change', () => save(pick, `/api/online/modifiers/${mod.id}`, { mode: pick.value }));
       return h('div', { class: 'row tight wrap' }, pick, h('span', { text: mod.name }), mod.price ? h('span', { class: 'muted', text: `+${dollars(mod.price, { cents: true })}` }) : null);
     }))));
