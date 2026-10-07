@@ -75,7 +75,24 @@ function partialNotice() {
 function finishSteps() {
   return h('div', { class: 'card finish' }, h('div', { class: 'strong', text: 'Finishing at home' }), h('ol', {}, FINISH_STEPS.map((t) => h('li', { text: t }))));
 }
+// Pickup: ASAP (the earliest window that fits the order) or a time picked for later. Kept for the day.
+const laterPick = () => { const p = store.get('pickup'); return p?.day === M.today ? p.starts : null; };
+const setLater = (starts) => store.set('pickup', starts ? { day: M.today, starts } : null);
+/** The window this order will be picked up in, or null when nothing fits. A later time that no longer
+ *  has room moves to the next one that does. */
+function pickupWindow() {
+  const fits = fitting(Math.max(1, cartPizzas()));
+  const later = fits.length > 1 ? laterPick() : null;
+  return (later && (fits.find((w) => w.starts >= later) ?? fits.at(-1))) || fits[0] || null;
+}
 function pickupLine() {
+  const box = h('div');
+  const draw = () => box.replaceChildren(pickupChoice(draw));
+  draw();
+  box.redraw = draw;
+  return box;
+}
+function pickupChoice(redraw) {
   const pizzas = Math.max(1, cartPizzas());
   if (M.paused) return h('div', { class: 'pickup closed' }, h('span', { class: 'strong', text: M.paused.until ? `We’re very busy right now. Online orders open again at ${M.paused.until.label}.` : 'We’ve stopped taking online orders for tonight.' }));
   if (!M.open) return h('div', { class: 'pickup closed' }, h('span', { class: 'strong', text: 'Online ordering is closed tonight.' }));
@@ -84,7 +101,22 @@ function pickupLine() {
     const most = Math.max(0, ...M.windows.map((x) => x.left));
     return h('div', { class: 'pickup closed' }, h('span', { class: 'strong', text: cartPizzas() > most && most > 0 ? `That’s more pizzas than we can take online for one pickup. Please call us.` : 'We’re full for online orders tonight.' }));
   }
-  return h('div', { class: 'pickup' }, h('span', {}, 'Earliest pickup', cartPizzas() > 1 ? ` for ${cartPizzas()} pizzas` : ''), h('span', { class: 'strong', text: w.label }));
+  const fits = fitting(pizzas);
+  const later = fits.length > 1 ? laterPick() : null;
+  const chosen = pickupWindow();
+  const moved = later && chosen.starts !== later;
+  if (moved) setLater(chosen.starts); // say it once, then it's the new pick
+  const pick = (starts) => { setLater(starts); redraw(); };
+  const tab = (on, label, sub, onclick) => h('button', { type: 'button', class: on ? 'on' : '', 'aria-pressed': String(on), onclick },
+    h('div', { class: 'strong', text: label }), h('div', { class: 'small', text: sub }));
+  return h('div', { class: 'pickup choose' },
+    h('div', { class: 'small muted', text: `Pickup tonight${cartPizzas() > 1 ? ` · ${cartPizzas()} pizzas` : ''}` }),
+    h('div', { class: 'when' },
+      tab(!later, 'ASAP', w.label, () => pick(null)),
+      fits.length > 1 ? tab(!!later, 'Schedule for later', later ? chosen.label : 'Pick a time', () => pick(later ?? fits[1].starts)) : null),
+    later ? h('div', { class: 'times', role: 'group', 'aria-label': 'Pickup time' }, fits.slice(1).map((x) => h('button', {
+      type: 'button', class: x.starts === chosen.starts ? 'on' : '', 'aria-pressed': String(x.starts === chosen.starts), text: x.label, onclick: () => pick(x.starts) }))) : null,
+    moved ? h('div', { class: 'small', text: `${M.windows.find((x) => x.starts === later)?.label ?? 'That time'} has no room for this order anymore, so we moved it to ${chosen.label}.` }) : null);
 }
 function cartBar() {
   if (!cart.length) return null;
@@ -199,10 +231,9 @@ function cartView(problem) {
 }
 
 function checkoutView() {
-  const fits = fitting(cartPizzas());
+  const pickup = pickupLine();
   const saved = store.get('customer') ?? {};
   const err = h('div', { class: 'error' });
-  const when = h('select', { 'aria-label': 'Pickup time' }, fits.map((w, i) => h('option', { value: w.starts, text: `${w.label}${i === 0 ? ' (earliest)' : ''}` })));
   const name = h('input', { type: 'text', autocomplete: 'name', value: saved.name ?? '', required: true });
   const phone = h('input', { type: 'tel', autocomplete: 'tel', inputmode: 'tel', value: saved.phone ?? '', required: true });
   const email = h('input', { type: 'email', autocomplete: 'email', value: saved.email ?? '', placeholder: 'For your receipt (optional)' });
@@ -217,11 +248,12 @@ function checkoutView() {
   go.addEventListener('click', async () => {
     err.textContent = '';
     if (!understood.checked) return (err.textContent = 'Please tick the box: the pizzas are partially cooked, to finish at home.');
+    if (!pickupWindow()) return (err.textContent = 'We’re full for online orders tonight.');
     go.disabled = true;
     store.set('customer', { name: name.value, phone: phone.value, email: email.value });
     const r = await api('POST', '/api/order/checkout', {
       lines: cart.map((l) => ({ variationId: l.variationId, quantity: l.quantity, optionIds: l.optionIds })),
-      window: when.value, name: name.value, phone: phone.value, email: email.value || undefined,
+      window: pickupWindow()?.starts, name: name.value, phone: phone.value, email: email.value || undefined,
       tip: Math.round(subtotal * tipPct / 100), understood: true,
       // An order started earlier and not paid gives up its pickup slot to this one.
       replaces: store.get('pending') ?? undefined,
@@ -229,7 +261,7 @@ function checkoutView() {
     go.disabled = false;
     if (!r.ok) {
       err.textContent = r.data.error ?? 'Something went wrong. Try again, or call us.';
-      if (r.status === 409) await refreshMenu();
+      if (r.status === 409) { await refreshMenu(); pickup.redraw(); }
       if (r.data.backToOrder) cartView(r.data.error);
       return;
     }
@@ -240,7 +272,7 @@ function checkoutView() {
     h('button', { class: 'link', style: 'margin-top:16px', text: '← Your order', onclick: cartView }),
     h('h1', { text: 'Checkout' }),
     h('div', { class: 'card' },
-      h('label', { class: 'field' }, 'Pickup time tonight', when),
+      pickup,
       h('label', { class: 'field' }, 'Name for the order', name),
       h('label', { class: 'field' }, 'Phone', phone),
       h('label', { class: 'field' }, 'Email', email),
@@ -318,6 +350,7 @@ function paid(order) {
   cart = [];
   saveCart();
   store.set('pending', null);
+  store.set('pickup', null);
   store.set('lastOrder', order.id);
   doneView(order);
 }
