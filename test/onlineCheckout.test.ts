@@ -24,6 +24,8 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   const refunds = new Map<string, number>();
   const live = new Map<string, any>();
   const stock = new Map<string, number>();
+  // Tickets open on the POS, as Square's order search returns them.
+  const openTables: any[] = [];
   // Orders paid in Square (order id → payment id); `dropAnswer`: the next charge goes through but its answer is lost.
   const paidInSquare = new Map<string, string>();
   let dropAnswer = false;
@@ -41,6 +43,7 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
     }
     const body = JSON.parse(init.body ?? '{}');
     if (path === '/v2/inventory/counts/batch-retrieve') return reply(200, { counts: body.catalog_object_ids.filter((id: string) => stock.has(id)).map((id: string) => ({ catalog_object_id: id, state: 'IN_STOCK', quantity: String(stock.get(id)) })) });
+    if (path === '/v2/orders/search') return reply(200, { orders: body.query.filter.state_filter.states.includes('OPEN') ? openTables : [] });
     if (path === '/v2/catalog/batch-retrieve') {
       // With related objects: the modifier lists of the items asked for, as set in `live`.
       const listIds = body.include_related_objects ? body.object_ids.flatMap((id: string) => ((live.get(id) ?? objects.find((o) => o.id === id))?.item_data?.modifier_list_info ?? []).map((i: any) => i.modifier_list_id)) : [];
@@ -269,6 +272,14 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   stock.set('var-marg', 1);
   const tooMany = await customer('POST', '/api/order/checkout', { ...order, window: '18:00', lines: [{ variationId: 'var-marg', quantity: 2 }], tip: 0 });
   assert.deepEqual([tooMany.status, tooMany.json.backToOrder, /only have 1 Margherita left/.test(tooMany.json.error)], [409, true, true]);
+  // Pizzas on unpaid tables are taken off the count; paid tickets and online orders aren't (Square already did).
+  stock.set('var-marg', 3);
+  const ticket = (source: string, due: number, quantity: string) => ({ source: { name: source }, net_amount_due_money: { amount: due }, line_items: [{ catalog_object_id: 'var-marg', quantity }, { catalog_object_id: 'var-other', quantity: '5' }] });
+  openTables.push(ticket('Point of Sale', 4300, '2'), ticket('Point of Sale', 0, '1'), ticket('Square Online', 2000, '1'), ticket('Online ordering', 2000, '1'));
+  const tableHasThem = await customer('POST', '/api/order/checkout', { ...order, window: '18:00', lines: [{ variationId: 'var-marg', quantity: 2 }], tip: 0 });
+  assert.deepEqual([tableHasThem.status, /only have 1 Margherita left/.test(tableHasThem.json.error)], [409, true]);
+  openTables.length = 0;
+  stock.set('var-marg', 1);
   const lastOne = await customer('POST', '/api/order/checkout', { ...order, window: '18:00', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
   assert.equal(lastOne.status, 201);
   live.set('item-marg', margNow({ location_overrides: [{ location_id: 'loc-1', sold_out: true }] }));

@@ -92,6 +92,31 @@ export class SquareCheckout {
     return out;
   }
 
+  /**
+   * How many of each size are on tables still open on the POS: unpaid tickets opened in the last 12 hours (so a tab
+   * forgotten last night doesn't count). Square only takes them off its stock count once they're paid. Online orders
+   * (ours, Square Online) are left out: Square takes those off when they're paid.
+   */
+  async onOpenTables(variationIds: readonly string[], locationId: string, now = new Date()): Promise<Map<string, number>> {
+    const wanted = new Set(variationIds);
+    const out = new Map<string, number>();
+    const since = new Date(now.getTime() - 12 * 3600_000).toISOString();
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const data = await this.#post('/v2/orders/search', {
+        location_ids: [locationId], limit: 500, ...(cursor ? { cursor } : {}),
+        query: { filter: { state_filter: { states: ['OPEN'] }, date_time_filter: { created_at: { start_at: since } } }, sort: { sort_field: 'CREATED_AT', sort_order: 'DESC' } },
+      });
+      for (const o of data.orders ?? []) {
+        if (/online/i.test(o.source?.name ?? '') || !(Number(o.net_amount_due_money?.amount ?? 0) > 0)) continue;
+        for (const l of o.line_items ?? []) if (wanted.has(l.catalog_object_id)) out.set(l.catalog_object_id, (out.get(l.catalog_object_id) ?? 0) + Number(l.quantity));
+      }
+      cursor = data.cursor;
+      if (!cursor) break;
+    }
+    return out;
+  }
+
   /** A pickup order, open in Square once paid (an unpaid order stays out of the POS). */
   async createPickupOrder(o: PickupOrderIn): Promise<SquareOrderOut> {
     const byCatalog = this.environment === 'production';
