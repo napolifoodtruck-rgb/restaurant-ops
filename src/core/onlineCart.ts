@@ -10,8 +10,8 @@
 
 import type { OnlineMenuItem } from './onlineMenu.ts';
 
-/** `soldOut`: marked unavailable in Square; shown greyed out, can't be picked. */
-export interface PublicOption { id: string; name: string; price: number; soldOut?: true }
+/** `soldOut`: marked unavailable in Square; shown greyed out, can't be picked. `preselected`: ticked to start with, as in Square. */
+export interface PublicOption { id: string; name: string; price: number; soldOut?: true; preselected?: true }
 export interface PublicOptionList { id: string; name: string; single: boolean; min: number; max?: number; options: PublicOption[] }
 export interface PublicItem {
   itemId: string;
@@ -40,7 +40,7 @@ export function publicMenu(menu: readonly OnlineMenuItem[]): PublicItem[] {
       // A list with something always on is decided already (partially cooked); its other choices aren't offered.
       .filter((l) => !l.modifiers.some((m) => m.mode === 'always'))
       // Options marked unavailable in Square show as sold out; a list left with too few to choose makes the item sold out.
-      .map((l) => ({ id: l.id, name: l.name, single: l.single || l.max === 1, min: l.min ?? 0, ...(l.max !== undefined ? { max: l.max } : {}), options: l.modifiers.filter((m) => m.mode === 'shown').map((m) => ({ id: m.id, name: m.name, price: cents(m.price), ...(m.soldOut ? { soldOut: true as const } : {}) })) }));
+      .map((l) => ({ id: l.id, name: l.name, single: l.single || l.max === 1, min: l.min ?? 0, ...(l.max !== undefined ? { max: l.max } : {}), options: l.modifiers.filter((m) => m.mode === 'shown').map((m): PublicOption => ({ id: m.id, name: m.name, price: cents(m.price), ...(m.soldOut ? { soldOut: true as const } : m.byDefault ? { preselected: true as const } : {}) })) }));
     const optionsOut = choices.some((l) => l.min > l.options.filter((o) => !o.soldOut).length);
     const optionLists = choices.filter((l) => l.options.length);
     return {

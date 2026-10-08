@@ -219,7 +219,9 @@ function itemSheet(item, editing) {
   let quantity = editing?.quantity ?? 1;
   // An option that sold out since it was picked comes off: the customer sees it greyed out and picks again.
   const out = new Set(item.optionLists.flatMap((l) => l.options.filter((o) => o.soldOut).map((o) => o.id)));
-  const picked = new Set((editing?.optionIds ?? []).filter((id) => !out.has(id)));
+  // A new pizza starts with what Square pre-selects (one per single-choice list).
+  const preset = item.optionLists.flatMap((l) => l.options.filter((o) => o.preselected).slice(0, l.single ? 1 : l.max ?? undefined).map((o) => o.id));
+  const picked = new Set((editing ? editing.optionIds ?? [] : preset).filter((id) => !out.has(id)));
   const err = h('div', { class: 'error' });
   const total = () => (item.variations.find((v) => v.id === variationId).price + optionsOf(item, [...picked]).reduce((s, o) => s + o.price, 0)) * quantity;
   const addBtn = h('button', { class: 'btn dark wide' });

@@ -35,14 +35,14 @@ export interface CatalogObject {
     reporting_category?: { id: string };
     image_ids?: string[];
     variations?: { id: string; is_deleted?: boolean; item_variation_data?: { name?: string; ordinal?: number; price_money?: { amount?: number | string }; track_inventory?: boolean; location_overrides?: { location_id?: string; sold_out?: boolean; track_inventory?: boolean; price_money?: { amount?: number | string } }[] } }[];
-    modifier_list_info?: { modifier_list_id: string; enabled?: boolean; hidden_from_customer?: boolean; min_selected_modifiers?: number; max_selected_modifiers?: number; ordinal?: number }[];
+    modifier_list_info?: { modifier_list_id: string; enabled?: boolean; hidden_from_customer?: boolean; min_selected_modifiers?: number; max_selected_modifiers?: number; ordinal?: number; modifier_overrides?: { modifier_id: string; on_by_default?: boolean }[] }[];
   };
   category_data?: { name?: string };
   image_data?: { url?: string };
   modifier_list_data?: {
     name?: string;
     selection_type?: 'SINGLE' | 'MULTIPLE';
-    modifiers?: { id: string; is_deleted?: boolean; modifier_data?: { name?: string; price_money?: { amount?: number | string }; hidden_online?: boolean; ordinal?: number; location_overrides?: { location_id?: string; sold_out?: boolean; price_money?: { amount?: number | string } }[] } }[];
+    modifiers?: { id: string; is_deleted?: boolean; modifier_data?: { name?: string; price_money?: { amount?: number | string }; hidden_online?: boolean; on_by_default?: boolean; ordinal?: number; location_overrides?: { location_id?: string; sold_out?: boolean; price_money?: { amount?: number | string } }[] } }[];
   };
 }
 
@@ -58,7 +58,7 @@ export interface OnlineItemSetting {
   position?: number;
 }
 
-export interface OnlineModifier { id: string; name: string; price: number; mode: ModifierMode; squareHidesOnline: boolean; /** Its Square name says it's never online. */ locked?: true; /** Marked unavailable in Square at the location. */ soldOut?: true }
+export interface OnlineModifier { id: string; name: string; price: number; mode: ModifierMode; squareHidesOnline: boolean; /** Its Square name says it's never online. */ locked?: true; /** Marked unavailable in Square at the location. */ soldOut?: true; /** Pre-selected in Square ("on by default", for this item or the whole list). */ byDefault?: true }
 
 const NEVER_ONLINE = /not available online/i;
 const ONLY_ONLINE = /only option online/i;
@@ -141,7 +141,9 @@ export function onlineMenu(objects: readonly CatalogObject[], items: readonly On
             const overrides = m.modifier_data?.location_overrides ?? [];
             const here = locationId ? overrides.find((l) => l.location_id === locationId) : undefined;
             const soldOut = overrides.some((l) => l.sold_out && (!locationId || l.location_id === locationId));
-            return { id: m.id, name, price: dollars(here?.price_money?.amount ?? m.modifier_data?.price_money?.amount) ?? 0, ...modeOf(name, modifierModes[m.id], squareHidesOnline), squareHidesOnline, ...(soldOut ? { soldOut: true as const } : {}) };
+            // The item's own setting wins over the list's.
+            const byDefault = info.modifier_overrides?.find((x) => x.modifier_id === m.id)?.on_by_default ?? m.modifier_data?.on_by_default ?? false;
+            return { id: m.id, name, price: dollars(here?.price_money?.amount ?? m.modifier_data?.price_money?.amount) ?? 0, ...modeOf(name, modifierModes[m.id], squareHidesOnline), squareHidesOnline, ...(soldOut ? { soldOut: true as const } : {}), ...(byDefault ? { byDefault: true as const } : {}) };
           });
         const min = info.min_selected_modifiers !== undefined && info.min_selected_modifiers >= 0 ? info.min_selected_modifiers : undefined;
         const max = info.max_selected_modifiers !== undefined && info.max_selected_modifiers >= 0 ? info.max_selected_modifiers : undefined;

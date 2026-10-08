@@ -147,3 +147,16 @@ test('options marked unavailable in Square aren’t sold online', () => {
   assert.match(stockProblem(menu, line, new Map()) ?? '', /Arugula just sold out/);
   assert.equal(stockProblem(menu, priceCart(menu, [{ variationId: 'var-marg', quantity: 1 }]).lines, new Map()), undefined);
 });
+
+test('options on by default in Square start ticked; the item’s own setting wins over the list’s', () => {
+  const withDefaults = catalog.map((o): CatalogObject => {
+    if (o.id === 'ml-veg') return { ...o, modifier_list_data: { ...o.modifier_list_data, modifiers: o.modifier_list_data!.modifiers!.map((m) => ({ ...m, modifier_data: { ...m.modifier_data, on_by_default: m.id === 'm-basil' } })) } };
+    if (o.id === 'item-marg') return { ...o, item_data: { ...o.item_data!, modifier_list_info: o.item_data!.modifier_list_info!.map((i) => (i.modifier_list_id === 'ml-veg' ? { ...i, modifier_overrides: [{ modifier_id: 'm-arugula', on_by_default: true }, { modifier_id: 'm-basil', on_by_default: false }] } : i)) } };
+    return o;
+  });
+  const opts = (c: CatalogObject[]) => publicMenu(onlineMenu(c, [{ itemId: 'item-marg', published: true }], modes, today))[0]!.optionLists[0]!.options.filter((o) => o.preselected).map((o) => o.name);
+  assert.deepEqual(opts(withDefaults), ['Arugula']);
+  // Only the list's setting: Basil.
+  assert.deepEqual(opts(withDefaults.map((o) => (o.id === 'item-marg' ? catalog.find((x) => x.id === 'item-marg')! : o))), ['Basil']);
+  assert.deepEqual(opts(catalog), []);
+});
