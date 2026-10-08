@@ -2309,6 +2309,7 @@ async function onlineMenuCard(me, openSettings) {
       const pick = h('select', { class: 'small-select', 'aria-label': `${mod.name} online`, disabled: mod.locked, title: mod.locked ? 'Its name in Square says it’s not available online' : undefined }, ['shown', 'hidden', 'always'].map((k) => h('option', { value: k, text: MODE_LABELS[k], selected: mod.mode === k ? true : undefined })));
       pick.addEventListener('change', () => save(pick, `/api/online/modifiers/${mod.id}`, { mode: pick.value }));
       return h('div', { class: 'row tight wrap' }, pick, h('span', { text: mod.name }), mod.price ? h('span', { class: 'muted', text: `+${dollars(mod.price, { cents: true })}` }) : null,
+        mod.byDefault && mod.mode === 'shown' ? h('span', { class: 'tag', text: 'Pre-selected', title: 'On by default in Square, so it starts ticked on the order page' }) : null,
         mod.soldOut ? h('span', { class: 'tag bad', text: 'Unavailable in Square', title: 'As of the last Square sync. The order page checks Square every minute.' }) : null);
     }))));
   const nameOf = (x) => h('span', { class: 'grow' }, h('b', { text: x.name }), h('span', { class: 'small muted', text: price(x) ? ` · ${price(x)}` : '' }));
