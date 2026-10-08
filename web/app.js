@@ -2003,6 +2003,7 @@ async function menuScreen(me) {
       else if (c.kind === 'newButton' && c.item) buttons.push(['New dish, recipe to come', { type: 'newDish', ...c.item }, 'dark'], ['Not food', { type: 'notFood', ...c.item }], ['Ignore', { type: 'dismiss', dedupeKey: c.dedupeKey, note: c.title }]);
       else buttons.push(['Ignore', { type: 'dismiss', dedupeKey: c.dedupeKey, note: c.title }]);
       row.append(h('div', { text: c.title }), choices(row, buttons));
+      if (c.kind === 'newButton' && c.item) row.lastChild.append(otherCard(row, c.item));
       return row;
     }),
     ...m.linkQuestions.map((q) => {
@@ -2954,7 +2955,10 @@ async function treeRecipe(me, node, trail, down, reload) {
   // A dish: its variations and modifiers, loaded after the page shows (one click away from the menu).
   const extras = dish ? itemExtras(me, node.id, d.name, d.lines.filter((l) => l.kind === 'product' || l.kind === 'recipe'), null) : null;
   const history = recipeHistoryBox({ id: node.id, name: d.name }, () => { costCache.clear(); reload(); });
-  return [[head, lines, extras], [needsALook(me, d.markers, d.stale, () => { costCache.clear(); reload(); }), moved, actions, history]];
+  // Allergens, worked out through every prep in it (loaded after the page shows).
+  const allergens = h('div');
+  api('GET', `/api/recipes/${encodeURIComponent(d.name)}`).then((x) => { if (x.ok && x.data.allergens) fill(allergens, allergenSide(x.data.allergens)); });
+  return [[head, lines, extras], [needsALook(me, d.markers, d.stale, () => { costCache.clear(); reload(); }), allergens, moved, actions, history]];
 }
 async function treeProduct(me, node, trail, down, reload) {
   const q = node.amount ? `?amount=${node.amount}&unit=${encodeURIComponent(node.unit)}` : '';
@@ -2981,7 +2985,7 @@ async function treeProduct(me, node, trail, down, reload) {
       h('button', { class: 'link', text: src ? 'Set a price by hand' : 'Set a price', onclick: () => { setForm.hidden = false; priceIn.focus(); } }),
       src?.from === 'free' ? null : h('button', { class: 'link', text: 'It costs nothing', title: 'Soda from the gun, herbs from the garden: counted at $0', onclick: () => pageAction(async () => { const res = await api('POST', '/api/answers', { type: 'price', productId: d.id, price: 0, amount: 1, unit: d.unit }); if (res.ok) { costCache.clear(); reload(); } }) })),
     setForm);
-  return [main, [needsALook(me, d.markers, d.stale, () => { costCache.clear(); reload(); }), source, ...boxes]];
+  return [main, [needsALook(me, d.markers, d.stale, () => { costCache.clear(); reload(); }), ingredientAllergens(node.id), source, ...boxes]];
 }
 
 /** Every recipe on a side, A to Z, for when you know it's there. */
@@ -3261,6 +3265,7 @@ function recipeView(me, r, opts) {
       fill(side,
         r.image ? h('section', { class: 'card tight' }, photo(r.image, 'hero')) : null,
         prep ? sideBox('How much', h('div', { class: 'big', text: `${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}` }), scaler, h('div', { class: 'small muted', text: 'Batches: every amount scales with it.' })) : null,
+        r.allergens ? allergenSide(r.allergens) : null,
         r.usedBy.length ? sideBox('Used in', h('div', { class: 'small' }, usedIn())) : null,
         r.linked ? soldAsBox(r, opts.reload) : null,
         cost ? sideBox('Cost · managers only', h('div', { class: 'big', text: money2(r.cost * scale) }), h('div', { class: 'small muted', text: `${prep ? `for ${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}` : r.kind === 'drink' ? 'a drink' : 'a plate'}${r.complete ? '' : ' · some lines have no price yet'}` })) : null,
@@ -3275,11 +3280,46 @@ function recipeView(me, r, opts) {
         opts.back ?? null, editButton),
       r.image ? photo(r.image, 'hero') : null,
       scaler, asked, table, method,
+      r.allergens ? h('div', { class: 'small' }, h('span', { class: 'muted', text: 'Allergens: ' }), h('span', { class: r.allergens.contains.length ? 'allergy' : '', text: r.allergens.line })) : null,
       r.usedBy.length ? h('div', { class: 'small' }, h('span', { class: 'muted', text: 'Used in ' }), usedIn()) : null,
       cost ? h('div', { class: 'small muted', text: `${cost} · managers only` }) : null);
   };
   draw();
   return page ? { head, body, side: [...side.children].length ? side : null } : body;
+}
+
+/** An ingredient's allergens, tagged here once for every recipe that uses it. */
+function ingredientAllergens(id) {
+  const box = sideBox('Allergens');
+  api('GET', '/api/floor/allergen-map').then((r) => {
+    if (!r.ok) return box.remove();
+    const p = Object.values(r.data.products).find((x) => x.id === id);
+    if (!p) return box.remove();
+    const draw = () => {
+      const tags = p.allergens ?? [];
+      fill(box, h('div', { class: 'small muted strong', text: 'Allergens' }),
+        h('div', { class: 'row tight' }, h('span', { class: `tag ${p.allergens === null ? 'warn' : 'ok'}`, text: p.allergens === null ? 'not checked' : tags.length ? 'checked' : 'checked: none' })),
+        h('div', { class: 'allergy-chips' }, Object.entries(FLOOR_ALLERGENS).map(([key, label]) => {
+          const on = tags.includes(key);
+          return h('button', { class: `chip${on ? ' on' : ''}`, 'aria-pressed': String(on), text: label, onclick: () => save(on ? tags.filter((x) => x !== key) : [...tags, key]) });
+        })),
+        p.allergens === null ? h('button', { class: 'link small', text: 'None of these', onclick: () => save([]) }) : null,
+        h('div', { class: 'small muted', text: 'Every recipe that uses it follows.' }));
+    };
+    const save = async (list) => { p.allergens = list; draw(); await api('POST', `/api/floor/ingredients/${encodeURIComponent(id)}`, { allergens: list }); };
+    draw();
+  });
+  return box;
+}
+
+/** A recipe's allergens, worked out through every prep in it: what brings each one, and what isn't checked yet. */
+function allergenSide(a) {
+  return sideBox('Allergens',
+    h('div', { class: a.contains.length ? 'allergy big-allergy' : 'strong', text: a.line }),
+    a.contains.map((x) => h('div', { class: 'small' }, h('b', { text: `${x.label}: ` }), x.from.join(', '))),
+    a.unchecked.length ? h('div', { class: 'small warn-text', text: `Not checked yet: ${a.unchecked.join(', ')}` }) : null,
+    a.unknown.length ? h('div', { class: 'small warn-text', text: `Not matched to an ingredient: ${a.unknown.join(', ')}` }) : null,
+    (a.swaps ?? []).filter((w) => w.line !== a.line).map((w) => h('div', { class: 'small' }, h('b', { text: `With the ${w.label}: ` }), w.line)));
 }
 
 /**
@@ -3786,7 +3826,55 @@ function cardEditor(me, d, card, start = {}) {
     if (!i.unit) i.unit = 'batch';
     drawLines(); preview();
   };
+  // Allergens: each ingredient tagged once (every recipe that uses it follows); preps bring their own.
+  const allergenBox = h('div', { class: 'allergen-edit' });
+  let amap = null;
+  api('GET', '/api/floor/allergen-map').then((r) => { if (r.ok) { amap = r.data; drawAllergens(); } });
+  const setTags = async (p, list) => {
+    p.allergens = list; drawAllergens();
+    const r = await api('POST', `/api/floor/ingredients/${encodeURIComponent(p.id)}`, { allergens: list });
+    if (!r.ok) err.textContent = r.data.error ?? 'The allergens didn’t save.';
+  };
+  function drawAllergens() {
+    if (!amap) return fill(allergenBox);
+    const all = new Set(), rows = [], seen = new Set();
+    let unchecked = 0;
+    for (const i of c.ingredients) {
+      const k = String(i.name ?? '').toLowerCase();
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      const r = byName.get(k)?.kind === 'card' ? amap.recipes[k] : undefined, p = amap.products[k];
+      if (r) {
+        r.contains.forEach((x) => all.add(x));
+        if (r.unchecked.length) unchecked++;
+        rows.push(h('div', { class: 'arow' }, h('span', { class: 'aname', text: i.name }),
+          h('span', { class: r.contains.length ? 'allergy' : 'small muted', text: r.contains.length ? r.contains.map((x) => FLOOR_ALLERGENS[x]).join(', ') : r.unchecked.length ? '' : 'none' }),
+          r.unchecked.length ? h('span', { class: 'small warn-text', text: `not checked in it: ${r.unchecked.join(', ')}` }) : null,
+          h('span', { class: 'small muted', text: 'from its recipe' })));
+        continue;
+      }
+      if (!p) continue;
+      const tags = p.allergens ?? [];
+      tags.forEach((x) => all.add(x));
+      if (p.allergens === null) unchecked++;
+      rows.push(h('div', { class: 'arow' }, h('span', { class: 'aname', text: i.name }),
+        h('span', { class: `tag ${p.allergens === null ? 'warn' : 'ok'}`, text: p.allergens === null ? 'not checked' : 'checked' }),
+        h('div', { class: 'allergy-chips' }, Object.entries(FLOOR_ALLERGENS).map(([key, label]) => {
+          const on = tags.includes(key);
+          return h('button', { type: 'button', class: `chip${on ? ' on' : ''}`, 'aria-pressed': String(on), text: label, onclick: () => setTags(p, on ? tags.filter((x) => x !== key) : [...tags, key]) });
+        })),
+        p.allergens === null ? h('button', { type: 'button', class: 'link small', text: 'None of these', onclick: () => setTags(p, []) }) : null));
+    }
+    const labels = Object.entries(FLOOR_ALLERGENS).filter(([k]) => all.has(k)).map(([, l]) => l);
+    fill(allergenBox,
+      h('div', { class: 'row wrap' }, h('div', { class: 'strong grow', text: 'Allergens' }),
+        h('span', { class: labels.length ? 'allergy' : 'small muted', text: labels.length ? labels.join(', ') : unchecked ? '' : 'None of the major allergens' }),
+        unchecked ? h('span', { class: 'tag warn', text: `${unchecked} not checked` }) : null),
+      h('div', { class: 'small muted', text: 'Tag an ingredient once: every recipe that uses it follows. Preps bring their own.' }),
+      rows);
+  }
   const drawLines = () => {
+    drawAllergens();
     fill(lines, h('div', { class: 'irow head' }, h('div', { text: 'Amount' }), h('div', { text: 'Unit' }), h('div', { text: 'What goes in' }), h('div', { text: 'Price from' }), h('div', { class: 'num', text: 'Cost' }), h('div')),
       c.ingredients.map((i, n) => {
         const amount = h('input', { inputmode: 'decimal', value: i._amountText ?? (i.amount === '' || !(Number(i.amount) > 0) ? '' : String(i.amount)), 'aria-label': 'Amount', placeholder: '0' });
@@ -3883,9 +3971,12 @@ function cardEditor(me, d, card, start = {}) {
   const linkBox = h('div');
   const unlinked = [];
   const drawLinks = () => {
+    // Buttons with no recipe first; then ones on another recipe (a draft made from the button, a misspelled one): linking moves them here.
+    const mine = (x) => c.linked.some((l) => l.catalogId === x.catalogId && l.name === x.name);
+    const elsewhere = (d.cards ?? []).filter((x) => x.name !== card?.name).flatMap((x) => (x.linked ?? []).map((l) => ({ ...l, on: x.name })));
+    const pool = [...d.noCard.filter((x) => !mine(x)), ...elsewhere.filter((x) => !mine(x))];
     const pick = h('select', { 'aria-label': 'Link a button' }, h('option', { value: '', text: 'Link a button that sells it…' }),
-      d.noCard.filter((x) => !c.linked.some((l) => l.catalogId === x.catalogId && l.name === x.name)).map((x, n) => h('option', { value: String(n), text: `${x.name} · ${x.sold} sold` })));
-    const pool = d.noCard.filter((x) => !c.linked.some((l) => l.catalogId === x.catalogId && l.name === x.name));
+      pool.map((x, n) => h('option', { value: String(n), text: `${x.name}${x.sold !== undefined ? ` · ${x.sold} sold` : ''}${x.on ? ` · now on ${x.on}` : ''}` })));
     pick.addEventListener('change', () => { if (pick.value) { c.linked.push(pool[Number(pick.value)]); drawLinks(); } });
     fill(linkBox,
       c.linked.length ? h('div', { class: 'list' }, c.linked.map((l, n) => h('div', {}, h('span', { class: 'grow', text: l.name }), l.sold !== undefined ? h('span', { class: 'small muted', text: `${l.sold} sold` }) : null,
@@ -3971,6 +4062,7 @@ function cardEditor(me, d, card, start = {}) {
         yieldBox, yieldList,
         start.note && !card ? h('div', { class: 'note small', text: start.note }) : null,
         datalist, h('div', { class: 'ilist-wrap' }, lines, ageNote),
+        allergenBox,
         h('div', { class: 'strong', text: 'Steps' }), stepsBox,
         err,
         changedRow,
@@ -4158,15 +4250,31 @@ async function todayScreen(me, filter = 'all') {
   let errorFor = null;
   const showError = (text, key) => { errorFor = { text, key }; if (here()) draw(); };
   const pauseBar = onlinePauseBar();
+  let recipeNames = [];
   const itemRow = (i) => {
     const row = h('article', { class: `todo ${TONE_CLASS[i.tone] ?? ''}${i.answers?.length ? ' has-answers' : ''}` });
     const actions = h('div', { class: 'todo-actions' });
     const normal = () => { row.classList.remove('choosing'); fillNormal(); };
     const fillNormal = () => fill(actions,
       (i.answers ?? []).map((a, n) => h('button', { class: `btn small-btn${n === 0 ? ' blue' : ''}`, text: a.label, onclick: () => answer(row, i, a) })),
+      i.pick ? h('button', { class: 'btn small-btn', text: 'Another recipe…', onclick: pickRecipe }) : null,
       i.answers?.length ? h('button', { class: 'link', text: `More on ${i.go.to === 'menu' ? 'Menu' : 'its screen'}`, onclick: () => go(i.go) })
         : h('button', { class: 'btn small-btn dark', text: i.button, onclick: () => go(i.go) }),
       i.snooze?.length ? h('button', { class: 'link snooze-link', text: 'Snooze', title: 'Set it aside for a while, just for you', onclick: choose }) : null);
+    // Any recipe we have, found by typing: for a button whose recipe has another name (Katahdin Pizza → Katahdin).
+    async function pickRecipe() {
+      row.classList.add('choosing');
+      const input = h('input', { type: 'search', list: `recipes-${i.key}`, placeholder: 'Type the recipe’s name', 'aria-label': 'Recipe' });
+      const msg = h('span', { class: 'small error' });
+      fill(actions, input, h('datalist', { id: `recipes-${i.key}` }), h('button', { class: 'btn small-btn dark', text: 'Link', onclick: () => {
+          const name = recipeNames.find((n) => n.toLowerCase() === input.value.trim().toLowerCase());
+          if (!name) return (msg.textContent = 'Pick one from the list as you type.');
+          answer(row, i, { label: `It’s ${name}`, body: { type: 'link', ...i.pick, recipe: name } });
+        } }), h('button', { class: 'link', text: 'Cancel', onclick: normal }), msg);
+      input.focus();
+      if (!recipeNames.length) { const r = await api('GET', '/api/recipes'); if (r.ok) recipeNames = [...new Set(['kitchen', 'bar'].flatMap((k) => (r.data[k] ?? []).flatMap((sec) => (sec.cards ?? []).filter((x) => x.kind === 'dish' || x.kind === 'drink').map((x) => x.name))))].sort(); }
+      fill(actions.querySelector('datalist'), recipeNames.map((n) => h('option', { value: n })));
+    }
     // The choices replace the buttons in place: no pop-ups over the list.
     function choose() {
       row.classList.add('choosing');

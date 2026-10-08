@@ -1282,3 +1282,9 @@ button.donut-row { display: flex; min-width: 0; }
 .warn-note { background: #FBE6E2; border-color: #F0C2BA; color: var(--accent); font-weight: 600; }
 .special-form { padding: 12px; background: var(--soft); }
 .special-form[hidden] { display: none; }
+.allergen-edit { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-top: 1px solid var(--line); }
+.allergen-edit:empty { display: none; }
+.arow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 0; border-top: 1px solid var(--soft); }
+.arow .aname { font-weight: 600; min-width: 160px; }
+.arow .allergy-chips .chip { height: 32px; padding: 0 10px; font-size: 13px; letter-spacing: .04em; }
+.big-allergy { font-size: 16px; }

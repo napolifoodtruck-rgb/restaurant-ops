@@ -80,6 +80,22 @@ async function floorSettings(db: Db, restaurantId: string): Promise<{ allergyNot
   return js<{ allergyNote?: string; swaps?: Swap[] }>((await db.query<{ settings: unknown }>('SELECT settings FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.settings ?? {});
 }
 
+/** Allergens for any recipe, from what's been tagged on the ingredients (and the swaps the kitchen offers). */
+export async function recipeAllergens(db: Db, restaurantId: string, model: Model) {
+  const tags = new Map((await db.query<{ ingredient_id: string; allergens: string[] | null }>('SELECT ingredient_id, allergens FROM ingredient_answers WHERE restaurant_id = $1', [restaurantId])).rows.map((r) => [r.ingredient_id, r.allergens]));
+  const productName = new Map(model.products.map((p) => [p.id, p.name]));
+  const swaps = ((await floorSettings(db, restaurantId)).swaps ?? []).filter((w) => model.book.recipes.has(w.from) && model.book.recipes.has(w.to));
+  const src = { recipes: model.book.recipes, tagsOf: (id: string) => tags.get(id) ?? undefined, nameOf: (id: string) => productName.get(id) ?? id };
+  return {
+    of: (recipeId: string) => {
+      const info = allergensOf(recipeId, src);
+      return { ...info, line: allergyLine(info), swaps: swaps.filter((w) => usesRecipe(recipeId, w.from, model.book.recipes)).map((w) => { const x = allergensOf(recipeId, src, w); return { label: w.label, line: allergyLine(x), contains: x.contains.map((c) => c.key) }; }) };
+    },
+    /** Each ingredient's tags by id: [] checked and none, null not checked. */
+    tags,
+  };
+}
+
 async function dishIndex(db: Db, restaurantId: string, model: Model): Promise<{ dishes: DishInfo[]; byId: Map<string, DishInfo> }> {
   const book = await loadBook(db, restaurantId);
   const cards = (book.recipeCards ?? []).filter((c) => c.status !== 'rough' && (kindOf(c) === 'dish' || kindOf(c) === 'drink'));
@@ -560,6 +576,17 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
     const preps = (await db.query<{ id: string; name: string; guest_name: string | null; recipe_type: string | null; category: string | null }>(
       "SELECT id, name, guest_name, recipe_type, category FROM recipes WHERE restaurant_id = $1 AND removed_at IS NULL AND (recipe_type ILIKE 'prep%' OR (category IS NOT NULL AND category NOT ILIKE '%menu%')) ORDER BY name", [rid])).rows;
     return send(res, 200, { ingredients, preps: preps.map((p) => ({ id: p.id, name: p.name, guestName: p.guest_name })), allergens: ALLERGEN_KEYS, canSuggest: Boolean(claudeOptions()) }), true;
+  }
+
+  // For the recipe editor: each ingredient's allergens by name, and each recipe's (worked out through its own).
+  if (method === 'GET' && path === '/api/floor/allergen-map') {
+    const model = await getModel(db, rid, ctx.today);
+    const ra = await recipeAllergens(db, rid, model);
+    return send(res, 200, {
+      products: Object.fromEntries(model.products.map((p) => [p.name.toLowerCase(), { id: p.id, allergens: ra.tags.get(p.id) ?? null }])),
+      recipes: Object.fromEntries([...model.book.recipes.values()].map((r) => { const a = ra.of(r.id); return [r.name.toLowerCase(), { contains: a.contains.map((c) => c.key), unchecked: a.unchecked }]; })),
+      keys: ALLERGEN_KEYS,
+    }), true;
   }
 
   const ingPath = path.match(/^\/api\/floor\/ingredients\/(.+)$/);

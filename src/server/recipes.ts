@@ -20,6 +20,7 @@ import { getModel, loadBook } from './model.ts';
 import { loadAreas } from './areas.ts';
 import { coverageOf } from './views.ts';
 import { cardView, kindOf, lineState, linkedItems, sameDishAs, yieldConversions } from './cards.ts';
+import { recipeAllergens } from './floor.ts';
 import { tryConvert } from '../core/units.ts';
 import { cardId, normalizeName as cardKey } from '../core/recipeCards.ts';
 
@@ -109,6 +110,8 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
       }
     }
     const manager = atLeast(who.roleLevel, 'manager');
+    // What's in it for anyone with an allergy, worked out through every prep it uses.
+    const allergens = rec ? (await recipeAllergens(db, who.restaurantId, model)).of(rec.id) : undefined;
     return send(res, 200, {
       id: cardId(c.card), name: c.card.name, kind, side: sideOf(c), section: sectionOf(c),
       yields, scale, ...(scaledTo ? { scaledTo } : {}), ...(batchGrams ? { batchGrams: Math.round(batchGrams), weightStated: weight!.stated } : {}), ...(prep && amount > 0 && unit ? { asked: { amount, unit } } : {}),
@@ -121,6 +124,7 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
       ...(c.view.linked.map((l) => model.imageOf(l.catalogId)).find(Boolean) ? { image: c.view.linked.map((l) => model.imageOf(l.catalogId)).find(Boolean) } : {}),
       ...(manager && c.view.cost !== undefined ? { cost: c.view.cost, complete: c.view.complete } : {}),
       ...(manager ? { linked: c.view.linked.map((l) => ({ catalogId: l.catalogId, itemName: l.itemName, ...(l.variationName ? { variationName: l.variationName } : {}), name: l.name, sold: l.sold, netSales: l.netSales, ...(model.folded.get(l.catalogId)?.length ? { includes: model.folded.get(l.catalogId) } : {}) })) } : {}),
+      ...(allergens ? { allergens: { contains: allergens.contains, unchecked: allergens.unchecked, unknown: allergens.unknown, line: allergens.line, swaps: allergens.swaps } } : {}),
       ...(manager ? { sameAs: sameDishAs(c.card, book.recipeCards ?? []) } : {}),
       canEdit: manager,
     }), true;
