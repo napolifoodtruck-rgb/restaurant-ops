@@ -22,6 +22,9 @@ test('allergens come up through every recipe; unchecked ingredients are named, n
   assert.deepEqual(info.unchecked, ['Basil, Fresh']);
   assert.deepEqual(info.unknown, ['mystery sauce']);
   assert.equal(allergyLine(info), 'Dairy, Gluten, Tree nut, Allium');
+  // Nothing found but not everything checked is never "none".
+  assert.equal(allergyLine({ contains: [], unchecked: ['Basil, Fresh'], unknown: [] }), 'Not checked yet: ask the kitchen');
+  assert.equal(allergyLine({ contains: [], unchecked: [], unknown: [] }), 'None of the major allergens');
   // A loop between recipes doesn't hang.
   recipes.set('dough', recipe('dough', [['recipe', 'pizza']]));
   assert.ok(allergensOf('pizza', { recipes, tagsOf: (id) => tags[id], nameOf: (id) => id }));

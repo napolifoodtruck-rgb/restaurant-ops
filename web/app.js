@@ -6525,7 +6525,7 @@ function floorWine(b, id) {
 /** The cut-out cards, ready to print: specials, new items, the gelato flight. */
 function floorPrintCards(featured, gelato) {
   const sheet = h('div', { class: 'print-cards' },
-    featured.map((f) => h('article', { class: 'print-card' }, h('div', { class: 'kicker', text: `${f.kind === 'special' ? 'Special' : 'New'}${f.price ? ` · ${usd(f.price)}` : ''}` }), h('h3', { text: f.name }), h('ul', {}, f.lines.map((l) => h('li', { text: upFirst(l) }))), f.allergyLine ? h('div', { class: 'allergy', text: `ALLERGY: ${f.allergyLine}` }) : null)),
+    featured.map((f) => h('article', { class: 'print-card' }, h('div', { class: 'kicker', text: `${f.kind === 'special' ? 'Special' : 'New'}${f.price ? ` · ${usd(f.price)}` : ''}` }), h('h3', { text: f.name }), h('ul', {}, f.lines.map((l) => h('li', { text: upFirst(l) }))), f.allergyLine ? h('div', { class: 'allergy', text: `ALLERGY: ${f.allergyLine}${f.unchecked?.length && !/^Not checked/.test(f.allergyLine) ? ' (not every ingredient checked yet)' : ''}` }) : null)),
     gelato ? h('article', { class: 'print-card' }, h('div', { class: 'kicker', text: `Gelato flight ${new Date(gelato.setAt).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })}` }), h('ul', {}, gelato.flavors.map((f) => h('li', { text: `${f.name}${f.vegan ? ' (v)' : ''}` })))) : null);
   document.body.append(sheet);
   document.body.classList.add('printing-cards');

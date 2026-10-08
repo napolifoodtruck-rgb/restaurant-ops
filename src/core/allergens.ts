@@ -88,7 +88,9 @@ export function allergensOf(recipeId: string, src: AllergenSource, swap?: Pick<S
 
 /** The line a menu card prints: "ALLERGY: Dairy, Gluten, Allium". */
 export function allergyLine(info: AllergenInfo): string {
-  return info.contains.length ? info.contains.map((c) => c.label).join(', ') : 'None of the major allergens';
+  if (info.contains.length) return info.contains.map((c) => c.label).join(', ');
+  // Never "none" until every ingredient has been checked.
+  return info.unchecked.length || info.unknown.length ? 'Not checked yet: ask the kitchen' : 'None of the major allergens';
 }
 
 export interface GuestNames {

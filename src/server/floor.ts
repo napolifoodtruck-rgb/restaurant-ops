@@ -60,6 +60,9 @@ export function phaseAt(minutes: number): 'pre' | 'service' | 'closing' {
   return minutes < 17 * 60 ? 'pre' : minutes < 20 * 60 + 30 ? 'service' : 'closing';
 }
 
+/** When each item first sold, from the daily sales (they go back further than the order lines). */
+const FIRST_SOLD = 'SELECT item_name, min(day)::text AS first FROM pos_item_sales_daily WHERE restaurant_id = $1 AND quantity > 0 GROUP BY item_name';
+
 /** New: first sold within this many days. */
 const NEW_DAYS = 21;
 
@@ -86,7 +89,7 @@ async function dishIndex(db: Db, restaurantId: string, model: Model): Promise<{ 
   const productName = new Map(model.products.map((p) => [p.id, p.name]));
   const linked = linkedItems(model);
   const price = new Map(model.menuItems.filter((m) => m.price !== undefined).map((m) => [m.catalogId, m.price!]));
-  const firstSold = new Map((await db.query<{ item_name: string; first: string }>('SELECT item_name, min(day)::text AS first FROM pos_order_lines WHERE restaurant_id = $1 GROUP BY item_name', [restaurantId])).rows.map((r) => [r.item_name, r.first]));
+  const firstSold = new Map((await db.query<{ item_name: string; first: string }>(FIRST_SOLD, [restaurantId])).rows.map((r) => [r.item_name, r.first]));
   const areaOf = await loadAreas(db, restaurantId);
   const swaps = ((await floorSettings(db, restaurantId)).swaps ?? []).filter((w) => model.book.recipes.has(w.from) && model.book.recipes.has(w.to));
   const src = {
@@ -220,7 +223,8 @@ export async function floorBoard(db: Db, ctx: FloorContext, asked?: string) {
   const specials = features.filter((f) => f.kind === 'special' && (!f.weekdays?.length || f.weekdays.includes(ctx.weekday)))
     .map((f) => card(f.recipe_id ? byId.get(f.recipe_id) : undefined, { kind: 'special', name: f.name, ...(f.price !== null ? { price: Number(f.price) } : {}), note: f.note, days: f.weekdays }));
   const pinnedNew = features.filter((f) => f.kind === 'new' && f.recipe_id).map((f) => f.recipe_id!);
-  const fresh = dishes.filter((d) => !hidden.has(d.id) && !specials.some((x) => x.id === d.id) && ((d.firstSold && d.firstSold >= addDays(today, -NEW_DAYS)) || pinnedNew.includes(d.id)))
+  // New on the menu: dishes everywhere; new drinks at the bar (wines have their own cards).
+  const fresh = dishes.filter((d) => (d.kind === 'dish' || post.kind === 'bar') && !hidden.has(d.id) && !specials.some((x) => x.id === d.id) && ((d.firstSold && d.firstSold >= addDays(today, -NEW_DAYS)) || pinnedNew.includes(d.id)))
     .map((d) => card(d, { kind: 'new' }));
   const featured = [...specials, ...fresh].filter((f) => side === 'both' || f.area === side || post.kind === 'room');
 
@@ -265,7 +269,7 @@ export async function floorBoard(db: Db, ctx: FloorContext, asked?: string) {
   }).sort((a, b) => Number(b.due) - Number(a.due));
 
   // Wines.
-  const firstSold = new Map((await db.query<{ item_name: string; first: string }>('SELECT item_name, min(day)::text AS first FROM pos_order_lines WHERE restaurant_id = $1 GROUP BY item_name', [rid])).rows.map((r) => [r.item_name, r.first]));
+  const firstSold = new Map((await db.query<{ item_name: string; first: string }>(FIRST_SOLD, [rid])).rows.map((r) => [r.item_name, r.first]));
   const buttons = wineButtons(model, areaOf);
   const wines = (await db.query<WineRow>(`SELECT ${WINE_COLS} FROM wine_cards WHERE restaurant_id = $1 AND active ORDER BY name`, [rid])).rows.map((w) => wineView(w, buttons, byId, firstSold, today));
   // Each dish shows the wines that pair with it.
@@ -322,7 +326,7 @@ async function readSheets(db: Db, id: string, restaurantId: string): Promise<voi
   try {
     if (!opts) throw new Error('Reading tech sheets needs ANTHROPIC_API_KEY in Render.');
     const wineList = (await db.query<{ item_name: string }>(
-      "SELECT DISTINCT item_name FROM pos_order_lines WHERE restaurant_id = $1 AND category ILIKE '%wine%' AND day >= current_date - 120 ORDER BY item_name", [restaurantId])).rows.map((x) => x.item_name);
+      "SELECT DISTINCT item_name FROM pos_item_sales_daily WHERE restaurant_id = $1 AND category ILIKE '%wine%' AND day >= current_date - 120 ORDER BY item_name", [restaurantId])).rows.map((x) => x.item_name);
     const read = await readWineSheets([{ mediaType: r.media_type as ClaudePage['mediaType'], data: bytes(r.file) }], opts, wineList);
     await db.query("UPDATE wine_sheet_scans SET status = 'read', result = $2, usage = $3 WHERE id = $1", [id, JSON.stringify(read.wines), JSON.stringify({ ...read.usage, model: read.model })]);
   } catch (err) {
@@ -596,8 +600,8 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
   if (method === 'GET' && path === '/api/floor/wines') {
     const model = await getModel(db, rid, ctx.today);
     const { byId, dishes } = await dishIndex(db, rid, model);
-    const firstSold = new Map((await db.query<{ item_name: string; first: string }>('SELECT item_name, min(day)::text AS first FROM pos_order_lines WHERE restaurant_id = $1 GROUP BY item_name', [rid])).rows.map((r) => [r.item_name, r.first]));
-    const lastSold = new Map((await db.query<{ catalog_id: string; last: string }>('SELECT catalog_id, max(day)::text AS last FROM pos_order_lines WHERE restaurant_id = $1 AND catalog_id IS NOT NULL GROUP BY catalog_id', [rid])).rows.map((r) => [r.catalog_id, r.last]));
+    const firstSold = new Map((await db.query<{ item_name: string; first: string }>(FIRST_SOLD, [rid])).rows.map((r) => [r.item_name, r.first]));
+    const lastSold = new Map((await db.query<{ catalog_id: string; last: string }>('SELECT catalog_id, max(day)::text AS last FROM pos_item_sales_daily WHERE restaurant_id = $1 AND catalog_id IS NOT NULL AND quantity > 0 GROUP BY catalog_id', [rid])).rows.map((r) => [r.catalog_id, r.last]));
     const rows = (await db.query<WineRow>(`SELECT ${WINE_COLS} FROM wine_cards WHERE restaurant_id = $1 AND active ORDER BY name`, [rid])).rows;
     const areaOf = await loadAreas(db, rid);
     const buttons = wineButtons(model, areaOf);
