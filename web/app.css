@@ -900,7 +900,9 @@ button.donut-row { display: flex; min-width: 0; }
 .nowrap { white-space: nowrap; }
 .arr-item > .grow { flex: 1 1 auto; min-width: 0; }
 .online-find { flex-wrap: wrap; }
-.online-find input[type=search] { flex: 1 1 220px; }
+.online-find input[type=search] { flex: 1 1 220px; height: 40px; box-sizing: border-box; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235C5C58' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E") no-repeat 14px center / 18px; padding: 0 14px 0 42px; font-size: 15px; -webkit-appearance: none; appearance: none; transition: border-color .15s; }
+.online-find input[type=search]:hover, .online-find input[type=search]:focus { border-color: var(--ink); }
+.online-find input[type=search]::placeholder { color: var(--muted); }
 
 /* New recipe: start from a copy of another. */
 .base-pick { padding: 8px 10px; border: 1px dashed var(--line, #d8d8d8); border-radius: 8px; }
