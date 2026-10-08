@@ -55,10 +55,10 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
       return reply(200, { objects: body.object_ids.map((id: string) => live.get(id)).filter(Boolean), related_objects: [...new Set<string>(listIds)].map((id) => live.get(id)).filter(Boolean) });
     }
     square.push({ path, body });
-    if (path === '/v2/orders') {
+    if (path === '/v2/orders' || path === '/v2/orders/calculate') {
       const subtotal = body.order.line_items.reduce((s: number, l: any) => s + Number(l.quantity) * (l.base_price_money.amount + l.modifiers.reduce((m: number, x: any) => m + x.base_price_money.amount, 0)), 0);
       const tax = Math.round(subtotal * 0.075);
-      return reply(200, { order: { id: `sq-order-${square.length}`, version: 1, total_money: { amount: subtotal + tax }, total_tax_money: { amount: tax } } });
+      return reply(200, { order: { ...(path === '/v2/orders' ? { id: `sq-order-${square.length}`, version: 1 } : {}), total_money: { amount: subtotal + tax }, total_tax_money: { amount: tax } } });
     }
     if (path === '/v2/payments') {
       if (body.source_id.endsWith('declined')) return reply(400, { errors: [{ code: 'GENERIC_DECLINE', category: 'PAYMENT_METHOD_ERROR' }] });
@@ -183,12 +183,12 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.deepEqual([tooBig.status, /4 at most/.test(tooBig.json.error)], [409, true]);
   assert.equal(square.length, 0);
 
-  // Checkout holds two pizzas in 5:00 and creates the Square pickup order with the price we worked out.
+  // Checkout holds two pizzas in 5:00 and has Square price the pickup order, without creating it (nothing on the POS yet).
   const held = await customer('POST', '/api/order/checkout', order);
   assert.equal(held.status, 201);
   assert.deepEqual([held.json.status, held.json.subtotal, held.json.tax, held.json.total, held.json.tip, held.json.window.label], ['held', 3700, 278, 3978, 300, '5:00 pm']);
   const sent = square[0]!.body;
-  assert.equal(sent.idempotency_key, held.json.id);
+  assert.deepEqual([square[0]!.path, square.some((x) => x.path === '/v2/orders')], ['/v2/orders/calculate', false]);
   assert.deepEqual(sent.order.line_items.map((l: any) => [l.name, l.quantity, l.base_price_money.amount, l.modifiers.map((m: any) => m.name)]), [['Margherita', '2', 1500, ['Partially cooked', 'Arugula']], ['Soda', '1', 300, []]]);
   const pickup = sent.order.fulfillments[0].pickup_details;
   assert.equal(pickup.recipient.display_name, 'Ada Lovelace');
@@ -204,13 +204,20 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   const drinks = await customer('POST', '/api/order/checkout', { ...order, lines: [{ variationId: 'var-soda', quantity: 2 }], tip: 0 });
   assert.equal(drinks.status, 201);
 
-  // A declined card can try again with another; paying is charged once with the tip on top.
+  // A declined card can try again with another; paying is charged once with the tip on top. The Square order is made at
+  // Pay, and cancelled again when the card is declined, so it's only open on the POS while it's being paid.
   const declined = await customer('POST', `/api/order/${held.json.id}/pay`, { sourceId: 'cnon:card-declined' });
   assert.deepEqual([declined.status, /declined/.test(declined.json.error)], [402, true]);
+  const firstTry = square.find((x) => x.path === '/v2/orders')!;
+  assert.equal(firstTry.body.idempotency_key.startsWith(held.json.id), true);
+  assert.equal(cancelledInSquare.size, 1);
+  assert.equal((await db!.query('SELECT square_order_id FROM online_orders WHERE id = $1', [held.json.id])).rows[0].square_order_id, null);
   const paid = await customer('POST', `/api/order/${held.json.id}/pay`, { sourceId: 'cnon:card-ok' });
   assert.deepEqual([paid.status, paid.json.status, paid.json.receiptUrl], [200, 'paid', 'https://squareup.com/receipt/x']);
   const payment = square.at(-1)!.body;
-  assert.deepEqual([payment.amount_money.amount, payment.tip_money.amount, payment.order_id, payment.location_id], [3978, 300, 'sq-order-1', 'loc-1']);
+  const paidOrderId = (await db!.query('SELECT square_order_id FROM online_orders WHERE id = $1', [held.json.id])).rows[0].square_order_id;
+  assert.deepEqual([payment.amount_money.amount, payment.tip_money.amount, payment.order_id, payment.location_id], [3978, 300, paidOrderId, 'loc-1']);
+  assert.equal(cancelledInSquare.has(paidOrderId), false);
   assert.ok(payment.idempotency_key.length <= 45);
   const again = await customer('POST', `/api/order/${held.json.id}/pay`, { sourceId: 'cnon:card-ok' });
   assert.deepEqual([again.status, again.json.status], [200, 'paid']);
@@ -323,18 +330,16 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   // Or straight from the payment page.
   assert.equal((await customer('POST', `/api/order/${changed.json.id}/release`)).json.status, 'released');
   assert.equal(await left20(), room);
-  // Given up, it's cancelled in Square on the next pass (so the POS stops counting its pizzas); a paid one never is.
-  const squareIdOf = async (id: string) => (await db!.query<{ square_order_id: string }>('SELECT square_order_id FROM online_orders WHERE id = $1', [id])).rows[0]!.square_order_id;
-  await customer('GET', '/api/order/menu');
-  const cancels = square.filter((x) => x.path === '/v2/orders/:id (update)');
-  assert.ok(cancels.some((c) => c.body.order.state === 'CANCELED' && c.body.order.version === 3 && c.body.order.fulfillments[0].state === 'CANCELED'));
-  assert.ok(cancelledInSquare.has(await squareIdOf(first.json.id)) && cancelledInSquare.has(await squareIdOf(changed.json.id)));
-  // An abandoned payment page: half an hour past its hold, it's given up and cancelled; it can't be paid after.
+  // Neither got as far as Pay, so neither was ever sent to Square: nothing on the POS to clear up.
+  const squareIdOf = async (id: string) => (await db!.query<{ square_order_id: string | null }>('SELECT square_order_id FROM online_orders WHERE id = $1', [id])).rows[0]!.square_order_id;
+  assert.deepEqual([await squareIdOf(first.json.id), await squareIdOf(changed.json.id)], [null, null]);
+  // One left open in Square (a Pay whose answer never came back, then they walked away): half an hour past its hold it's
+  // given up and cancelled there; it can't be paid after.
   const walkedAway = await customer('POST', '/api/order/checkout', { ...order, window: '18:15', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
-  await db!.query("UPDATE online_orders SET hold_until = now() - interval '31 minutes' WHERE id = $1", [walkedAway.json.id]);
+  await db!.query("UPDATE online_orders SET square_order_id = 'sq-left-open', hold_until = now() - interval '31 minutes' WHERE id = $1", [walkedAway.json.id]);
   await customer('GET', '/api/order/menu');
   assert.equal((await customer('GET', `/api/order/${walkedAway.json.id}`)).json.status, 'released');
-  assert.ok(cancelledInSquare.has(await squareIdOf(walkedAway.json.id)));
+  assert.ok(cancelledInSquare.has('sq-left-open'));
   assert.equal((await customer('POST', `/api/order/${walkedAway.json.id}/pay`, { sourceId: 'cnon:card-ok-9' })).status, 409);
   const cancelsSoFar = square.filter((x) => x.path === '/v2/orders/:id (update)').length;
   await customer('GET', '/api/order/menu');
