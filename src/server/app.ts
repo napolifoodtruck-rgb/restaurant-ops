@@ -107,6 +107,8 @@ const ORDER_FILES: Record<string, { file: string; type: string }> = {
   '/order.js': { file: 'order.js', type: 'text/javascript; charset=utf-8' },
   '/order.css': { file: 'order.css', type: 'text/css; charset=utf-8' },
 };
+// What else the ordering page loads, so its own address serves it.
+const ORDER_HOST_PATHS = new Set(['/api/brand', '/brand/logo', '/brand/icon', '/health']);
 const WEB_DIR = new URL('../../web/', import.meta.url);
 const CSP = "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://*.s3.amazonaws.com https://*.s3.us-west-2.amazonaws.com https://*.squarecdn.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
@@ -149,6 +151,15 @@ export function createApp(config: AppConfig) {
         try { host = new URL(origin).host; } catch {}
         if (host !== req.headers.host) throw new HttpError(403, 'Cross-site request.');
       }
+    }
+
+    // The customers' address (order.<the restaurant's domain>) is the ordering page and nothing
+    // else: its home goes to the menu, and the staff app stays on the staff address.
+    if (req.headers.host?.toLowerCase().startsWith('order.') && !ORDER_FILES[path] && !path.startsWith('/api/order/') && !ORDER_HOST_PATHS.has(path)) {
+      if (method !== 'GET' && method !== 'HEAD') throw new HttpError(404, 'Not found.');
+      res.writeHead(302, { location: '/order' });
+      res.end();
+      return;
     }
 
     const orderPage = ORDER_FILES[path];
