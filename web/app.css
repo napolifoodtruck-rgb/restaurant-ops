@@ -1047,3 +1047,4 @@ button.donut-row { display: flex; min-width: 0; }
 .fc-panel { margin: 6px 0 2px; padding-top: 10px; border-top: 1px solid var(--line); }
 .fc-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
 .fc-pct { font-size: 20px; }
+.fc-chart .fc-band { fill: var(--fc-good); opacity: .08; }

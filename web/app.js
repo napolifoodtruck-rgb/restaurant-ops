@@ -772,8 +772,7 @@ function renderMargins(me, state, m) {
   const fc = (cat.weeklyFoodCost ?? []).map((v) => (v === null ? null : v));
   const summary = statBox(`${cat.name} · estimated gross profit`, dollars(catLeft),
     h('div', { class: 'small muted', text: `${cat.dishes.length} ${bar ? 'drinks' : 'dishes'} · ${days} days` }),
-    // The kitchen's goal colours it; the bar has no pour-cost goal set yet, so it's plain.
-    foodCostPanel(`${bar ? 'Pour' : 'Food'} cost by week`, cat.foodCostShare, m.weeks, fc, bar ? undefined : FOOD_COST_GOAL),
+    foodCostPanel(`${bar ? 'Pour' : 'Food'} cost by week`, cat.foodCostShare, m.weeks, fc, bar ? POUR_COST_GOAL : FOOD_COST_GOAL),
     h('div', { class: 'small muted', text: `Whole ${sideOf(me)} menu: ${dollars(m.totals.leftOver)} estimated gross profit, ${pct(m.totals.foodCostShare)} ${bar ? 'pour' : 'food'} cost.` }),
     h('div', { class: 'small muted', text: `Sales minus each recipe’s ${bar ? 'pour' : 'food'} cost at today’s invoice prices. Waste, comps and labor aren’t in it.` }));
   const noCard = cat.noCard.length ? sideBox(`Selling with no recipe · ${dollars(cat.noCardSales)} not counted`,
@@ -2424,14 +2423,18 @@ function costChart(points, label) {
   svg.addEventListener('pointerleave', () => hover.setAttribute('visibility', 'hidden'));
   return h('div', { class: 'chart-wrap' }, svg);
 }
-/** The kitchen's food-cost goal: under 23% of sales. */
-const FOOD_COST_GOAL = 0.23;
-/** Where a food cost sits against the goal: well under is green, near it amber, over it red. */
+/** Cost goals, as a share of sales: the kitchen's food cost under 23%; the bar's pour cost 18–24%. */
+const FOOD_COST_GOAL = { high: 0.23 };
+const POUR_COST_GOAL = { low: 0.18, high: 0.24 };
+const goalText = (goal) => (goal.low ? `${Math.round(goal.low * 100)}–${Math.round(goal.high * 100)}%` : `${Math.round(goal.high * 100)}%`);
+/** Where a cost sits against its goal: well under the top is green, near it amber, over it red. */
 function foodCostStatus(share, goal = FOOD_COST_GOAL) {
   if (share === null || share === undefined) return { cls: '', label: '' };
-  if (share > goal) return { cls: 'fc-over', label: `▲ Over the ${Math.round(goal * 100)}% goal` };
-  if (share > goal - 0.03) return { cls: 'fc-near', label: `● Near the ${Math.round(goal * 100)}% goal` };
-  return { cls: 'fc-under', label: `✓ Under the ${Math.round(goal * 100)}% goal` };
+  const g = goalText(goal);
+  if (share > goal.high) return { cls: 'fc-over', label: `▲ Over the ${g} goal` };
+  if (share > goal.high - 0.03) return { cls: 'fc-near', label: goal.low ? `● Near the top of ${g}` : `● Near the ${g} goal` };
+  if (goal.low && share < goal.low) return { cls: 'fc-under', label: `✓ Below the ${g} range` };
+  return { cls: 'fc-under', label: goal.low ? `✓ In the ${g} range` : `✓ Under the ${g} goal` };
 }
 /**
  * A category's food cost, under its gross profit at the top of Performance: the period's share,
@@ -2446,7 +2449,7 @@ function foodCostPanel(title, share, weeks, values, goal) {
     h('b', { class: `fc-pct ${st.cls}`, text: pct(share) }), st.label ? h('span', { class: `small strong ${st.cls}`, text: st.label }) : null);
   if (pts.length < 2) return h('div', { class: 'fc-panel' }, head);
   const W = 320, H = 150, L = 38, R = 10, T = 10, B = 22;
-  const all = [...pts.map((p) => p.v), ...(goal ? [goal] : [])];
+  const all = [...pts.map((p) => p.v), ...(goal ? [goal.high, goal.low ?? goal.high] : [])];
   const y0 = Math.max(0, Math.floor((Math.min(...all) - 0.02) * 50) / 50), y1 = Math.ceil((Math.max(...all) + 0.02) * 50) / 50;
   const x = (i) => L + (i / Math.max(1, values.length - 1)) * (W - L - R), y = (v) => T + (1 - (v - y0) / (y1 - y0)) * (H - T - B);
   const el = (tag, attrs, text) => { const e = document.createElementNS(ns, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text !== undefined) e.textContent = text; return e; };
@@ -2455,7 +2458,7 @@ function foodCostPanel(title, share, weeks, values, goal) {
   const gid = `fcg${Math.random().toString(36).slice(2, 8)}`;
   const grad = el('linearGradient', { id: gid, gradientUnits: 'userSpaceOnUse', x1: 0, x2: 0, y1: y(y0), y2: y(y1) });
   const at = (v) => `${Math.max(0, Math.min(100, ((v - y0) / (y1 - y0)) * 100)).toFixed(1)}%`;
-  if (goal) for (const [v, c] of [[goal - 0.05, 'var(--fc-good)'], [goal - 0.02, 'var(--fc-near)'], [goal, 'var(--fc-near)'], [goal + 0.02, 'var(--fc-bad)']]) grad.append(el('stop', { offset: at(v), 'stop-color': c }));
+  if (goal) for (const [v, c] of [[goal.high - 0.05, 'var(--fc-good)'], [goal.high - 0.02, 'var(--fc-near)'], [goal.high, 'var(--fc-near)'], [goal.high + 0.02, 'var(--fc-bad)']]) grad.append(el('stop', { offset: at(v), 'stop-color': c }));
   else grad.append(el('stop', { offset: '0%', 'stop-color': 'var(--blue)' }));
   svg.append(el('defs', {}));
   svg.firstChild.append(grad);
@@ -2463,7 +2466,9 @@ function foodCostPanel(title, share, weeks, values, goal) {
   const step = y1 - y0 > 0.12 ? 0.05 : 0.02;
   for (let t = Math.ceil(y0 / step - 1e-9) * step; t <= y1 + 1e-9; t += step) ticks.push(t);
   for (const t of ticks) svg.append(el('line', { x1: L, x2: W - R, y1: y(t), y2: y(t), class: 'grid' }), el('text', { x: L - 6, y: y(t) + 4, 'text-anchor': 'end', class: 'tick' }, `${Math.round(t * 100)}%`));
-  if (goal) svg.append(el('line', { x1: L, x2: W - R, y1: y(goal), y2: y(goal), class: 'fc-goal' }), el('text', { x: L + 4, y: y(goal) - 5, class: 'fc-goal-label' }, `Goal ${Math.round(goal * 100)}%`));
+  // A range is shaded between its ends; a single goal is one dashed line.
+  if (goal?.low) svg.append(el('rect', { x: L, width: W - L - R, y: y(goal.high), height: y(goal.low) - y(goal.high), class: 'fc-band' }));
+  if (goal) svg.append(el('line', { x1: L, x2: W - R, y1: y(goal.high), y2: y(goal.high), class: 'fc-goal' }), el('text', { x: L + 4, y: y(goal.high) - 5, class: 'fc-goal-label' }, `Goal ${goalText(goal)}`));
   for (const i of [0, Math.floor((values.length - 1) / 2), values.length - 1]) svg.append(el('text', { x: x(i), y: H - 6, 'text-anchor': i === 0 ? 'start' : i === values.length - 1 ? 'end' : 'middle', class: 'tick' }, shortDate(weeks[i])));
   // Runs of weeks with sales; a week with none breaks the line.
   let run = [];
