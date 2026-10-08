@@ -154,3 +154,35 @@ DO $$ BEGIN
 END $$;
 
 SELECT 'all schema checks passed' AS result;
+
+-- The Floor: posts belong to one restaurant, a checklist item is ticked once a night, and an iPad
+-- set to a removed post goes back to not being set.
+INSERT INTO floor_posts (id, restaurant_id, name, kind, tables) VALUES
+  ('80000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000a', 'Patio', 'room', '{T1,T2}');
+INSERT INTO floor_checklists (id, restaurant_id, post_id, kind, name) VALUES
+  ('81000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000a', '80000000-0000-0000-0000-000000000001', 'opening', 'Wipe the tables');
+INSERT INTO floor_checks (restaurant_id, checklist_id, day, done_by) VALUES
+  ('00000000-0000-0000-0000-00000000000a', '81000000-0000-0000-0000-000000000001', '2026-10-08', '70000000-0000-0000-0000-000000000001');
+INSERT INTO devices (id, restaurant_id, name, token_hash, floor_post_id) VALUES
+  ('82000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000a', 'Patio iPad', 'x', '80000000-0000-0000-0000-000000000001');
+
+SELECT pg_temp.must_fail('a post is a room, the bar, the counter or the host stand',
+  $$INSERT INTO floor_posts (restaurant_id, name, kind) VALUES ('00000000-0000-0000-0000-00000000000a', 'Kitchen', 'kitchen')$$);
+SELECT pg_temp.must_fail('one post of a name',
+  $$INSERT INTO floor_posts (restaurant_id, name) VALUES ('00000000-0000-0000-0000-00000000000a', 'patio')$$);
+SELECT pg_temp.must_fail('an iPad cannot be set to another restaurant''s post',
+  $$INSERT INTO devices (restaurant_id, name, token_hash, floor_post_id) VALUES ('00000000-0000-0000-0000-00000000000b', 'Theirs', 'y', '80000000-0000-0000-0000-000000000001')$$);
+SELECT pg_temp.must_fail('a checklist item is ticked once a night',
+  $$INSERT INTO floor_checks (restaurant_id, checklist_id, day) VALUES ('00000000-0000-0000-0000-00000000000a', '81000000-0000-0000-0000-000000000001', '2026-10-08')$$);
+SELECT pg_temp.must_fail('a note cannot end before it starts',
+  $$INSERT INTO floor_notes (restaurant_id, starts_on, ends_on, body) VALUES ('00000000-0000-0000-0000-00000000000a', '2026-10-08', '2026-10-07', 'x')$$);
+SELECT pg_temp.must_fail('a report says where it came from',
+  $$INSERT INTO floor_reports (restaurant_id, day, source) VALUES ('00000000-0000-0000-0000-00000000000a', '2026-10-08', 'fax')$$);
+
+DELETE FROM floor_posts WHERE id = '80000000-0000-0000-0000-000000000001';
+DO $$ BEGIN
+  IF (SELECT floor_post_id FROM devices WHERE id = '82000000-0000-0000-0000-000000000001') IS NOT NULL THEN RAISE EXCEPTION 'check failed: an iPad still points at a removed post'; END IF;
+  IF EXISTS (SELECT 1 FROM floor_checks WHERE checklist_id = '81000000-0000-0000-0000-000000000001') THEN RAISE EXCEPTION 'check failed: a removed post''s checklist outlived it'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM devices WHERE id = '82000000-0000-0000-0000-000000000001') THEN RAISE EXCEPTION 'check failed: removing a post removed its iPad'; END IF;
+  RAISE NOTICE 'ok: removing a post unsets its iPad and takes its checklists';
+END $$;

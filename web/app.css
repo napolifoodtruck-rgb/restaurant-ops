@@ -1143,3 +1143,92 @@ button.donut-row { display: flex; min-width: 0; }
 .changed-row { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; background: var(--soft); border-radius: var(--radius); }
 .changed-row label.inline { justify-content: flex-start; font-weight: 600; }
 .changed-row label.inline input[type=checkbox] { width: 20px; height: 20px; min-height: 0; padding: 0; flex: none; margin: 0; accent-color: var(--ink); }
+
+/* ------------------------------------------------------------------ the Floor
+   The front of house's board on a POS iPad: big enough to read across a counter, dense enough to fit a shift. */
+.floor { min-height: 100vh; padding: 18px 22px 40px; display: flex; flex-direction: column; gap: 16px; max-width: 1400px; margin: 0 auto; }
+.floor-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.floor-head > .grow { flex: 1 1 220px; min-width: 0; }
+.floor-head h1 { font-size: 28px; }
+.floor-logo .brand-logo, .floor-logo .brand-word { max-height: 44px; }
+.floor-search { height: 44px; flex: 1 1 260px; max-width: 420px; border: 1px solid var(--line); border-radius: var(--radius); padding: 0 14px; font-size: 16px; background: var(--card); }
+.floor-board { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+.floor-main, .floor-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+@media (max-width: 1000px) { .floor-board { grid-template-columns: 1fr; } }
+
+.floor-stats { display: flex; gap: 8px 22px; flex-wrap: wrap; font-size: 15px; }
+.floor-stats b { font-size: 22px; }
+.floor-res { display: flex; flex-direction: column; }
+.res { display: grid; grid-template-columns: 62px 70px 34px minmax(0, 1fr); gap: 4px 10px; padding: 10px 0; border-top: 1px solid var(--soft); align-items: baseline; }
+.res.past { opacity: .45; }
+.res.notable .res-name { font-weight: 700; }
+.res-time { font-weight: 700; font-size: 16px; }
+.res-table { font-weight: 600; color: var(--muted); }
+.res-size { font-weight: 700; text-align: center; background: var(--soft); border-radius: var(--radius); padding: 1px 0; }
+.res-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.res-name { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 16px; }
+.res-name .star { color: var(--orange); }
+.small.strong { font-weight: 600; }
+
+.menu-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+.menu-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; background: var(--card); }
+.menu-card.new { grid-column: span 2; border-left: 4px solid var(--ink); }
+@media (max-width: 700px) { .menu-card.new { grid-column: auto; } }
+.menu-card h3 { margin: 0; font-size: 19px; }
+.menu-card ul, .print-card ul, .dish-lines { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+.menu-card.new ul { columns: 2; display: block; }
+.allergy { font-size: 13px; font-weight: 600; color: var(--accent); }
+.floor-gelato ol { margin: 0; padding-left: 22px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 18px; font-size: 16px; }
+.floor-gelato li .tag { margin-left: 6px; }
+.floor-note { padding: 8px 0; border-top: 1px solid var(--soft); display: flex; flex-direction: column; gap: 2px; }
+.floor-note:first-of-type { border-top: 0; }
+
+.checks { display: flex; flex-direction: column; }
+.check-row { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 6px 2px; border: 0; border-top: 1px solid var(--soft); background: none; text-align: left; cursor: pointer; font-size: 15px; }
+.check-row .box { width: 24px; height: 24px; flex: none; border: 2px solid var(--ink); display: flex; align-items: center; justify-content: center; font-weight: 700; border-radius: 4px; }
+.check-row.done .box { background: var(--ink); color: #fff; }
+.check-row.done .grow { color: var(--muted); text-decoration: line-through; }
+.floor-side textarea, .page textarea { width: 100%; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; font: inherit; font-size: 15px; resize: vertical; }
+
+.floor-modal { position: fixed; inset: 0; background: rgba(20, 22, 24, .55); display: flex; align-items: center; justify-content: center; z-index: 30; padding: 16px; }
+.floor-modal-panel { width: min(720px, 100%); max-height: 92vh; overflow-y: auto; background: var(--bg); padding: 22px; display: flex; flex-direction: column; gap: 16px; border-radius: var(--radius); }
+.floor-modal-panel.narrow { width: min(420px, 100%); }
+.floor-modal-panel .pinpad { max-width: 340px; width: 100%; align-self: center; }
+.floor-modal-panel .names { max-width: none; }
+
+.pick-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 4px; border: 0; border-top: 1px solid var(--line); background: none; text-align: left; cursor: pointer; font-size: 15px; }
+.list > .pick-row { padding: 12px 4px; }
+.allergy-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.allergy-chips .chip { height: 36px; }
+.chip.on { background: var(--ink); color: #fff; }
+.sheet h3 { margin: 6px 0 0; }
+
+.italy-map { width: 100%; max-width: 320px; height: auto; display: block; }
+.italy-map .map-dot { cursor: pointer; }
+.italy-map .map-dot:focus { outline: none; }
+.italy-map .map-dot:focus circle { stroke: var(--blue); stroke-width: 1; }
+.wine-top { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.wine-top .italy-map { max-width: 200px; }
+.wine-photo { max-height: 260px; max-width: 120px; object-fit: contain; }
+.wine-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.card.suggest { background: #F7F7F5; }
+.button-picks { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; padding: 6px 0; }
+.post-row { padding: 8px 0; border-top: 1px solid var(--soft); }
+.post-row input[type=text] { height: 40px; border: 1px solid var(--line); border-radius: var(--radius); padding: 0 10px; font-size: 15px; }
+.post-row input[type=text]:first-child { width: 160px; }
+.post-row input[type=text]:nth-child(3) { flex: 1 1 200px; }
+.ing-row { padding: 12px 0; border-top: 1px solid var(--soft); display: flex; flex-direction: column; gap: 8px; }
+.ing-head { display: flex; align-items: center; gap: 10px; }
+.ing-head > .grow { flex: 1; min-width: 0; }
+.ing-row input[type=text] { height: 36px; border: 1px solid var(--line); border-radius: var(--radius); padding: 0 10px; font-size: 14px; width: 220px; }
+
+/* Cut-out cards: two to a row, like the printed menu updates. Only they print. */
+.print-cards { display: none; }
+@media print {
+  body.printing-cards > *:not(.print-cards) { display: none !important; }
+  body.printing-cards .print-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+  .print-card { border: 1px dashed #888; padding: 14px 16px; break-inside: avoid; display: flex; flex-direction: column; gap: 6px; font-size: 12pt; }
+  .print-card h3 { margin: 0; font-size: 15pt; text-transform: uppercase; letter-spacing: .06em; }
+  .print-card .kicker { font-size: 10pt; }
+  .print-card .allergy { color: #000; font-size: 10pt; }
+}
