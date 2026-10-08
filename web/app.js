@@ -410,7 +410,7 @@ function pinPad(person, device) {
 function shell(me, active, content) {
   const manager = atLeast(me.roleLevel, 'manager');
   const nav = [
-    ['today', 'Today', todayScreen], ['ideas', 'Ideas', manager && ideasScreen], ['prep', 'Prep', prepHome], ['floor', 'Floor', manager && floorManage], ['recipes', 'Recipes', recipesScreen], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['reports', 'Reports', manager && reportsScreen], ['orders', 'Orders', manager && ordersScreen],
+    ['today', 'Today', todayScreen], ['ideas', 'Ideas', manager && ideasScreen], ['prep', 'Prep', prepHome], ['floor', 'Service', manager && floorManage], ['recipes', 'Recipes', recipesScreen], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['reports', 'Reports', manager && reportsScreen], ['orders', 'Orders', manager && ordersScreen],
   ];
   return h('div', { class: 'shell', 'data-active': active },
     h('nav', { class: 'rail', 'aria-label': 'Main' },
@@ -6141,7 +6141,7 @@ async function deviceCard() {
       return h('select', { 'aria-label': label },
         h('option', { value: '', text: 'Kitchen: any station' }),
         stations.map((s) => h('option', { value: `station:${s.id}`, text: `Kitchen: ${s.name}`, selected: `station:${s.id}` === value ? true : undefined })),
-        posts.map((p) => h('option', { value: `post:${p.id}`, text: `Floor: ${p.name}`, selected: `post:${p.id}` === value ? true : undefined })));
+        posts.map((p) => h('option', { value: `post:${p.id}`, text: `Service: ${p.name}`, selected: `post:${p.id}` === value ? true : undefined })));
     };
     const purpose = (v) => ({ stationId: v.startsWith('station:') ? v.slice(8) : null, floorPostId: v.startsWith('post:') ? v.slice(5) : null });
     const err = h('div', { class: 'error' });
@@ -6255,10 +6255,10 @@ async function floorBoard(ctx = {}) {
   stopFloorTimers();
   const manager = Boolean(ctx.me && atLeast(ctx.me.roleLevel, 'manager'));
   const inShell = manager && !ctx.me.device?.floorPostId;
-  if (inShell) loadingScreen(ctx.me, 'floor', 'Floor');
+  if (inShell) loadingScreen(ctx.me, 'floor', 'Service');
   const r = await api('GET', `/api/floor/board${ctx.post ? `?post=${encodeURIComponent(ctx.post)}` : ''}`);
   if (!r.ok) {
-    const msg = h('div', { class: 'panel' }, h('h1', { text: 'The Floor' }), h('p', { text: r.data.error ?? 'Couldn’t load the board.' }),
+    const msg = h('div', { class: 'panel' }, h('h1', { text: 'Service' }), h('p', { text: r.data.error ?? 'Couldn’t load the board.' }),
       manager ? h('button', { class: 'btn dark', text: 'Set it up', onclick: () => floorManage(ctx.me) }) : h('button', { class: 'btn', text: 'Manager sign in', onclick: () => floorManagerSignIn() }),
       h('button', { class: 'btn', text: 'Try again', onclick: () => floorBoard(ctx) }));
     return inShell ? show(shell(ctx.me, 'floor', [msg])) : show(stage(msg));
@@ -6541,15 +6541,15 @@ let floorTab = 'tonight';
 async function floorManage(me) {
   stopFloorTimers();
   if (me.device?.floorPostId) floorIdleSignOut(); else stopFloorIdle();
-  loadingScreen(me, 'floor', 'Floor');
+  loadingScreen(me, 'floor', 'Service');
   const r = await api('GET', '/api/floor/setup');
-  if (!r.ok) return show(shell(me, 'floor', [h('header', {}, h('h1', { text: 'Floor' })), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  if (!r.ok) return show(shell(me, 'floor', [h('header', {}, h('h1', { text: 'Service' })), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const d = r.data;
   const reload = () => refreshInPlace(() => floorManage(me));
   const tabs = h('div', { class: 'seg', role: 'tablist' }, [['tonight', 'Tonight'], ['setup', 'Setup'], ['allergens', 'Allergens & names'], ['wine', 'Wine']].map(([k, label]) =>
     h('button', { class: floorTab === k ? 'on' : '', role: 'tab', 'aria-selected': String(floorTab === k), text: label, onclick: () => { floorTab = k; floorManage(me); } })));
   const onDevice = Boolean(me.device?.floorPostId);
-  const header = h('header', { class: 'row wrap' }, h('div', { class: 'grow' }, h('div', { class: 'kicker', text: 'Front of house' }), h('h1', { text: 'Floor' })), tabs,
+  const header = h('header', { class: 'row wrap' }, h('div', { class: 'grow' }, h('div', { class: 'kicker', text: 'Front of house' }), h('h1', { text: 'Service' })), tabs,
     h('button', { class: 'btn', text: onDevice ? '← The board' : 'Open a board', onclick: () => floorBoard({ me }) }));
   let content;
   if (floorTab === 'setup') content = floorSetupTab(d, reload);
@@ -6675,7 +6675,7 @@ function floorSetupTab(d, reload) {
     h('div', { class: 'small muted', text: 'Where an iPad stands. A dining room shows the reservations at its tables; the host stand shows every table; the bar can show a prep list too.' }),
     d.posts.map(postRow), postRow(null));
   const deviceRows = d.devices.map((x) => {
-    const pick = h('select', { 'aria-label': `What ${x.name} is for` }, h('option', { value: '', text: 'Kitchen (prep)' }), d.posts.map((p) => h('option', { value: p.id, text: `Floor: ${p.name}`, selected: x.postId === p.id ? true : undefined })));
+    const pick = h('select', { 'aria-label': `What ${x.name} is for` }, h('option', { value: '', text: 'Kitchen (prep)' }), d.posts.map((p) => h('option', { value: p.id, text: `Service: ${p.name}`, selected: x.postId === p.id ? true : undefined })));
     pick.addEventListener('change', () => pageAction(async () => { const res = await api('POST', `/api/devices/${x.id}`, { floorPostId: pick.value || null }); if (!res.ok) err.textContent = res.data.error; }));
     return h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { text: x.name }), h('div', { class: 'small muted', text: x.lastSeen ? `Last used ${when(x.lastSeen)}` : 'Not used yet' })), pick);
   });

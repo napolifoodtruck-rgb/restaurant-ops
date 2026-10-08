@@ -788,7 +788,7 @@ export function createApp(config: AppConfig) {
       const who = await sessionFor(db, cookies(req)[SESSION_COOKIE]);
       const device = await deviceFor(db, cookies(req)[DEVICE_COOKIE]);
       const restaurantId = who?.restaurantId ?? device?.restaurantId;
-      if (!restaurantId) throw new HttpError(401, 'Sign in first, or set this iPad up for the Floor.');
+      if (!restaurantId) throw new HttpError(401, 'Sign in first, or set this iPad up for Service.');
       const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.timezone ?? 'America/New_York';
       const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', weekday: 'short' }).formatToParts(new Date()).map((p) => [p.type, p.value]));
       const mine = device && device.restaurantId === restaurantId ? { id: device.id, restaurantId, floorPostId: device.floorPostId } : undefined;

@@ -195,7 +195,7 @@ async function postFor(db: Db, ctx: FloorContext, asked: string | undefined) {
 
 export async function floorBoard(db: Db, ctx: FloorContext, asked?: string) {
   const { posts, post } = await postFor(db, ctx, asked);
-  if (!post) throw new HttpError(409, posts.length ? 'This iPad isn’t set to a post yet. A manager can set it in Floor → Setup.' : 'The Floor isn’t set up yet. A manager can add the dining rooms in Floor → Setup.');
+  if (!post) throw new HttpError(409, posts.length ? 'This iPad isn’t set to a post yet. A manager can set it in Service → Setup.' : 'Service isn’t set up yet. A manager can add the dining rooms in Service → Setup.');
   const rid = ctx.restaurantId, today = ctx.today;
   const model = await getModel(db, rid, today);
   const { dishes, byId } = await dishIndex(db, rid, model);
