@@ -674,6 +674,18 @@ function drillDonut(root, opts = {}) {
  * A pie, large, at the top of the middle of the page: up to 50 slices with their own colors and the
  * legend beside it, starting from the layer the small one was on. Close puts it away.
  */
+/** Any chart, opened large at the top of the page's main column, with a Close. */
+function openBig(from, title, chart) {
+  const main = from.closest('.page')?.querySelector('.page-main') ?? app.querySelector('main');
+  if (!main) return;
+  main.querySelector('.pie-big')?.remove();
+  const card = h('section', { class: 'card pie-big', 'aria-label': title },
+    h('div', { class: 'row' }, h('h2', { class: 'grow', text: title }), h('button', { class: 'btn small-btn', text: 'Close', onclick: () => card.remove() })),
+    chart);
+  main.prepend(card);
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  card.querySelector('button')?.focus();
+}
 function openBigPie(box, stack) {
   const main = box.closest('.page')?.querySelector('.page-main') ?? app.querySelector('main');
   if (!main) return;
@@ -1129,15 +1141,8 @@ function chartsView(state, cat, m, again) {
     legend(stack.map((x) => ({ name: x.name, color: x.color, on: true, fixed: true }))),
     stackedBars({ weeks: m.weeks, series: stack, format: money }));
 
-  const fc = cat.weeklyFoodCost ?? [];
-  const fcValues = fc.map((v) => (v === null ? null : v * 100));
-  const avg = (cat.foodCostShare ?? 0) * 100;
-  const foodCost = h('section', { class: 'card' },
-    h('h2', { text: `${cat.name} food cost, week by week · ${pct(cat.foodCostShare)} for the period` }),
-    h('div', { class: 'small muted', text: 'Food cost as a share of sales, on dishes with recipes. The dashed line is the period’s average.' }),
-    lineChart({ weeks: m.weeks, series: [{ name: 'Food cost', color: SERIES[0], values: fcValues }], format: (v) => (v === 0 ? '0%' : `${Number.isInteger(v) ? v : v.toFixed(1)}%`), average: avg }));
-
-  return [plates, leftBars, foodCost];
+  // Food cost week by week is in the side column, with Expand for a large view.
+  return [plates, leftBars];
 }
 
 // ------------------------------------------------------------------ prep lists
@@ -2524,14 +2529,16 @@ function foodCostStatus(share, goal = FOOD_COST_GOAL) {
  * coloured against the goal, and week by week as a line that runs green to red as it climbs,
  * with the goal dashed.
  */
-function foodCostPanel(title, share, weeks, values, goal) {
+function foodCostPanel(title, share, weeks, values, goal, opts = {}) {
   const ns = 'http://www.w3.org/2000/svg';
   const st = goal ? foodCostStatus(share, goal) : { cls: '', label: '' };
   const pts = values.map((v, i) => ({ v, i, week: weeks[i] })).filter((p) => p.v !== null && p.v !== undefined);
-  const head = h('div', { class: 'fc-head' }, h('span', { class: 'small muted strong', text: title }), h('span', { class: 'grow' }),
-    h('b', { class: `fc-pct ${st.cls}`, text: pct(share) }), st.label ? h('span', { class: `small strong ${st.cls}`, text: st.label }) : null);
+  // Small, it opens large above the table, like the pie charts.
+  const expand = !opts.large ? h('button', { class: 'link pie-expand', 'aria-label': 'Expand this chart', title: 'Open it large', onclick: (e) => openBig(e.currentTarget, title, foodCostPanel(title, share, weeks, values, goal, { large: true })) }, '⤢ Expand') : null;
+  const head = h('div', { class: 'fc-head' }, opts.large ? null : h('span', { class: 'small muted strong', text: title }), opts.large ? null : h('span', { class: 'grow' }),
+    h('b', { class: `fc-pct ${st.cls}`, text: pct(share) }), st.label ? h('span', { class: `small strong ${st.cls}`, text: st.label }) : null, expand);
   if (pts.length < 2) return h('div', { class: 'fc-panel' }, head);
-  const W = 320, H = 150, L = 38, R = 10, T = 10, B = 22;
+  const W = opts.large ? 760 : 320, H = opts.large ? 280 : 150, L = 38, R = 10, T = 10, B = 22;
   const all = [...pts.map((p) => p.v), ...(goal ? [goal.high, goal.low ?? goal.high] : [])];
   const y0 = Math.max(0, Math.floor((Math.min(...all) - 0.02) * 50) / 50), y1 = Math.ceil((Math.max(...all) + 0.02) * 50) / 50;
   const x = (i) => L + (i / Math.max(1, values.length - 1)) * (W - L - R), y = (v) => T + (1 - (v - y0) / (y1 - y0)) * (H - T - B);
@@ -2552,7 +2559,8 @@ function foodCostPanel(title, share, weeks, values, goal) {
   // A range is shaded between its ends; a single goal is one dashed line.
   if (goal?.low) svg.append(el('rect', { x: L, width: W - L - R, y: y(goal.high), height: y(goal.low) - y(goal.high), class: 'fc-band' }));
   if (goal) svg.append(el('line', { x1: L, x2: W - R, y1: y(goal.high), y2: y(goal.high), class: 'fc-goal' }), el('text', { x: L + 4, y: goal.low ? y(goal.low) - 5 : y(goal.high) - 5, class: 'fc-goal-label' }, `Goal ${goalText(goal)}`));
-  for (const i of [0, Math.floor((values.length - 1) / 2), values.length - 1]) svg.append(el('text', { x: x(i), y: H - 6, 'text-anchor': i === 0 ? 'start' : i === values.length - 1 ? 'end' : 'middle', class: 'tick' }, shortDate(weeks[i])));
+  const xTicks = opts.large ? [...new Set([...values.keys()].filter((i) => i % 2 === 0).concat(values.length - 1))] : [0, Math.floor((values.length - 1) / 2), values.length - 1];
+  for (const i of xTicks) svg.append(el('text', { x: x(i), y: H - 6, 'text-anchor': i === 0 ? 'start' : i === values.length - 1 ? 'end' : 'middle', class: 'tick' }, shortDate(weeks[i])));
   // Runs of weeks with sales; a week with none breaks the line.
   let run = [];
   const flush = () => { if (run.length > 1) svg.append(el('polyline', { points: run.join(' '), class: 'fc-line', stroke: `url(#${gid})` })); run = []; };
@@ -2580,7 +2588,7 @@ function foodCostPanel(title, share, weeks, values, goal) {
   };
   svg.addEventListener('pointermove', show); svg.addEventListener('pointerdown', show);
   svg.addEventListener('pointerleave', () => hover.setAttribute('visibility', 'hidden'));
-  return h('div', { class: 'fc-panel' }, head, h('div', { class: 'chart-wrap' }, svg));
+  return h('div', { class: `fc-panel${opts.large ? ' large' : ''}` }, head, h('div', { class: 'chart-wrap' }, svg));
 }
 /** Where a line's price comes from, with its age as a colour (yellow past 3 months, red past 6). */
 function sourceBox(src, kind) {

@@ -1067,3 +1067,6 @@ button.donut-row { display: flex; min-width: 0; }
 .cat-tile .cat-sub { font-size: 12px; color: var(--muted); }
 
 .price-pair { display: grid; line-height: 1.2; white-space: nowrap; }
+.fc-panel.large { border-top: none; padding-top: 0; }
+.fc-panel.large .fc-pct { font-size: 26px; }
+.fc-head .pie-expand { margin-left: 4px; }
