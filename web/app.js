@@ -6164,6 +6164,8 @@ async function deviceCard() {
 
 const FLOOR_ALLERGENS = { milk: 'Dairy', egg: 'Egg', wheat: 'Gluten', soy: 'Soy', peanut: 'Peanut', treenut: 'Tree nut', sesame: 'Sesame', fish: 'Fish', shellfish: 'Shellfish', allium: 'Allium' };
 const WEEKDAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const usd = (p) => `$${Number(p) % 1 ? Number(p).toFixed(2) : Number(p)}`;
+const upFirst = (t) => (t ? t[0].toUpperCase() + t.slice(1) : t);
 const resTime = (t) => { const [hh, mm] = String(t).split(':').map(Number); return `${((hh + 11) % 12) + 1}:${String(mm).padStart(2, '0')}`; };
 const nowMinutes = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
 const minutesOf = (t) => { const [hh, mm] = String(t).split(':').map(Number); return hh * 60 + mm; };
@@ -6195,7 +6197,7 @@ function floorPin({ title, why, managersOnly = false }) {
       const go = () => { if (pin.length < 4) return (err.textContent = 'At least 4 digits.'); close({ staffId: person.id, pin, name: person.name }); };
       draw();
       fill(panel,
-        h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'kicker', text: title }), h('h2', { text: person.name })), h('button', { class: 'btn', text: '← Not you', onclick: names })),
+        h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'kicker', text: why ? `${title}: ${why}` : title }), h('h2', { text: person.name })), h('button', { class: 'btn', text: '← Not you', onclick: names })),
         dots, err,
         h('div', { class: 'pinpad' }, ['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => h('button', { onclick: () => press(d), text: d })),
           h('button', { onclick: () => { pin = pin.slice(0, -1); draw(); }, 'aria-label': 'Delete', text: '⌫' }), h('button', { onclick: () => press('0'), text: '0' }), h('button', { class: 'go', onclick: go, text: 'Go' })));
@@ -6238,7 +6240,7 @@ async function floorBoard(ctx = {}) {
     return inShell ? show(shell(ctx.me, 'floor', [msg])) : show(stage(msg));
   }
   const b = r.data;
-  const minutes = nowMinutes();
+  const minutes = b.minutes ?? nowMinutes();  // the restaurant's clock, not this iPad's
   const phase = b.phase;
   const reload = () => floorBoard(ctx);
 
@@ -6271,7 +6273,7 @@ async function floorBoard(ctx = {}) {
       h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: phase === 'service' ? 'Arriving next' : 'Tonight’s book' }),
         h('span', { class: 'tag', text: `OpenTable ${bk.source === 'csv' ? 'export' : 'digest'} · as of ${asOfText(bk.asOf)}` })),
       h('div', { class: 'floor-stats' },
-        h('div', {}, h('b', { text: String(bk.mineCovers) }), h('span', { text: ` covers here · ${bk.mineParties} parties` })),
+        h('div', {}, h('b', { text: String(bk.mineCovers) }), h('span', { text: ` covers here · ${bk.mineParties} ${bk.mineParties === 1 ? 'party' : 'parties'}` })),
         b.post.kind !== 'host' ? h('div', {}, h('b', { text: String(bk.covers) }), h('span', { text: ' tonight in all' })) : null,
         bk.busiest ? h('div', {}, h('span', { text: 'Busiest ' }), h('b', { text: `${((bk.busiest.hour + 11) % 12) + 1}–${((bk.busiest.hour + 12) % 12) + 1}` }), h('span', { text: ` (${bk.busiest.covers} covers)` })) : null),
       shown.length ? h('div', { class: 'floor-res' }, shown.map((x) => h('div', { class: `res${x.notable ? ' notable' : ''}${phase === 'service' && minutesOf(x.time) < minutes ? ' past' : ''}` },
@@ -6287,15 +6289,15 @@ async function floorBoard(ctx = {}) {
           x.visitsLastYear ? h('div', { class: 'small muted', text: `${x.visitsLastYear} visit${x.visitsLastYear === 1 ? '' : 's'} last year${x.lastVisit ? ` · last ${shortDate(x.lastVisit)}` : ''}${x.spendPerCover ? ` · $${Math.round(x.spendPerCover)} a cover` : ''}` }) : null,
           x.suggestRegular && manager ? h('div', { class: 'small warn-text', text: 'Comes often but isn’t marked a regular in OpenTable.' }) : null))))
         : h('div', { class: 'small muted', text: onlyNotable ? 'Nothing special to know about tonight’s guests here.' : 'No reservations here tonight.' }),
-      phase !== 'service' && bk.reservations.length ? h('button', { class: 'link small', text: onlyNotable ? `Show all ${bk.reservations.length}` : 'Only the ones to know about', onclick: () => { onlyNotable = !onlyNotable; drawBook(); } }) : null);
+      phase !== 'service' && bk.reservations.some((x) => !x.notable) ? h('button', { class: 'link small', text: onlyNotable ? `Show all ${bk.reservations.length}` : 'Only the ones to know about', onclick: () => { onlyNotable = !onlyNotable; drawBook(); } }) : null);
   };
   drawBook();
 
   // --- featured: specials and new items, as cards
   const menuCard = (f) => h('article', { class: `menu-card ${f.kind}` },
-    h('div', { class: 'kicker', text: `${f.kind === 'special' ? 'Special' : 'New'}${f.price ? ` · $${Number(f.price) % 1 ? Number(f.price).toFixed(2) : f.price}` : ''}${f.days?.length && f.days.length < 7 ? ` · ${f.days.map((d) => WEEKDAY_NAMES[d]).join(', ')}` : ''}` }),
+    h('div', { class: 'kicker', text: `${f.kind === 'special' ? 'Special' : 'New'}${f.price ? ` · ${usd(f.price)}` : ''}${f.days?.length && f.days.length < 7 ? ` · ${f.days.map((d) => WEEKDAY_NAMES[d]).join(', ')}` : ''}` }),
     h('h3', { text: f.name }),
-    f.lines.length ? h('ul', {}, f.lines.map((l) => h('li', { text: l }))) : h('div', { class: 'small muted', text: 'No recipe linked yet.' }),
+    f.lines.length ? h('ul', {}, f.lines.map((l) => h('li', { text: upFirst(l) }))) : h('div', { class: 'small muted', text: 'No recipe linked yet.' }),
     f.allergyLine ? h('div', { class: 'allergy', text: `Allergy: ${f.allergyLine}` }) : null,
     f.unchecked?.length ? h('div', { class: 'small warn-text', text: `Not checked yet: ${f.unchecked.join(', ')}` }) : null,
     f.note ? h('div', { class: 'small', text: f.note }) : null,
@@ -6398,12 +6400,13 @@ function floorDish(b, id) {
   const d = b.lookup.dishes.find((x) => x.id === id) ?? null;
   if (!d) return;
   floorSheet(d.name,
-    h('div', { class: 'kicker', text: `${d.kind === 'drink' ? 'Drink' : 'Dish'}${d.price ? ` · $${d.price}` : ''}` }), h('h2', { class: 'sheet-title', text: d.name }),
-    d.lines.length ? h('ul', { class: 'dish-lines' }, d.lines.map((l) => h('li', { text: l }))) : null,
+    h('div', { class: 'kicker', text: `${d.kind === 'drink' ? 'Drink' : 'Dish'}${d.price ? ` · ${usd(d.price)}` : ''}` }), h('h2', { class: 'sheet-title', text: d.name }),
+    d.lines.length ? h('ul', { class: 'dish-lines' }, d.lines.map((l) => h('li', { text: upFirst(l) }))) : null,
     h('section', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Allergens' }),
       h('div', { class: 'allergy-chips' }, Object.entries(FLOOR_ALLERGENS).map(([key, label]) => h('span', { class: `tag${d.contains.includes(key) ? ' bad' : ''}`, text: d.contains.includes(key) ? label : `no ${label.toLowerCase()}` }))),
       d.unchecked.length ? h('div', { class: 'warn-text small', text: `Not checked yet, so not sure: ${d.unchecked.join(', ')}. Ask the kitchen.` }) : null,
       d.unknown.length ? h('div', { class: 'warn-text small', text: `On the recipe but not matched: ${d.unknown.join(', ')}. Ask the kitchen.` }) : null,
+      (d.swaps ?? []).map((w) => h('div', { class: 'small' }, h('b', { text: `With the ${w.label}: ` }), w.allergyLine)),
       b.allergyNote ? h('div', { class: 'small', text: b.allergyNote }) : null),
     d.wines.length ? h('section', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Pairs with' }), d.wines.map((name) => { const w = b.lookup.wines.find((x) => x.name === name); return h('button', { class: 'linkish', text: name, onclick: () => w && floorWine(b, w.id) }); })) : null);
 }
@@ -6413,9 +6416,13 @@ function floorAllergyFinder(b) {
   const avoid = new Set();
   const out = h('div', { class: 'list' });
   const draw = () => {
-    const ok = b.lookup.dishes.filter((d) => ![...avoid].some((a) => d.contains.includes(a)));
+    const fits = (keys) => ![...avoid].some((a) => keys.includes(a));
+    // As it comes, or with a swap the kitchen offers (the gluten-sensitive crust).
+    const ok = b.lookup.dishes.map((d) => fits(d.contains) ? { d, swap: null } : { d, swap: (d.swaps ?? []).find((w) => fits(w.contains)) ?? null }).filter((x) => fits(x.d.contains) || x.swap);
     fill(out, !avoid.size ? h('div', { class: 'muted small', text: 'Tap what the guest can’t have.' })
-      : ok.length ? ok.map((d) => h('button', { class: 'pick-row', onclick: () => floorDish(b, d.id) }, h('div', { class: 'grow' }, h('div', { class: 'strong', text: d.name }), d.unchecked.length || d.unknown.length ? h('div', { class: 'small warn-text', text: `Not sure: ${[...d.unchecked, ...d.unknown].join(', ')}` }) : null)))
+      : ok.length ? ok.map(({ d, swap }) => h('button', { class: 'pick-row', onclick: () => floorDish(b, d.id) }, h('div', { class: 'grow' }, h('div', { class: 'strong', text: d.name }),
+          swap ? h('div', { class: 'small', text: `With the ${swap.label}` }) : null,
+          d.unchecked.length || d.unknown.length ? h('div', { class: 'small warn-text', text: `Not sure: ${[...d.unchecked, ...d.unknown].join(', ')}` }) : null)))
       : h('div', { class: 'muted', text: 'Nothing on the menu fits. Ask the kitchen.' }));
   };
   const chips = h('div', { class: 'allergy-chips' }, Object.entries(FLOOR_ALLERGENS).map(([key, label]) => {
@@ -6470,7 +6477,7 @@ function floorWines(b) {
   const out = h('div', { class: 'list' });
   const draw = (region) => fill(out, (region ? b.lookup.wines.filter((w) => regionOf(w.region) === region) : b.lookup.wines).map((w) => h('button', { class: 'pick-row', onclick: () => floorWine(b, w.id) },
     h('div', { class: 'grow' }, h('div', { class: 'strong' }, w.name, w.isNew ? h('span', { class: 'tag blue', text: 'new' }) : null), h('div', { class: 'small muted', text: [w.style, w.grapes, w.region].filter(Boolean).join(' · ') })),
-    h('span', { class: 'small', text: w.prices.map((p) => `${p.label} $${p.price}`).join(' · ') }))));
+    h('span', { class: 'small', text: w.prices.map((p) => `${p.label} ${usd(p.price)}`).join(' · ') }))));
   draw();
   floorSheet('Wines', h('h2', { class: 'sheet-title', text: 'Our wines' }), italyMap(b.lookup.wines, (region) => draw(region)), h('button', { class: 'link small', text: 'Show every region', onclick: () => draw() }), out);
 }
@@ -6481,7 +6488,7 @@ function floorWine(b, id) {
   if (!w) return;
   floorSheet(w.name,
     h('div', { class: 'kicker', text: [w.style, w.region, w.place].filter(Boolean).join(' · ') }), h('h2', { class: 'sheet-title', text: w.name }),
-    w.prices.length ? h('div', { class: 'strong', text: w.prices.map((p) => `${p.label} $${p.price}`).join(' · ') }) : null,
+    w.prices.length ? h('div', { class: 'strong', text: w.prices.map((p) => `${p.label} ${usd(p.price)}`).join(' · ') }) : null,
     h('div', { class: 'wine-top' }, w.hasPhoto ? h('img', { class: 'wine-photo', src: `/api/floor/wines/${w.id}/photo`, alt: w.name }) : null, italyMap([w], null, w.region)),
     w.tastingNotes ? h('section', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Tasting notes' }), h('div', { text: w.tastingNotes })) : null,
     h('div', { class: 'wine-facts' }, [['Grapes', w.grapes], ['Made in', w.vessel], ['Producer', w.producer]].filter(([, v]) => v).map(([k, v]) => h('div', {}, h('div', { class: 'small muted', text: k }), h('div', { text: v })))),
@@ -6494,7 +6501,7 @@ function floorWine(b, id) {
 /** The cut-out cards, ready to print: specials, new items, the gelato flight. */
 function floorPrintCards(featured, gelato) {
   const sheet = h('div', { class: 'print-cards' },
-    featured.map((f) => h('article', { class: 'print-card' }, h('div', { class: 'kicker', text: `${f.kind === 'special' ? 'Special' : 'New'}${f.price ? ` · $${f.price}` : ''}` }), h('h3', { text: f.name }), h('ul', {}, f.lines.map((l) => h('li', { text: l }))), f.allergyLine ? h('div', { class: 'allergy', text: `ALLERGY: ${f.allergyLine}` }) : null)),
+    featured.map((f) => h('article', { class: 'print-card' }, h('div', { class: 'kicker', text: `${f.kind === 'special' ? 'Special' : 'New'}${f.price ? ` · ${usd(f.price)}` : ''}` }), h('h3', { text: f.name }), h('ul', {}, f.lines.map((l) => h('li', { text: upFirst(l) }))), f.allergyLine ? h('div', { class: 'allergy', text: `ALLERGY: ${f.allergyLine}` }) : null)),
     gelato ? h('article', { class: 'print-card' }, h('div', { class: 'kicker', text: `Gelato flight ${new Date(gelato.setAt).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })}` }), h('ul', {}, gelato.flavors.map((f) => h('li', { text: `${f.name}${f.vegan ? ' (v)' : ''}` })))) : null);
   document.body.append(sheet);
   document.body.classList.add('printing-cards');
@@ -6608,7 +6615,8 @@ function floorTonightTab(d, reload) {
   const fRows = flavors.map((f, i) => { const name = h('input', { type: 'text', value: f.name, placeholder: `Flavor ${i + 1}`, 'aria-label': `Flavor ${i + 1}` }); const vegan = h('input', { type: 'checkbox', checked: f.vegan ? true : undefined, 'aria-label': `Flavor ${i + 1} is vegan` }); return { name, vegan, el: h('div', { class: 'row tight' }, name, h('label', { class: 'inline small' }, vegan, 'v')) }; });
   const pans = (d.gelato?.pansOn === d.today ? d.gelato.panChanges : []).concat([{}, {}]).slice(0, Math.max(2, (d.gelato?.pansOn === d.today ? d.gelato.panChanges.length : 0) + 1));
   const pRows = pans.map((p) => { const size = h('input', { type: 'text', class: 'short', value: p.size ?? '', placeholder: '¾ pan', 'aria-label': 'Pan size' }); const from = h('input', { type: 'text', value: p.from ?? '', placeholder: 'Running low', 'aria-label': 'Flavor running low' }); const to = h('input', { type: 'text', value: p.to ?? '', placeholder: 'Next', 'aria-label': 'Next flavor' }); return { size, from, to, el: h('div', { class: 'row tight' }, size, from, h('span', { text: '→' }), to) }; });
-  const gelato = sideBox('Gelato flight', fRows.map((x) => x.el), h('div', { class: 'small muted strong', text: 'Pans tonight' }), pRows.map((x) => x.el),
+  const gelato = h('section', { class: 'card' }, h('div', { class: 'row' }, h('h2', { class: 'grow', text: 'Gelato flight' }), h('span', { class: 'small muted', text: 'v = vegan' })),
+    h('div', { class: 'gelato-edit' }, fRows.map((x) => x.el)), h('div', { class: 'small muted strong', text: 'Pans tonight: what replaces a flavor running low' }), h('div', { class: 'pan-edit' }, pRows.map((x) => x.el)),
     h('button', { class: 'btn', text: 'Save gelato', onclick: () => pageAction(async () => {
       const res = await api('POST', '/api/floor/gelato', { flavors: fRows.map((x) => ({ name: x.name.value, vegan: x.vegan.checked })), panChanges: pRows.map((x) => ({ size: x.size.value, from: x.from.value, to: x.to.value })) });
       if (!res.ok) return (err.textContent = res.data.error);
@@ -6616,7 +6624,7 @@ function floorTonightTab(d, reload) {
     }) }), d.gelato ? h('div', { class: 'small muted', text: `Last set ${when(d.gelato.setAt)}` }) : null);
 
   const handoffs = d.handoffs.length ? sideBox('From the floor', d.handoffs.map((x) => h('div', { class: 'floor-note' }, h('div', { text: x.body }), h('div', { class: 'small muted', text: `${x.by ?? 'Someone'}${x.post ? ` · ${x.post}` : ''} · ${shortDate(x.day)}` })))) : null;
-  return page([err, featured, notes], [report, gelato, pushes, handoffs]);
+  return page([err, featured, gelato, notes], [report, pushes, handoffs]);
 }
 const addDaysISO = (day, n) => { const x = new Date(`${day}T12:00:00Z`); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
 
@@ -6628,6 +6636,9 @@ function floorSetupTab(d, reload) {
     const kind = h('select', { 'aria-label': 'Kind' }, Object.entries(KINDS).map(([k, v]) => h('option', { value: k, text: v, selected: (p?.kind ?? 'room') === k ? true : undefined })));
     const tables = h('input', { type: 'text', value: (p?.tables ?? []).join(' '), placeholder: 'Tables: T1 T2 T3…', 'aria-label': 'Tables' });
     const station = h('select', { 'aria-label': 'Prep list' }, h('option', { value: '', text: 'No prep list' }), d.stations.map((s) => h('option', { value: s.id, text: `Prep: ${s.name}`, selected: p?.stationId === s.id ? true : undefined })));
+    const showStation = () => { station.hidden = kind.value !== 'bar'; tables.hidden = kind.value === 'host'; };
+    kind.addEventListener('change', showStation);
+    showStation();
     return h('div', { class: 'row wrap post-row' }, name, kind, tables, station,
       h('button', { class: 'btn', text: p ? 'Save' : 'Add post', onclick: () => pageAction(async () => {
         const res = await api('POST', '/api/floor/posts', { ...(p ? { id: p.id } : {}), name: name.value, kind: kind.value, tables: tables.value, stationId: station.value || null });
@@ -6661,7 +6672,17 @@ function floorSetupTab(d, reload) {
   const note = h('textarea', { rows: 3, 'aria-label': 'Allergy note', placeholder: 'e.g. Our gluten-sensitive crust starts gluten-free, but it’s made in a kitchen full of flour: we can’t promise it’s free of gluten. The guest decides.' });
   note.value = d.allergyNote ?? '';
   const allergyNote = sideBox('Shown with every allergy answer', note, h('button', { class: 'btn', text: 'Save', onclick: () => pageAction(async () => { await api('POST', '/api/floor/settings', { allergyNote: note.value }); reload(); }) }));
-  return page([err, posts, checklistBox('opening'), checklistBox('closing'), checklistBox('slow')], [ipads, allergyNote]);
+  const recipeSelect = (value, label) => h('select', { 'aria-label': label }, h('option', { value: '', text: 'Pick a recipe…' }), d.recipes.map((r) => h('option', { value: r.id, text: r.name, selected: r.id === value ? true : undefined })));
+  const swapRows = [...d.swaps, { from: '', to: '', label: '' }].map((w) => ({ from: recipeSelect(w.from, 'Instead of'), to: recipeSelect(w.to, 'Use'), label: h('input', { type: 'text', value: w.label, placeholder: 'gluten-sensitive crust', 'aria-label': 'What servers call it' }) }));
+  const swaps = sideBox('Swaps the kitchen offers',
+    h('div', { class: 'small muted', text: 'So “no gluten” finds the pizzas that can be made on the gluten-sensitive crust. Instead of one prep, another.' }),
+    swapRows.map((r) => h('div', { class: 'stack swap-row' }, h('span', { class: 'small', text: 'Instead of' }), r.from, h('span', { class: 'small', text: 'use' }), r.to, h('span', { class: 'small', text: 'called' }), r.label)),
+    h('button', { class: 'btn', text: 'Save swaps', onclick: () => pageAction(async () => {
+      const res = await api('POST', '/api/floor/settings', { swaps: swapRows.map((r) => ({ from: r.from.value, to: r.to.value, label: r.label.value })).filter((w) => w.from && w.to && w.label.trim()) });
+      if (!res.ok) return (err.textContent = res.data.error);
+      reload();
+    }) }));
+  return page([err, posts, checklistBox('opening'), checklistBox('closing'), checklistBox('slow')], [ipads, allergyNote, swaps]);
 }
 
 async function floorAllergensTab(reload) {
@@ -6766,7 +6787,7 @@ async function floorWineTab(reload) {
         h('button', { class: 'btn small-btn', text: 'Save buttons', onclick: () => pageAction(async () => { await api('POST', `/api/floor/wines/${w.id}`, { catalogIds: links.map((l) => l.querySelector('input')).filter((c) => c.checked).map((c) => c.value) }); reload(); }) })),
       h('label', { class: 'small' }, w.hasPhoto ? 'Replace the bottle photo' : 'Add a bottle photo', photo));
   };
-  const missing = d.notCarded.length ? sideBox('On the list without a card', h('div', { class: 'small', text: d.notCarded.map((b) => b.name).join(' · ') })) : null;
+  const missing = d.notCarded.length ? sideBox('Sold lately, no card yet', h('div', { class: 'small muted', text: 'Upload their tech sheets to make cards.' }), h('ul', { class: 'small plain-list' }, d.notCarded.map((b) => h('li', { text: b.name })))) : null;
   return page([err, d.wines.length ? h('section', { class: 'card' }, h('h2', { text: 'Where they’re from' }), italyMap(d.wines)) : null, d.wines.map(card), !d.wines.length ? h('div', { class: 'card muted', text: 'No wine cards yet. Upload the tech sheets on the right.' }) : null], [upload, missing]);
 }
 

@@ -1232,3 +1232,19 @@ button.donut-row { display: flex; min-width: 0; }
   .print-card .kicker { font-size: 10pt; }
   .print-card .allergy { color: #000; font-size: 10pt; }
 }
+.gelato-edit { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px 18px; }
+.gelato-edit .row > input[type=text], .pan-edit .row > input[type=text] { flex: 1 1 0; min-width: 0; }
+.pan-edit { display: flex; flex-direction: column; gap: 8px; max-width: 640px; }
+.pan-edit input.short { flex: none; width: 90px; }
+.page-side input[type=text] { width: 100%; }
+.card > .row.wrap > .grow { flex: 1 1 220px; }
+.card > .row.wrap > .grow > input[type=text] { width: 100%; }
+.post-row [hidden] { display: none; }
+.ing-row .allergy-chips .chip { height: 32px; padding: 0 10px; font-size: 13px; }
+.ing-row { padding: 10px 0; gap: 6px; }
+.plain-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.swap-row { padding: 8px 0; border-top: 1px solid var(--soft); }
+.swap-row select { width: 100%; }
+.list > .ing-row { align-items: stretch; flex-direction: column; }
+.ing-row .allergy-chips .chip { letter-spacing: .04em; }
+.floor-gelato ul { margin: 0; padding-left: 20px; }

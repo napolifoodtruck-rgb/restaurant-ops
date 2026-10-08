@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { allergensOf, allergyLine, cardLines, spokenName } from '../src/core/allergens.ts';
+import { allergensOf, allergyLine, cardLines, spokenName, usesRecipe } from '../src/core/allergens.ts';
+import { wineBase } from '../src/server/floor.ts';
 import { clock, forTables, mergeBooks, notesAndTags, readOpenTableCsv, tablesOf, whyNotable } from '../src/core/reservations.ts';
 import type { Recipe } from '../src/core/recipes.ts';
 
@@ -24,6 +25,27 @@ test('allergens come up through every recipe; unchecked ingredients are named, n
   // A loop between recipes doesn't hang.
   recipes.set('dough', recipe('dough', [['recipe', 'pizza']]));
   assert.ok(allergensOf('pizza', { recipes, tagsOf: (id) => tags[id], nameOf: (id) => id }));
+});
+
+test('a swap the kitchen offers answers the dish both ways', () => {
+  const recipes = new Map([
+    ['dough', recipe('dough', [['product', 'flour']])],
+    ['gs-dough', recipe('gs-dough', [['product', 'gs-flour']])],
+    ['base', recipe('base', [['recipe', 'dough'], ['product', 'garlic']])],
+    ['pizza', recipe('pizza', [['recipe', 'base'], ['product', 'mozz']])],
+    ['salad', recipe('salad', [['product', 'mozz']])],
+  ]);
+  const tags: Record<string, string[]> = { flour: ['wheat'], 'gs-flour': [], garlic: ['allium'], mozz: ['milk'] };
+  const src = { recipes, tagsOf: (id: string) => tags[id], nameOf: (id: string) => id };
+  assert.equal(allergyLine(allergensOf('pizza', src)), 'Dairy, Gluten, Allium');
+  assert.equal(allergyLine(allergensOf('pizza', src, { from: 'dough', to: 'gs-dough' })), 'Dairy, Allium');
+  assert.ok(usesRecipe('pizza', 'dough', recipes));
+  assert.ok(!usesRecipe('salad', 'dough', recipes));
+});
+
+test('Square wine buttons come down to the wine', () => {
+  assert.equal(wineBase('La Cassaccia Chardonnay DOC - BTL (50% OFF WINE WEDNESDAY)'), 'La Cassaccia Chardonnay DOC');
+  assert.equal(wineBase('Tenuta degli Ultimi- Prosecco BTL'), wineBase('Tenuta degli Ultimi-Prosecco GLS'));
 });
 
 test('a menu card lists the dish’s own lines by the names servers say', () => {

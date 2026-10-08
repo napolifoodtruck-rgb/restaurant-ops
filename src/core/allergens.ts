@@ -44,8 +44,21 @@ export interface AllergenSource {
 /** Free things (water, ice) carry nothing. */
 const isFree = (id: string) => id.startsWith('free-');
 
-/** What's in a recipe, through everything it uses. */
-export function allergensOf(recipeId: string, src: AllergenSource): AllergenInfo {
+/**
+ * A swap the kitchen offers: one prep for another (the gluten-sensitive crust for the pizza dough),
+ * so a dish can be answered both ways.
+ */
+export interface Swap { from: string; to: string; label: string }
+
+/** Whether a recipe uses another, at any depth. */
+export function usesRecipe(recipeId: string, target: string, recipes: ReadonlyMap<string, Recipe>, seen = new Set<string>()): boolean {
+  if (seen.has(recipeId)) return false;
+  seen.add(recipeId);
+  return (recipes.get(recipeId)?.ingredients ?? []).some((l) => l.item.kind === 'recipe' && (l.item.id === target || usesRecipe(l.item.id, target, recipes, seen)));
+}
+
+/** What's in a recipe, through everything it uses (with a swap: the replacement's instead). */
+export function allergensOf(recipeId: string, src: AllergenSource, swap?: Pick<Swap, 'from' | 'to'>): AllergenInfo {
   const from = new Map<string, Set<string>>();
   const unchecked = new Set<string>(), unknown = new Set<string>();
   const seen = new Set<string>();
@@ -55,7 +68,7 @@ export function allergensOf(recipeId: string, src: AllergenSource): AllergenInfo
     const recipe = src.recipes.get(id);
     if (!recipe) return;
     for (const line of recipe.ingredients) {
-      if (line.item.kind === 'recipe') { walk(line.item.id); continue; }
+      if (line.item.kind === 'recipe') { walk(swap && line.item.id === swap.from ? swap.to : line.item.id); continue; }
       const pid = line.item.id;
       if (isFree(pid)) continue;
       if (pid.startsWith('unmatched:') || pid.startsWith('unfinished:')) { unknown.add(pid.replace(/^(unmatched|unfinished):/, '')); continue; }

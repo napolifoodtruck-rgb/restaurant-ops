@@ -39,7 +39,7 @@ import { atLeast, checkPin, type SignedIn } from './auth.ts';
 import { getModel, loadBook, type Model } from './model.ts';
 import { loadAreas } from './areas.ts';
 import { kindOf, linkedItems } from './cards.ts';
-import { allergensOf, allergyLine, cardLines, spokenName, ALLERGEN_KEYS, type AllergenInfo } from '../core/allergens.ts';
+import { allergensOf, allergyLine, cardLines, spokenName, usesRecipe, ALLERGEN_KEYS, type AllergenInfo, type Swap } from '../core/allergens.ts';
 import { forTables, mergeBooks, readOpenTableCsv, whyNotable, REGULAR_VISITS, type Book } from '../core/reservations.ts';
 import { claudeOptions, type ClaudePage } from '../connectors/claude.ts';
 import { readReservations, readWineSheets, suggestIngredients, suggestPairings, type WineSheet } from '../connectors/floorReaders.ts';
@@ -69,6 +69,12 @@ interface DishInfo {
   id: string; name: string; kind: 'dish' | 'drink'; price?: number; lines: string[];
   allergyLine: string; contains: AllergenInfo['contains']; unchecked: string[]; unknown: string[];
   firstSold?: string; catalogIds: string[]; area: 'kitchen' | 'bar';
+  /** Asked for with a swap (the gluten-sensitive crust): what it has then. */
+  swaps: { label: string; contains: string[]; allergyLine: string; unchecked: string[] }[];
+}
+
+async function floorSettings(db: Db, restaurantId: string): Promise<{ allergyNote?: string; swaps?: Swap[] }> {
+  return js<{ allergyNote?: string; swaps?: Swap[] }>((await db.query<{ settings: unknown }>('SELECT settings FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.settings ?? {});
 }
 
 async function dishIndex(db: Db, restaurantId: string, model: Model): Promise<{ dishes: DishInfo[]; byId: Map<string, DishInfo> }> {
@@ -82,6 +88,7 @@ async function dishIndex(db: Db, restaurantId: string, model: Model): Promise<{ 
   const price = new Map(model.menuItems.filter((m) => m.price !== undefined).map((m) => [m.catalogId, m.price!]));
   const firstSold = new Map((await db.query<{ item_name: string; first: string }>('SELECT item_name, min(day)::text AS first FROM pos_order_lines WHERE restaurant_id = $1 GROUP BY item_name', [restaurantId])).rows.map((r) => [r.item_name, r.first]));
   const areaOf = await loadAreas(db, restaurantId);
+  const swaps = ((await floorSettings(db, restaurantId)).swaps ?? []).filter((w) => model.book.recipes.has(w.from) && model.book.recipes.has(w.to));
   const src = {
     recipes: model.book.recipes,
     tagsOf: (id: string) => answers.get(id)?.allergens ?? undefined,
@@ -105,6 +112,10 @@ async function dishIndex(db: Db, restaurantId: string, model: Model): Promise<{ 
       lines: cardLines(recipe, names), allergyLine: allergyLine(info), contains: info.contains, unchecked: info.unchecked, unknown: info.unknown,
       ...(firsts[0] ? { firstSold: firsts[0] } : {}), catalogIds: items.map((i) => i.catalogId),
       area: category && areaOf(category) === 'bar' ? 'bar' : category ? 'kitchen' : kindOf(c) === 'drink' ? 'bar' : 'kitchen',
+      swaps: swaps.filter((w) => usesRecipe(recipe.id, w.from, model.book.recipes)).map((w) => {
+        const with_ = allergensOf(recipe.id, src, w);
+        return { label: w.label, contains: with_.contains.map((x) => x.key), allergyLine: allergyLine(with_), unchecked: with_.unchecked };
+      }),
     });
   }
   return { dishes, byId: new Map(dishes.map((d) => [d.id, d])) };
@@ -117,8 +128,8 @@ interface WineRow {
 }
 const WINE_COLS = 'id, name, producer, region, place, grapes, vessel, style, tasting_notes, story, facts, sheet_pairings, ingredient_pairings, catalog_ids, pairings, suggested, photo IS NOT NULL AS has_photo, active, created_at::text AS created_at';
 
-function wineView(w: WineRow, model: Model, dishes: Map<string, DishInfo>, firstSold: Map<string, string>, today: string) {
-  const items = model.menuItems.filter((m) => w.catalog_ids.includes(m.catalogId));
+function wineView(w: WineRow, buttons: ReturnType<typeof wineButtons>, dishes: Map<string, DishInfo>, firstSold: Map<string, string>, today: string) {
+  const items = buttons.filter((m) => w.catalog_ids.includes(m.catalogId));
   const firsts = items.map((m) => firstSold.get(m.itemName)).filter((x): x is string => Boolean(x)).sort();
   const isNew = (firsts[0] ?? w.created_at.slice(0, 10)) >= addDays(today, -30);
   const pairings = js<{ recipeId: string; why: string }[]>(w.pairings ?? []).map((p) => ({ ...p, name: dishes.get(p.recipeId)?.name })).filter((p) => p.name);
@@ -129,6 +140,26 @@ function wineView(w: WineRow, model: Model, dishes: Map<string, DishInfo>, first
     hasPhoto: w.has_photo, isNew, catalogIds: w.catalog_ids,
   };
 }
+
+/**
+ * Square's wine buttons: catalog items in a wine category, or bar items marked BTL/GLS; and, when the
+ * catalog doesn't carry a category, what sold under a wine category.
+ */
+function wineButtons(model: Model, areaOf: (category: string | undefined) => string): { catalogId: string; name: string; itemName: string; variationName?: string; price?: number }[] {
+  const out = new Map<string, { catalogId: string; name: string; itemName: string; variationName?: string; price?: number }>();
+  for (const m of model.menuItems) {
+    if (!(/wine/i.test(m.category ?? '') || (areaOf(m.category) === 'bar' && /\b(BTL|GLS)\b/.test(m.itemName)))) continue;
+    out.set(m.catalogId, { catalogId: m.catalogId, name: m.variationName && !/^regular$/i.test(m.variationName) ? `${m.itemName} (${m.variationName})` : m.itemName, itemName: m.itemName, ...(m.variationName ? { variationName: m.variationName } : {}), ...(m.price !== undefined ? { price: m.price } : {}) });
+  }
+  for (const l of model.sales) {
+    if (out.has(l.catalogId) || !/wine/i.test(l.category ?? '') || /corkage/i.test(l.name)) continue;
+    out.set(l.catalogId, { catalogId: l.catalogId, name: l.name, itemName: l.name, ...(l.listPrice !== undefined ? { price: l.listPrice } : {}) });
+  }
+  return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** "Gavi - GLS", "Gavi BTL (50% OFF WINE WEDNESDAY)" → "Gavi". */
+export const wineBase = (name: string) => name.replace(/\(.*?\)/g, ' ').replace(/[-–]?\s*\b(BTL|GLS|bottle|glass)\b/gi, ' ').replace(/\s*[-–]\s*/g, ' - ').replace(/\s+/g, ' ').replace(/[\s-]+$/, '').trim();
 
 // ---------------------------------------------------------------- tonight's book
 
@@ -235,12 +266,13 @@ export async function floorBoard(db: Db, ctx: FloorContext, asked?: string) {
 
   // Wines.
   const firstSold = new Map((await db.query<{ item_name: string; first: string }>('SELECT item_name, min(day)::text AS first FROM pos_order_lines WHERE restaurant_id = $1 GROUP BY item_name', [rid])).rows.map((r) => [r.item_name, r.first]));
-  const wines = (await db.query<WineRow>(`SELECT ${WINE_COLS} FROM wine_cards WHERE restaurant_id = $1 AND active ORDER BY name`, [rid])).rows.map((w) => wineView(w, model, byId, firstSold, today));
+  const buttons = wineButtons(model, areaOf);
+  const wines = (await db.query<WineRow>(`SELECT ${WINE_COLS} FROM wine_cards WHERE restaurant_id = $1 AND active ORDER BY name`, [rid])).rows.map((w) => wineView(w, buttons, byId, firstSold, today));
   // Each dish shows the wines that pair with it.
   const winesFor = new Map<string, string[]>();
   for (const w of wines) for (const p of w.pairings) winesFor.set(p.recipeId, [...(winesFor.get(p.recipeId) ?? []), w.name]);
 
-  const settings = js<{ allergyNote?: string }>((await db.query<{ settings: unknown }>('SELECT settings FROM restaurants WHERE id = $1', [rid])).rows[0]?.settings ?? {});
+  const settings = await floorSettings(db, rid);
   const book = tonight ? {
     asOf: tonight.asOf, source: tonight.source, covers: tonight.book.covers ?? all.reduce((a, r) => a + r.partySize, 0), parties: all.length,
     mineCovers: mine.reduce((a, r) => a + r.partySize, 0), mineParties: mine.length,
@@ -250,13 +282,13 @@ export async function floorBoard(db: Db, ctx: FloorContext, asked?: string) {
   return {
     post: { id: post.id, name: post.name, kind: post.kind, ...(post.station_id ? { stationId: post.station_id } : {}) },
     posts: ctx.who && atLeast(ctx.who.roleLevel, 'manager') ? posts.map((p) => ({ id: p.id, name: p.name })) : undefined,
-    day: today, weekday: ctx.weekday, phase: phaseAt(ctx.minutes),
+    day: today, weekday: ctx.weekday, minutes: ctx.minutes, phase: phaseAt(ctx.minutes),
     book, featured,
     gelato: gelato ? { flavors: js(gelato.flavors), panChanges: gelato.pans_on === today ? js(gelato.pan_changes) : [], setAt: gelato.set_at } : null,
     talk, notes, checklists: { opening: checklist('opening'), closing: checklist('closing'), slow },
     lookup: {
       dishes: dishes.filter((d) => side === 'both' || post.kind === 'room' || post.kind === 'counter' || d.area === side)
-        .map((d) => ({ id: d.id, name: d.name, kind: d.kind, ...(d.price !== undefined ? { price: d.price } : {}), lines: d.lines, allergyLine: d.allergyLine, contains: d.contains.map((c) => c.key), unchecked: d.unchecked, unknown: d.unknown, wines: winesFor.get(d.id) ?? [] }))
+        .map((d) => ({ id: d.id, name: d.name, kind: d.kind, ...(d.price !== undefined ? { price: d.price } : {}), lines: d.lines, allergyLine: d.allergyLine, contains: d.contains.map((c) => c.key), unchecked: d.unchecked, unknown: d.unknown, swaps: d.swaps, wines: winesFor.get(d.id) ?? [] }))
         .sort((a, b) => a.name.localeCompare(b.name)),
       wines,
     },
@@ -303,7 +335,7 @@ async function readSheets(db: Db, id: string, restaurantId: string): Promise<voi
 function likelyButtons(name: string, items: { catalogId: string; name: string }[]): string[] {
   const words = (x: string) => new Set(normalizeName(x).split(' ').filter((w) => w.length > 2 && !['btl', 'gls', 'bottle', 'glass', 'doc', 'docg', 'igt'].includes(w)));
   const mine = words(name);
-  return items.filter((i) => { const theirs = words(i.name); const shared = [...theirs].filter((w) => mine.has(w)).length; return shared >= Math.min(2, theirs.size); }).map((i) => i.catalogId);
+  return items.filter((i) => { const theirs = words(i.name); const shared = [...theirs].filter((w) => mine.has(w)).length; return shared >= Math.min(3, theirs.size); }).map((i) => i.catalogId);
 }
 
 // ---------------------------------------------------------------- routes
@@ -375,6 +407,8 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
     return send(res, 200, {
       today: ctx.today, posts, devices, stations, checklists, notes, features, pushes, gelato: (gelato as unknown[])[0] ?? null, handoffs,
       allergyNote: js<{ allergyNote?: string }>((settings as { settings: unknown }[])[0]?.settings ?? {}).allergyNote ?? '',
+      swaps: js<{ swaps?: Swap[] }>((settings as { settings: unknown }[])[0]?.settings ?? {}).swaps ?? [],
+      recipes: model.recipes.map((r) => ({ id: r.id, name: r.name })).sort((a, b) => a.name.localeCompare(b.name)),
       dishes: dishes.map((d) => ({ id: d.id, name: d.name, kind: d.kind, price: d.price, firstSold: d.firstSold, allergyLine: d.allergyLine, unchecked: d.unchecked.length })),
       ...(report ? { report: { id: report.id, status: report.status, error: report.error, source: report.source, at: report.uploaded_at } } : {}),
       canRead: Boolean(claudeOptions()),
@@ -468,7 +502,12 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
 
   if (method === 'POST' && path === '/api/floor/settings') {
     const b = await body(req);
-    await db.query("UPDATE restaurants SET settings = jsonb_set(coalesce(settings, '{}'::jsonb), '{allergyNote}', to_jsonb($2::text)) WHERE id = $1", [rid, s(b.allergyNote, 1000) ?? '']);
+    if (typeof b.allergyNote === 'string') await db.query("UPDATE restaurants SET settings = jsonb_set(coalesce(settings, '{}'::jsonb), '{allergyNote}', to_jsonb($2::text)) WHERE id = $1", [rid, s(b.allergyNote, 1000) ?? '']);
+    if (Array.isArray(b.swaps)) {
+      const swaps = b.swaps.map((w: any) => ({ from: String(w?.from ?? ''), to: String(w?.to ?? ''), label: s(w?.label, 60) ?? '' }))
+        .filter((w: Swap) => /^[0-9a-f-]{36}$/.test(w.from) && /^[0-9a-f-]{36}$/.test(w.to) && w.from !== w.to && w.label).slice(0, 10);
+      await db.query("UPDATE restaurants SET settings = jsonb_set(coalesce(settings, '{}'::jsonb), '{swaps}', $2::jsonb) WHERE id = $1", [rid, JSON.stringify(swaps)]);
+    }
     return send(res, 200, { ok: true }), true;
   }
 
@@ -561,16 +600,16 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
     const lastSold = new Map((await db.query<{ catalog_id: string; last: string }>('SELECT catalog_id, max(day)::text AS last FROM pos_order_lines WHERE restaurant_id = $1 AND catalog_id IS NOT NULL GROUP BY catalog_id', [rid])).rows.map((r) => [r.catalog_id, r.last]));
     const rows = (await db.query<WineRow>(`SELECT ${WINE_COLS} FROM wine_cards WHERE restaurant_id = $1 AND active ORDER BY name`, [rid])).rows;
     const areaOf = await loadAreas(db, rid);
-    const buttons = model.menuItems.filter((m) => /wine/i.test(m.category ?? '') || (areaOf(m.category) === 'bar' && /\b(BTL|GLS)\b/.test(m.itemName))).map((m) => ({ catalogId: m.catalogId, name: m.variationName && !/^regular$/i.test(m.variationName) ? `${m.itemName} (${m.variationName})` : m.itemName, price: m.price }));
+    const buttons = wineButtons(model, areaOf);
     const linked = new Set(rows.flatMap((w) => w.catalog_ids));
     const scans = (await db.query<{ id: string; status: string; error: string | null; uploaded_at: string }>("SELECT id, status, error, uploaded_at::text AS uploaded_at FROM wine_sheet_scans WHERE restaurant_id = $1 AND status IN ('reading', 'read', 'failed') AND uploaded_at > now() - interval '7 days' ORDER BY uploaded_at DESC", [rid])).rows;
     return send(res, 200, {
       wines: rows.map((w) => {
         const last = w.catalog_ids.map((c) => lastSold.get(c)).filter(Boolean).sort().at(-1);
-        return { ...wineView(w, model, byId, firstSold, ctx.today), suggested: w.suggested ? js<{ recipeId: string; why: string }[]>(w.suggested).map((p) => ({ ...p, name: byId.get(p.recipeId)?.name })).filter((p) => p.name) : null,
+        return { ...wineView(w, buttons, byId, firstSold, ctx.today), suggested: w.suggested ? js<{ recipeId: string; why: string }[]>(w.suggested).map((p) => ({ ...p, name: byId.get(p.recipeId)?.name })).filter((p) => p.name) : null,
           ...(last ? { lastSold: last } : {}), stopped: Boolean(last && last < addDays(ctx.today, -30)), unlinked: !w.catalog_ids.length };
       }),
-      buttons, notCarded: buttons.filter((b) => !linked.has(b.catalogId)), scans, dishes: dishes.filter((d) => d.kind === 'dish').map((d) => ({ id: d.id, name: d.name })),
+      buttons: buttons.map((b) => ({ catalogId: b.catalogId, name: b.name, price: b.price })), notCarded: [...new Set(buttons.filter((b) => !linked.has(b.catalogId) && (lastSold.get(b.catalogId) ?? '') >= addDays(ctx.today, -60)).map((b) => wineBase(b.itemName)))].sort().map((name) => ({ name })), scans, dishes: dishes.filter((d) => d.kind === 'dish').map((d) => ({ id: d.id, name: d.name })),
       canRead: Boolean(claudeOptions()),
     }), true;
   }
@@ -589,7 +628,7 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
     const r = (await db.query<{ status: string; error: string | null; result: unknown }>('SELECT status, error, result FROM wine_sheet_scans WHERE restaurant_id = $1 AND id = $2', [rid, scanPath[1]])).rows[0];
     if (!r) throw new HttpError(404, 'No such upload.');
     const model = await getModel(db, rid, ctx.today);
-    const buttons = model.menuItems.map((m) => ({ catalogId: m.catalogId, name: m.itemName }));
+    const buttons = wineButtons(model, await loadAreas(db, rid)).map((m) => ({ catalogId: m.catalogId, name: m.itemName }));
     const wines = r.result ? js<WineSheet[]>(r.result).map((w) => ({ ...w, catalogIds: likelyButtons(w.name, buttons) })) : undefined;
     return send(res, 200, { status: r.status, ...(r.error ? { error: r.error } : {}), ...(wines ? { wines } : {}) }), true;
   }
