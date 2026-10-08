@@ -30,3 +30,11 @@ test('units that won’t convert are left out', () => {
   assert.equal(baseOf(basil, 'floz'), undefined);
   assert.equal(appImport([row({ lines: [{ lineNumber: 1, productId: 'p-basil', description: 'Basil', quantity: 2, unit: 'floz', total: 0 }] })], [basil]).prices.length, 0);
 });
+
+test('an invoice saved here and read later by MarginEdge counts once', async () => {
+  const { sameInvoices } = await import('../src/server/model.ts');
+  const inv = (externalId: string, vendor: string, number: string | undefined, date: string, total: number) => ({ externalId, vendorExternalId: vendor, ...(number ? { invoiceNumber: number } : {}), invoiceDate: date, total, isCredit: false, lines: [], unexplainedDifference: 0 });
+  const me = [inv('me-1', 'v-sysco', '889214', '2026-10-07', 243.53), inv('me-2', 'v-sysco', '889300', '2026-10-09', 100), inv('me-3', 'v-farm', undefined, '2026-10-07', 40)];
+  const app = [inv('app:a', 'v-sysco', '0889214', '2026-10-07', 243.53), inv('app:b', 'v-farm', undefined, '2026-10-07', 40), inv('app:c', 'app:garden', undefined, '2026-10-07', 0)];
+  assert.deepEqual([...sameInvoices(me, app)], [['me-1', 'app:a'], ['me-3', 'app:b']]);
+});

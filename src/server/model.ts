@@ -233,6 +233,8 @@ export interface Model {
   priceSource: Map<string, PriceSource>;
   /** Vendor ids that are the restaurant's own garden. */
   gardenVendors: Set<string>;
+  /** MarginEdge invoices also saved in the app (counted once, as the app's): theirs → ours. */
+  replacedByApp: Map<string, string>;
 }
 
 const cache = new Map<string, { stamp: string; model: Promise<Model> }>();
@@ -340,7 +342,12 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
   const { me, menuItems, images, rawRows, modRows, dataFrom } = base;
   // Invoices typed into the app join MarginEdge's.
   const typed = appImport(base.appRows, base.imported.products);
-  const imported: ImportResult = { ...base.imported, vendors: [...base.imported.vendors, ...typed.vendors], invoices: [...base.imported.invoices, ...typed.invoices], prices: [...base.imported.prices, ...typed.prices] };
+  // While both run: an invoice saved here that MarginEdge also reads (days later) counts once,
+  // the app's (checked by a manager). MarginEdge's copy is kept aside for comparing the two.
+  const replaced = sameInvoices(base.imported.invoices, typed.invoices);
+  const imported: ImportResult = { ...base.imported, vendors: [...base.imported.vendors, ...typed.vendors],
+    invoices: [...base.imported.invoices.filter((i) => !replaced.has(i.externalId)), ...typed.invoices],
+    prices: [...base.imported.prices.filter((p) => !replaced.has(p.invoiceExternalId)), ...typed.prices] };
   if (!me) missing.push('marginedge');
   if (!bookData.recipeCards?.length) missing.push('recipeCards');
 
@@ -485,5 +492,21 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     // A dish change already answered: a version on that button starts within a week of the suggested day.
     .filter((c) => !(c.kind === 'dishChanged' && c.catalogId && c.suggestedDate && [...linkAnswers.confirm, ...linkAnswers.newDish].some((v) => v.catalogId === c.catalogId && v.from && Math.abs(Date.parse(v.from) - Date.parse(c.suggestedDate!)) <= 7 * 86_400_000)));
 
-  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded, menuStatus: linkAnswers.menuStatus ?? [], rough: new Set((bookData.recipeCards ?? []).filter((c) => c.status === 'rough').map((c) => recipeId(c.name))), priceSource, gardenVendors: typed.garden };
+  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded, menuStatus: linkAnswers.menuStatus ?? [], rough: new Set((bookData.recipeCards ?? []).filter((c) => c.status === 'rough').map((c) => recipeId(c.name))), priceSource, gardenVendors: typed.garden, replacedByApp: replaced };
+}
+
+/**
+ * MarginEdge invoices that are the same paper as one saved in the app: same vendor, and the same
+ * number, or the same day and total. Returns MarginEdge's id → the app's.
+ */
+export function sameInvoices(fromMe: readonly ImportResult['invoices'][number][], fromApp: readonly ImportResult['invoices'][number][]): Map<string, string> {
+  const num = (n?: string) => (n ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const out = new Map<string, string>();
+  for (const a of fromApp) {
+    if (!a.vendorExternalId || a.vendorExternalId.startsWith('app:')) continue;
+    const twin = fromMe.find((m) => !out.has(m.externalId) && m.vendorExternalId === a.vendorExternalId
+      && ((num(a.invoiceNumber) && num(m.invoiceNumber) === num(a.invoiceNumber)) || (a.invoiceDate && m.invoiceDate === a.invoiceDate && Math.abs(m.total - a.total) < 0.01)));
+    if (twin) out.set(twin.externalId, a.externalId);
+  }
+  return out;
 }
