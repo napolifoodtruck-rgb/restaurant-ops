@@ -83,8 +83,6 @@ const NAV = [
 /** Where to send customers on a night this page isn't taking orders (the other ordering site runs those
  *  nights). Unset: no link. */
 const OTHER_ORDERING = { label: 'Order on our other ordering page', href: 'https://napolicarrboro.square.site' };
-/** A wide photo under the header, like the top of the Square Online site. Unset: no banner. */
-const HEADER_IMAGE = null;
 const BAG = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 8h14l-1.2 12.1a1 1 0 0 1-1 .9H7.2a1 1 0 0 1-1-.9L5 8Z"/><path d="M9 8V6.5a3 3 0 0 1 6 0V8"/></svg>';
 
 /** `wide`: the menu's width, so the logo lines up with the first item. `cart`: show the cart button
@@ -102,7 +100,10 @@ function header({ wide = false, cart: withCart = true } = {}) {
         links.length ? h('nav', { class: 'site', 'aria-label': 'Napoli' }, links.map(link)) : null,
         links.length ? h('details', { class: 'site-menu' }, h('summary', { 'aria-label': 'More pages', text: '☰' }), h('div', { class: 'drop' }, links.map(link))) : null,
         bag)),
-    HEADER_IMAGE && wide ? h('div', { class: 'banner' }, h('img', { src: HEADER_IMAGE, alt: '' })) : null,
+    // Under the header on the menu: the photo and line of text set on the Online screen, either or both.
+    wide && (M?.page?.headerImage || M?.page?.headerText) ? h('div', { class: `banner${M.page.headerImage ? '' : ' words'}` },
+      M.page.headerImage ? h('img', { src: M.page.headerImage, alt: '' }) : null,
+      M.page.headerText ? h('h1', { text: M.page.headerText }) : null) : null,
   ];
 }
 function partialNotice() {
