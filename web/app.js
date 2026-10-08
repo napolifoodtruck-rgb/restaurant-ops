@@ -2478,7 +2478,7 @@ async function orderPageCard() {
 }
 
 /**
- * Pickup windows: how many pizzas each 20-minute window takes. Tonight (or any date) on top, changed
+ * Pickup windows: how many pizzas each 15-minute window takes. Tonight (or any date) on top, changed
  * on its own; the weekly plan under it, a column per weekday. A date's numbers save as they're
  * typed; the weekly plan's wait for Save, so the grid doesn't redraw under the person filling it in.
  */
@@ -2576,7 +2576,7 @@ async function pickupWindowsCard(me) {
         w.starts.map((starts) => h('tr', {}, h('th', { class: 'small', text: clock(starts) }), order.map((d) => h('td', {}, planInput(d, starts)))))));
     const planCard = h('section', { class: 'card' },
       h('h2', { text: 'Weekly plan' }),
-      h('div', { class: 'small muted', text: 'Pizzas each 20-minute window takes, by weekday. Salads, gelato and drinks don’t count. An order goes in the first window with room for all its pizzas; 0 means no online orders in that window. Changes here wait for Save.' }),
+      h('div', { class: 'small muted', text: 'Pizzas each 15-minute window takes, by weekday. Salads, gelato and drinks don’t count. An order goes in the first window with room for all its pizzas; 0 means no online orders in that window. Changes here wait for Save.' }),
       h('div', { class: 'wgrid-wrap' }, grid),
       h('div', { class: 'row wrap plan-save' }, status, discardBtn, saveBtn), planErr);
     showUnsaved();

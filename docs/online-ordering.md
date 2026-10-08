@@ -27,9 +27,9 @@ Every online pizza is **partially cooked** and finished at home. True Neapolitan
 
 ## 4. Pickup windows and pizza limits
 
-- **Windows:** 20 minutes each, 5:00 to 9:00 pm, on the days we're open (12 a night).
+- **Windows:** 15 minutes each, 5:00 to 9:00 pm, on the days we're open (16 a night). They were 20 minutes until October 2026; the chef asked for 15.
 - **Limit:** the maximum number of **pizzas** each window can take. Salads, gelato and drinks don't count.
-- **Weekly plan:** a limit for each window on each weekday (Wednesday 5:00 to 5:20 → 4 pizzas, and so on). Managers edit it as a grid.
+- **Weekly plan:** a limit for each window on each weekday (Wednesday 5:00 to 5:15 → 4 pizzas, and so on). Managers edit it as a grid.
 - **Date changes:** a different grid or "closed online" for one date (holidays, events, short-staffed).
 - **Same day only.** Ordering opens in the morning for that evening.
 - **Choosing a time:** the customer sees the windows that still have room for their pizzas, or takes "earliest available".

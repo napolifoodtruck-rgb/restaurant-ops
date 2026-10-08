@@ -83,21 +83,21 @@ test('online menu and pickup windows', { skip: !db && 'no PostgreSQL for tests (
   const today = localNow('America/New_York').date;
   const weekday = new Date(`${today}T12:00:00Z`).getUTCDay();
   let w = (await call('GET', `/api/online/windows?day=${today}`)).json;
-  assert.equal(w.windows.length, 12);
+  assert.equal(w.windows.length, 16);
   assert.ok(w.windows.every((x: any) => x.max === 0));
   assert.equal((await call('POST', '/api/online/windows/plan', { cells: [{ weekday, starts: '17:10', maxPizzas: 4 }] })).status, 400);
   assert.equal((await call('POST', '/api/online/windows/plan', { cells: [{ weekday, starts: '17:00', maxPizzas: 100 }] })).status, 400);
   assert.equal((await call('POST', '/api/online/windows/plan', { cells: w.starts.map((starts: string) => ({ weekday, starts, maxPizzas: 4 })) })).status, 200);
   assert.equal((await call('POST', '/api/online/windows/plan', { cells: [{ weekday, starts: '18:00', maxPizzas: 6 }] })).status, 200);
   w = (await call('GET', `/api/online/windows?day=${today}`)).json;
-  assert.deepEqual(w.windows.slice(2, 4).map((x: any) => [x.starts, x.max]), [['17:40', 4], ['18:00', 6]]);
+  assert.deepEqual(w.windows.slice(3, 5).map((x: any) => [x.starts, x.max]), [['17:45', 4], ['18:00', 6]]);
 
   // Tonight: close from 8 pm, and one window changed by hand; then back to the plan.
   assert.equal((await call('POST', '/api/online/windows/day', { day: today, closeFrom: '20:00', note: 'Big party' })).status, 200);
   assert.equal((await call('POST', '/api/online/windows/day', { day: today, cells: [{ starts: '17:00', maxPizzas: 2 }] })).status, 200);
   w = (await call('GET', `/api/online/windows?day=${today}`)).json;
-  assert.deepEqual(w.windows.map((x: any) => x.max), [2, 4, 4, 6, 4, 4, 4, 4, 4, 0, 0, 0]);
-  assert.deepEqual(w.changedDays, [{ day: today, windows: 4, closed: false, note: 'Big party' }]);
+  assert.deepEqual(w.windows.map((x: any) => x.max), [2, 4, 4, 4, 6, 4, 4, 4, 4, 4, 4, 4, 0, 0, 0, 0]);
+  assert.deepEqual(w.changedDays, [{ day: today, windows: 5, closed: false, note: 'Big party' }]);
   assert.equal((await call('POST', '/api/online/windows/day', { day: today, cells: [{ starts: '17:00', maxPizzas: null }] })).status, 200);
   assert.equal((await call('GET', `/api/online/windows?day=${today}`)).json.windows[0].max, 4);
   // A whole date closed online.

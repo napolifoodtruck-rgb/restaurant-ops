@@ -1,5 +1,5 @@
 /**
- * Pickup windows for online orders. The evening is cut into 20-minute windows (5:00 to 9:00 pm),
+ * Pickup windows for online orders. The evening is cut into 15-minute windows (5:00 to 9:00 pm),
  * and each window takes at most so many pizzas: the oven is the limit, so salads, gelato and drinks
  * don't count. A weekly plan gives each weekday's limits; a date can be changed on its own (a
  * holiday, an event, a short-staffed night, or "close the rest of tonight" when dine-in is slammed).
@@ -11,7 +11,7 @@
 
 import { weekdayOf } from './forecast.ts';
 
-export const WINDOW_MINUTES = 20;
+export const WINDOW_MINUTES = 15;
 export const FIRST_WINDOW = '17:00';
 export const LAST_WINDOW_ENDS = '21:00';
 /** How long before a window starts it stops taking orders: the pizzas need making. */
@@ -23,7 +23,7 @@ const toMinutes = (hhmm: string): number => {
 };
 const toHhmm = (minutes: number): string => `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
 
-/** Start times of the evening's windows: 17:00, 17:20, … 20:40. */
+/** Start times of the evening's windows: 17:00, 17:15, … 20:45. */
 export function windowStarts(): string[] {
   const out: string[] = [];
   for (let t = toMinutes(FIRST_WINDOW); t + WINDOW_MINUTES <= toMinutes(LAST_WINDOW_ENDS); t += WINDOW_MINUTES) out.push(toHhmm(t));
