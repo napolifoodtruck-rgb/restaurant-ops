@@ -399,7 +399,8 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     const into = sale.catalogId ? fold(sale) : undefined;
     if (!into) return r;
     foldedSales.push({ into: into.catalogId, ...sale, quantity: Number(r['ItemSales.items_sold_count'] ?? 0), netSales: Number(r['ItemSales.item_net_sales'] ?? 0), ...(manualFolds.has(sale.catalogId) ? { manual: true } : {}) });
-    return { ...r, 'ItemSales.item_variation_id': into.catalogId, 'ItemSales.item_name': into.itemName, 'ItemSales.item_variation_name': into.variationName ?? null };
+    // Marked, so Performance can show full-price and specials sales apart.
+    return { ...r, 'ItemSales.item_variation_id': into.catalogId, 'ItemSales.item_name': into.itemName, 'ItemSales.item_variation_name': into.variationName ?? null, special: 1 };
   });
   const folded = foldedTotals(foldedSales);
   if (!itemRows.length) missing.push('square');

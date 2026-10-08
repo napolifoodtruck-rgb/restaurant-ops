@@ -22,6 +22,8 @@ export interface MarginSaleLine extends SaleLine {
   category?: string;
   /** Today's list price, from the POS catalog. */
   listPrice?: number;
+  /** Sold on a specials button (Tuesday $10, half-price Wednesday) folded into this one. */
+  special?: boolean;
 }
 
 export interface DishMargin {

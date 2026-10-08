@@ -103,6 +103,7 @@ export function squareItemSales(rows: readonly SquareItemSalesRow[], menu: reado
       ...(field(row, 'category_name') ? { category: String(field(row, 'category_name')) } : {}),
       ...(listPrice !== undefined ? { listPrice } : {}),
       ...(dayOf(row) ? { date: dayOf(row) } : {}),
+      ...(row['special'] ? { special: true } : {}),
     });
   }
   return out;

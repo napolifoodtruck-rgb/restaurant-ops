@@ -507,6 +507,17 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.equal((await sodaSold()).sold, 5);
   assert.equal((await call('POST', '/api/menu/price-variation', { body: { catalogId: 'V-SODA-T', action: 'merge' }, cookies: ownerSession })).status, 400);
 
+  // Performance, full price and specials apart: the Tuesday button is the special.
+  const barAll = (await call('GET', '/api/margins?area=bar', { cookies: ownerSession })).json;
+  const sodaCat = barAll.categories.find((c: any) => c.dishes.some((d: any) => d.name === 'House Soda'));
+  const sodaDish = sodaCat.dishes.find((d: any) => d.name === 'House Soda');
+  assert.deepEqual([barAll.hasSpecials, sodaDish.sold, sodaDish.byPrice.full.sold, sodaDish.byPrice.special.sold, sodaDish.byPrice.special.averagePrice], [true, 5, 3, 2, 3]);
+  assert.deepEqual([sodaCat.byPrice.full.netSales, sodaCat.byPrice.special.netSales, sodaCat.byPrice.specialShare], [12, 6, 0.333]);
+  const fullOnly = (await call('GET', '/api/margins?area=bar&price=full', { cookies: ownerSession })).json;
+  assert.deepEqual([fullOnly.price, fullOnly.categories.flatMap((c: any) => c.dishes).find((d: any) => d.name === 'House Soda').sold], ['full', 3]);
+  const specialOnly = (await call('GET', '/api/margins?area=bar&price=special', { cookies: ownerSession })).json;
+  assert.equal(specialOnly.categories.flatMap((c: any) => c.dishes).find((d: any) => d.name === 'House Soda').averagePrice, 3);
+
   // A button linked to the wrong recipe comes off it from the recipe page, back to needing its own.
   assert.equal((await call('POST', '/api/cards/unlink', { body: { items: [{ catalogId: 'V-SODA', itemName: 'House Soda' }] }, cookies: marcoOnExpo })).status, 403);
   assert.equal((await call('POST', '/api/cards/unlink', { body: { items: [{ catalogId: 'V-SODA', itemName: 'House Soda' }] }, cookies: ownerSession })).status, 200);

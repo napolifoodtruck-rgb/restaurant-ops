@@ -14,6 +14,38 @@ export const inArea = (v: AreaView, category: string | undefined) => {
 };
 import { onMenu, quietThreshold } from '../core/menu.ts';
 import { posName } from '../core/menuLinks.ts';
+import { menuMargins } from '../core/margins.ts';
+
+/** Which sales Performance looks at: all of them, full price only, or specials only. */
+export type PriceView = 'all' | 'full' | 'special';
+
+const pricedMemo = new WeakMap<Model, Map<PriceView, Pick<Model, 'sales' | 'margins'>>>();
+/**
+ * The model's sales and margins for full-price or specials sales alone. Modifier costs are the
+ * period's totals, so each button's share goes with its share of the plates.
+ */
+export function priced(model: Model, price: PriceView): Pick<Model, 'sales' | 'margins'> {
+  if (price === 'all') return model;
+  const hit = pricedMemo.get(model)?.get(price);
+  if (hit) return hit;
+  const sales = model.sales.filter((l) => (price === 'special') === Boolean(l.special));
+  const plates = (lines: readonly Model['sales'][number][]) => {
+    const out = new Map<string, number>();
+    for (const l of lines) {
+      const id = model.lookup(l.catalogId, l.name, l.date)?.recipeId;
+      if (id) out.set(`${l.catalogId}|${id}`, (out.get(`${l.catalogId}|${id}`) ?? 0) + l.quantity);
+    }
+    return out;
+  };
+  const all = plates(model.sales), mine = plates(sales);
+  const modifierCosts = new Map([...model.modifiers.byItem].map(([k, v]) => [k, (all.get(k) ?? 0) > 0 ? (v * (mine.get(k) ?? 0)) / all.get(k)! : 0]));
+  const margins = menuMargins(model.book, model.lookup, sales, { modifierCosts });
+  const result = { sales, margins: { ...margins, unlinked: margins.unlinked.filter((u) => model.margins.unlinked.some((x) => x.name === u.name)) } };
+  const m = pricedMemo.get(model) ?? new Map();
+  m.set(price, result);
+  pricedMemo.set(model, m);
+  return result;
+}
 
 const money = (v: number) => Math.round(v * 100) / 100;
 const share = (v: number | undefined) => (v === undefined ? undefined : Math.round(v * 1000) / 1000);
@@ -64,13 +96,15 @@ export function coverageOf(model: Model, view: AreaView) {
 }
 
 /** Margins by category, biggest money first. Only categories with at least one dish that has a recipe. */
-export function marginsView(model: Model, view: AreaView = ALL) {
+export function marginsView(whole: Model, view: AreaView = ALL, price: PriceView = 'all') {
+  // Days on the menu and open days come from every sale; money and plates from the ones asked for.
+  const model = { ...whole, ...priced(whole, price) };
   const stillOn = addDays(model.today, -7);
   // When each recipe was on the menu, from the days it sold (by version, so a summer and a
   // fall dish on one button each get their own days), and which days the restaurant was open.
   const openDays = new Set<string>();
   const sold = new Map<string, { first: string; last: string }>();
-  for (const l of model.sales) {
+  for (const l of whole.sales) {
     if (!l.date || !(l.quantity > 0)) continue;
     openDays.add(l.date);
     const link = model.lookup(l.catalogId, l.name, l.date);
@@ -140,9 +174,21 @@ export function marginsView(model: Model, view: AreaView = ALL) {
   };
   const byCategory = new Map<string, Model['margins']['dishes']>();
   for (const d of model.margins.dishes) if (inArea(view, d.category)) byCategory.set(d.category, [...(byCategory.get(d.category) ?? []), d]);
+  // In the all view: what full price and specials did apart, by category and by dish.
+  const split = price === 'all' && whole.sales.some((l) => l.special) ? { full: priced(whole, 'full').margins.dishes, special: priced(whole, 'special').margins.dishes } : undefined;
+  const sideOf = (list: Model['margins']['dishes'], d: Model['margins']['dishes'][number]) => list.find((x) => x.recipeId === d.recipeId && x.catalogId === d.catalogId) ?? list.find((x) => x.recipeId === d.recipeId);
+  const pricePart = (list: Model['margins']['dishes'][number][]) => {
+    const net = list.reduce((s, d) => s + d.netSales, 0), food = list.reduce((s, d) => s + d.plateCost * d.quantity, 0);
+    return { netSales: money(net), foodCostShare: share(net > 0 ? food / net : undefined) };
+  };
   const categories = [...byCategory].map(([name, dishes]) => {
     const netSales = dishes.reduce((s, d) => s + d.netSales, 0);
     const food = dishes.reduce((s, d) => s + d.plateCost * d.quantity, 0);
+    const byPrice = split ? (() => {
+      const full = dishes.map((d) => sideOf(split.full, d)).filter((x): x is NonNullable<typeof x> => Boolean(x));
+      const special = dishes.map((d) => sideOf(split.special, d)).filter((x): x is NonNullable<typeof x> => Boolean(x));
+      return special.length ? { full: pricePart(full), special: pricePart(special), specialShare: share(netSales > 0 ? special.reduce((s, d) => s + d.netSales, 0) / netSales : 0) } : undefined;
+    })() : undefined;
     const missing = model.margins.unlinked.filter((u) => u.category === name && u.netSales > 0);
     return {
       name,
@@ -150,6 +196,7 @@ export function marginsView(model: Model, view: AreaView = ALL) {
       leftOver: money(netSales - food),
       foodCostShare: share(netSales > 0 ? food / netSales : 0),
       gaps: gapsOf(model, dishes),
+      ...(byPrice ? { byPrice } : {}),
       dishes: dishes.map((d) => ({
         recipeId: d.recipeId,
         name: d.name,
@@ -177,6 +224,14 @@ export function marginsView(model: Model, view: AreaView = ALL) {
         // Came off the menu during the period: its money is real, but it's not a dish to work on.
         // Off only when the menu says so (a manager confirmed it, or a planned dish replaced it).
         ...(!onNowIds.has(d.recipeId) && lastSold.get(d.recipeId) ? { offSince: lastSold.get(d.recipeId) } : {}),
+        // Full price and specials apart, when it sold on a specials button too.
+        ...(() => {
+          const sp = split && sideOf(split.special, d);
+          if (!sp) return {};
+          const fp = sideOf(split.full, d);
+          const part = (x: typeof sp) => ({ sold: Math.round(x.quantity * 10) / 10, averagePrice: money(x.averagePrice), plateCost: money(x.plateCost), foodCostShare: share(x.foodCostShare) });
+          return { byPrice: { ...(fp ? { full: part(fp) } : {}), special: part(sp) } };
+        })(),
       })),
       // Food cost share week by week, over the dishes with cards.
       weeklyFoodCost: weeks.map((_, i) => {
@@ -221,6 +276,8 @@ export function marginsView(model: Model, view: AreaView = ALL) {
 
   return {
     area: view.area,
+    price,
+    hasSpecials: whole.sales.some((l) => l.special && inArea(view, l.category)),
     coverage: coverageOf(model, view),
     // Every plate-cost gap on this side, one question per product.
     gaps: gapsOf(model, model.margins.dishes.filter((d) => inArea(view, d.category))),

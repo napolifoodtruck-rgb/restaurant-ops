@@ -1048,3 +1048,9 @@ button.donut-row { display: flex; min-width: 0; }
 .fc-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
 .fc-pct { font-size: 20px; }
 .fc-chart .fc-band { fill: var(--fc-good); opacity: .08; }
+
+/* Full price and specials apart (Performance). */
+.price-line { margin-top: 6px; }
+.price-split { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.price-split .ps-col { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; display: grid; gap: 2px; }
+.price-split .ps-pct { font-weight: 700; }

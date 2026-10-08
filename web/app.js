@@ -537,6 +537,8 @@ function perfToolbar(me, state, m, current, again, mode) {
   const chosen = presetRanges().find(([, r]) => same(r, state.range));
   return h('section', { class: 'card toolbar one-row' },
     names.length > 1 ? seg('Category', names.map((n) => [n, n === current, () => again({ category: n })]), 'wrap-seg') : null,
+    // Full price or specials alone, where specials buttons (Tuesday $10, half-price Wednesday) sold.
+    m.hasSpecials ? seg('Which sales', [['All', 'all'], ['Full price', 'full'], ['Specials', 'special']].map(([text, p]) => [text, (state.price ?? 'all') === p, () => marginsScreen(me, { ...state, price: p })])) : null,
     periodPicker(presets, chosen ? chosen[0] : 'custom', { from: m.from, to: m.to }, (key, r) => {
       const preset = presetRanges().find(([label]) => label === key);
       marginsScreen(me, { ...state, range: key === 'custom' ? r : preset?.[1] ?? null });
@@ -701,7 +703,7 @@ const MARGIN_COLUMNS = [
 async function marginsScreen(me, state = {}) {
   state = { view: 'total', sort: { key: 'left', dir: 'desc' }, ...state };
   loadingScreen(me, 'margins', 'Menu Performance');
-  const r = await api('GET', `/api/margins?area=${sideOf(me)}${state.range ? `&from=${state.range.from}&to=${state.range.to}` : ''}`);
+  const r = await api('GET', `/api/margins?area=${sideOf(me)}${state.range ? `&from=${state.range.from}&to=${state.range.to}` : ''}${state.price && state.price !== 'all' ? `&price=${state.price}` : ''}`);
   if (!r.ok) return show(shell(me, 'margins', [h('h1', { text: 'Menu Performance' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   renderMargins(me, state, r.data);
 }
@@ -754,7 +756,7 @@ function renderMargins(me, state, m) {
       h('div', {}, h('div', { class: 'row tight' }, (() => { const t = h('div', { class: 'total' }); t.style.width = `calc((100% - 64px) * ${(Math.max(0, value) / maxValue).toFixed(4)})`; return t; })(), h('b', { text: dollars(value) })), other ? h('div', { class: 'small muted', text: other }) : null),
       trendCell(d.trend),
     );
-    return opened ? [row, plateDetail(d)] : row;
+    return opened ? [row, plateDetail(d, bar ? POUR_COST_GOAL : FOOD_COST_GOAL)] : row;
   });
   const headCell = (c) => {
     const active = c.key === column.key;
@@ -772,7 +774,14 @@ function renderMargins(me, state, m) {
   const fc = (cat.weeklyFoodCost ?? []).map((v) => (v === null ? null : v));
   const summary = statBox(`${cat.name} · estimated gross profit`, dollars(catLeft),
     h('div', { class: 'small muted', text: `${cat.dishes.length} ${bar ? 'drinks' : 'dishes'} · ${days} days` }),
-    foodCostPanel(`${bar ? 'Pour' : 'Food'} cost by week`, cat.foodCostShare, m.weeks, fc, bar ? POUR_COST_GOAL : FOOD_COST_GOAL),
+    foodCostPanel(`${bar ? 'Pour' : 'Food'} cost by week${m.price === 'full' ? ', full price' : m.price === 'special' ? ', specials' : ''}`, cat.foodCostShare, m.weeks, fc, bar ? POUR_COST_GOAL : FOOD_COST_GOAL),
+    // What the specials do to it: full price and specials apart, and how much of the money was on specials.
+    cat.byPrice ? (() => {
+      const goal = bar ? POUR_COST_GOAL : FOOD_COST_GOAL;
+      const part = (label, x) => h('span', {}, `${label} `, h('b', { class: foodCostStatus(x.foodCostShare, goal).cls, text: pct(x.foodCostShare) }));
+      return h('div', { class: 'small price-line' }, part('Full price', cat.byPrice.full), ' · ', part('Specials', cat.byPrice.special),
+        h('span', { class: 'muted', text: ` · ${Math.round(cat.byPrice.specialShare * 100)}% of sales on specials` }));
+    })() : null,
     h('div', { class: 'small muted', text: `Whole ${sideOf(me)} menu: ${dollars(m.totals.leftOver)} estimated gross profit, ${pct(m.totals.foodCostShare)} ${bar ? 'pour' : 'food'} cost.` }),
     h('div', { class: 'small muted', text: `Sales minus each recipe’s ${bar ? 'pour' : 'food'} cost at today’s invoice prices. Waste, comps and labor aren’t in it.` }));
   const noCard = cat.noCard.length ? sideBox(`Selling with no recipe · ${dollars(cat.noCardSales)} not counted`,
@@ -833,8 +842,16 @@ const UNIT_CHOICES = ['lb', 'oz', 'g', 'kg', 'gal', 'qt', 'pt', 'cup', 'floz', '
 const unitName = (u) => ({ each: 'each', floz: 'fl oz' }[u] ?? u);
 
 /** One dish's plate: each raw ingredient's amount and cost; gaps flagged. */
-function plateDetail(d) {
-  return h('div', { class: 'plate-detail' },
+function plateDetail(d, goal = FOOD_COST_GOAL) {
+  // Full price and specials apart: what each sold, for how much, and its food or pour cost.
+  const parts = d.byPrice ? [['Full price', d.byPrice.full], ['Specials', d.byPrice.special]].filter(([, x]) => x) : [];
+  const priceSplit = parts.length ? h('div', { class: 'price-split' }, parts.map(([label, x]) => {
+    const st = foodCostStatus(x.foodCostShare, goal);
+    return h('div', { class: 'ps-col' }, h('div', { class: 'small muted strong', text: label }),
+      h('div', { class: 'small', text: `${x.sold.toLocaleString()} sold · ${dollars(x.averagePrice, { cents: true })} average` }),
+      h('div', { class: `ps-pct ${st.cls}`, text: `${pct(x.foodCostShare)} cost` }));
+  })) : null;
+  return h('div', { class: 'plate-detail' }, priceSplit,
     h('div', { class: 'small muted', text: `One plate of ${d.name}, as the recipe says, broken down to what you buy. Add-ons and removals are on top: ${dollars(d.plateCost, { cents: true })} on average.` }),
     h('div', { class: 'list' }, d.lines.map((l) => h('div', {},
       h('span', { class: 'grow', text: l.name }),

@@ -511,7 +511,8 @@ export function createApp(config: AppConfig) {
           range = { from, to: to > now ? now : to };
         }
         const area = areaFor(who, url.searchParams.get('area'));
-        return send(res, 200, marginsView(await getModel(db, who.restaurantId, now, range), { area, areaOf: await loadAreas(db, who.restaurantId) }));
+        const price = (['full', 'special'] as const).find((p) => p === url.searchParams.get('price')) ?? 'all';
+        return send(res, 200, marginsView(await getModel(db, who.restaurantId, now, range), { area, areaOf: await loadAreas(db, who.restaurantId) }, price));
       }
 
       if (method === 'POST' && path === '/api/answers') {
