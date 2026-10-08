@@ -54,7 +54,7 @@ export class SquareCheckout {
     return this.#call('POST', path, body);
   }
 
-  async #call(method: 'GET' | 'POST', path: string, body?: unknown): Promise<any> {
+  async #call(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<any> {
     const headers: Record<string, string> = { authorization: `Bearer ${this.#token}`, accept: 'application/json' };
     if (body !== undefined) headers['content-type'] = 'application/json';
     if (this.#version) headers['square-version'] = this.#version;
@@ -129,6 +129,21 @@ export class SquareCheckout {
     const tender = (order.tenders ?? []).find((t: any) => t.payment_id);
     if (!tender || Number(order.net_amount_due_money?.amount ?? 1) > 0) return undefined;
     return { id: tender.payment_id, status: 'COMPLETED' };
+  }
+
+  /**
+   * Cancels an order nobody paid for, so the POS stops counting its items as committed. 'paid': it was paid after all,
+   * and is left alone; 'gone': already closed or cancelled.
+   */
+  async cancelUnpaid(orderId: string, idempotencyKey: string): Promise<'cancelled' | 'paid' | 'gone'> {
+    const order = (await this.#call('GET', `/v2/orders/${encodeURIComponent(orderId)}`)).order ?? {};
+    if (order.state !== 'OPEN') return 'gone';
+    if ((order.tenders ?? []).length || Number(order.net_amount_due_money?.amount ?? 1) <= 0) return 'paid';
+    await this.#call('PUT', `/v2/orders/${encodeURIComponent(orderId)}`, {
+      idempotency_key: idempotencyKey,
+      order: { location_id: order.location_id, version: order.version, state: 'CANCELED', fulfillments: (order.fulfillments ?? []).map((f: any) => ({ uid: f.uid, state: 'CANCELED' })) },
+    });
+    return 'cancelled';
   }
 
   /** Charges the order with the card token; the tip goes on top of the order's total. */

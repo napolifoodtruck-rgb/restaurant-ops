@@ -26,6 +26,7 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   const stock = new Map<string, number>();
   // Orders paid in Square (order id → payment id); `dropAnswer`: the next charge goes through but its answer is lost.
   const paidInSquare = new Map<string, string>();
+  const cancelledInSquare = new Set<string>();
   let dropAnswer = false;
   const fakeFetch: Fetch = async (url, init) => {
     const path = new URL(url).pathname;
@@ -33,7 +34,14 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
     if (init.method === 'GET' && path.startsWith('/v2/orders/')) {
       const id = decodeURIComponent(path.slice('/v2/orders/'.length));
       const paidWith = paidInSquare.get(id);
-      return reply(200, { order: { id, tenders: paidWith ? [{ payment_id: paidWith }] : [], net_amount_due_money: { amount: paidWith ? 0 : 1000 } } });
+      return reply(200, { order: { id, state: cancelledInSquare.has(id) ? 'CANCELED' : 'OPEN', version: 3, location_id: 'loc-1', fulfillments: [{ uid: 'f-1' }], tenders: paidWith ? [{ payment_id: paidWith }] : [], net_amount_due_money: { amount: paidWith ? 0 : 1000 } } });
+    }
+    if (init.method === 'PUT' && path.startsWith('/v2/orders/')) {
+      const id = decodeURIComponent(path.slice('/v2/orders/'.length));
+      const body = JSON.parse(init.body ?? '{}');
+      square.push({ path: '/v2/orders/:id (update)', body });
+      if (body.order.state === 'CANCELED') cancelledInSquare.add(id);
+      return reply(200, { order: { id, state: body.order.state } });
     }
     if (init.method === 'GET' && path === '/v2/payments') {
       lookups.push(new URL(url));
@@ -315,6 +323,22 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   // Or straight from the payment page.
   assert.equal((await customer('POST', `/api/order/${changed.json.id}/release`)).json.status, 'released');
   assert.equal(await left20(), room);
+  // Given up, it's cancelled in Square on the next pass (so the POS stops counting its pizzas); a paid one never is.
+  const squareIdOf = async (id: string) => (await db!.query<{ square_order_id: string }>('SELECT square_order_id FROM online_orders WHERE id = $1', [id])).rows[0]!.square_order_id;
+  await customer('GET', '/api/order/menu');
+  const cancels = square.filter((x) => x.path === '/v2/orders/:id (update)');
+  assert.ok(cancels.some((c) => c.body.order.state === 'CANCELED' && c.body.order.version === 3 && c.body.order.fulfillments[0].state === 'CANCELED'));
+  assert.ok(cancelledInSquare.has(await squareIdOf(first.json.id)) && cancelledInSquare.has(await squareIdOf(changed.json.id)));
+  // An abandoned payment page: half an hour past its hold, it's given up and cancelled; it can't be paid after.
+  const walkedAway = await customer('POST', '/api/order/checkout', { ...order, window: '18:15', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
+  await db!.query("UPDATE online_orders SET hold_until = now() - interval '31 minutes' WHERE id = $1", [walkedAway.json.id]);
+  await customer('GET', '/api/order/menu');
+  assert.equal((await customer('GET', `/api/order/${walkedAway.json.id}`)).json.status, 'released');
+  assert.ok(cancelledInSquare.has(await squareIdOf(walkedAway.json.id)));
+  assert.equal((await customer('POST', `/api/order/${walkedAway.json.id}/pay`, { sourceId: 'cnon:card-ok-9' })).status, 409);
+  const cancelsSoFar = square.filter((x) => x.path === '/v2/orders/:id (update)').length;
+  await customer('GET', '/api/order/menu');
+  assert.equal(square.filter((x) => x.path === '/v2/orders/:id (update)').length, cancelsSoFar);
 
   // The signal drops after Pay: the charge went through, the answer didn't. Pressing Pay again (a new card token) doesn't charge twice.
   const dropped = await customer('POST', '/api/order/checkout', { ...order, window: '18:15', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
