@@ -133,6 +133,39 @@ export function marginsView(whole: Model, view: AreaView = ALL, price: PriceView
     money[w]! += l.netSales;
     weeklySales.set(link.recipeId, money);
   }
+  // Full-price sales week by week, for spotting a menu price change (specials would hide it).
+  const fullWeekly = new Map<string, { q: number[]; s: number[] }>();
+  for (const l of whole.sales) {
+    if (l.special || !l.date || !(l.quantity > 0)) continue;
+    const link = whole.lookup(l.catalogId, l.name, l.date);
+    const w = link ? weekOf(l.date) : -1;
+    if (!link || w < 0) continue;
+    const f = fullWeekly.get(link.recipeId) ?? { q: weeks.map(() => 0), s: weeks.map(() => 0) };
+    f.q[w]! += l.quantity; f.s[w]! += l.netSales;
+    fullWeekly.set(link.recipeId, f);
+  }
+  /**
+   * A menu price change in the period: the week where the full-price average steps up (or down)
+   * by 75¢ or more and stays there (most weeks on each side on their own side of the middle).
+   * Weekly, so it reads "around the week of"; add-ons make single days too noisy.
+   */
+  const priceChangeOf = (recipeId: string) => {
+    const f = fullWeekly.get(recipeId);
+    if (!f) return undefined;
+    const pts = weeks.map((w, i) => ({ week: w.from, q: f.q[i]!, s: f.s[i]! })).filter((p) => p.q >= 5);
+    let best: { week: string; from: number; to: number } | undefined;
+    for (let k = 2; k <= pts.length - 2; k++) {
+      const a = pts.slice(0, k), b = pts.slice(k);
+      const avg = (xs: typeof pts) => xs.reduce((t, p) => t + p.s, 0) / xs.reduce((t, p) => t + p.q, 0);
+      const from = avg(a), to = avg(b), mid = (from + to) / 2;
+      if (Math.abs(to - from) < 0.75) continue;
+      const up = to > from;
+      const side = (xs: typeof pts, high: boolean) => xs.filter((p) => (p.s / p.q > mid) === high).length / xs.length >= 0.8;
+      if (!side(a, !up) || !side(b, up)) continue;
+      if (!best || Math.abs(to - from) > Math.abs(best.to - best.from)) best = { week: pts[k]!.week, from: money(from), to: money(to) };
+    }
+    return best;
+  };
   /** Money left after food, week by week: that week's sales less its plates at the period's plate cost. */
   const weeklyLeftOf = (recipeId: string, plateCost: number) => {
     const q = weekly.get(recipeId), m = weeklySales.get(recipeId);
@@ -216,6 +249,7 @@ export function marginsView(whole: Model, view: AreaView = ALL, price: PriceView
           return n ? { daysOn: n, firstSold: sold.get(d.recipeId)!.first, leftPerDay: money(d.totalContribution / n), soldPerDay: Math.round((d.quantity / n) * 10) / 10 } : {};
         })(),
         ...(trendOf(d.recipeId) ? { trend: trendOf(d.recipeId) } : {}),
+        ...(priceChangeOf(d.recipeId) ? { priceChange: priceChangeOf(d.recipeId) } : {}),
         weeklyLeft: weeklyLeftOf(d.recipeId, d.plateCost),
         // The plate, ingredient by ingredient (raw products, after preps are broken down).
         lines: d.cost.lines

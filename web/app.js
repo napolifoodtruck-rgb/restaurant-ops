@@ -790,7 +790,8 @@ function renderMargins(me, state, m) {
         // What guests paid on average, beside the menu price when they differ, so the number isn't a mystery.
         h('span', { class: 'price-pair', title: 'What guests paid on average in this period, after specials, discounts and comps. The menu price is today’s price in Square.' },
           h('span', { class: 'small', text: `${dollars(d.averagePrice, { cents: true })} avg` }),
-          d.listPrice && m.price !== 'special' && Math.abs(d.listPrice - d.averagePrice) >= 0.05 ? h('span', { class: 'small muted', text: `${dollars(d.listPrice, { cents: true })} menu` }) : null)),
+          d.listPrice && m.price !== 'special' && Math.abs(d.listPrice - d.averagePrice) >= 0.05 ? h('span', { class: 'small muted', text: `${dollars(d.listPrice, { cents: true })} menu` }) : null,
+          d.priceChange ? h('span', { class: 'small price-moved', title: priceChangeText(d.priceChange), text: `${d.priceChange.to > d.priceChange.from ? '↑' : '↓'} since ${shortDate(d.priceChange.week)}` }) : null)),
         h('div', { class: 'small', text: `${dollars(d.plateCost, { cents: true })}${d.estimated ? '*' : ''} food (${Math.round(foodShare * 100)}%) · ${dollars(d.leftPerPlate, { cents: true })} profit` })),
       h('div', { class: 'num' }, h('div', { text: d.sold.toLocaleString() }), d.soldPerDay !== undefined ? h('div', { class: 'small muted', text: `${d.soldPerDay}/day` }) : null),
       h('div', {}, h('div', { class: 'row tight' }, (() => { const t = h('div', { class: 'total' }); t.style.width = `calc((100% - 64px) * ${(Math.max(0, value) / maxValue).toFixed(4)})`; return t; })(), h('b', { text: dollars(value) })), other ? h('div', { class: 'small muted', text: other }) : null),
@@ -882,6 +883,8 @@ const UNIT_CHOICES = ['lb', 'oz', 'g', 'kg', 'gal', 'qt', 'pt', 'cup', 'floz', '
 const unitName = (u) => ({ each: 'each', floz: 'fl oz' }[u] ?? u);
 
 /** One dish's plate: each raw ingredient's amount and cost; gaps flagged. */
+/** "Menu price went up around the week of Aug 17: about $18.25 before, $20.25 since." */
+const priceChangeText = (c) => `Menu price went ${c.to > c.from ? 'up' : 'down'} around the week of ${shortDate(c.week)}: about ${dollars(c.from, { cents: true })} a plate before, ${dollars(c.to, { cents: true })} since (full price, add-ons included). The period's average mixes the two.`;
 function plateDetail(d, goal = FOOD_COST_GOAL) {
   // Full price and specials apart: what each sold, for how much, and its food or pour cost.
   const parts = d.byPrice ? [['Full price', d.byPrice.full], ['Specials', d.byPrice.special]].filter(([, x]) => x) : [];
@@ -891,7 +894,7 @@ function plateDetail(d, goal = FOOD_COST_GOAL) {
       h('div', { class: 'small', text: `${x.sold.toLocaleString()} sold · ${dollars(x.averagePrice, { cents: true })} average` }),
       h('div', { class: `ps-pct ${st.cls}`, text: `${pct(x.foodCostShare)} cost` }));
   })) : null;
-  return h('div', { class: 'plate-detail' }, priceSplit,
+  return h('div', { class: 'plate-detail' }, d.priceChange ? h('div', { class: 'note small', text: priceChangeText(d.priceChange) }) : null, priceSplit,
     h('div', { class: 'small muted', text: `One plate of ${d.name}, as the recipe says, broken down to what you buy. Add-ons and removals are on top: ${dollars(d.plateCost, { cents: true })} on average.` }),
     h('div', { class: 'list' }, d.lines.map((l) => h('div', {},
       h('span', { class: 'grow', text: l.name }),
@@ -1151,6 +1154,10 @@ function menuMatrix(cat, m, state, again) {
   const y = (v) => { const f = (v - y0) / (y1 - y0); return T + (mode.invert ? f : 1 - f) * (H - T - B); };
   const maxTotal = Math.max(...dishes.map((d) => Math.max(0, d.leftTotal)), 1);
   const rOf = (d) => 5 + 15 * Math.sqrt(Math.max(0, d.leftTotal) / maxTotal);
+  // Colour follows total profit too: red well under the category's average dish, amber around it, green well over.
+  const avgTotal = dishes.reduce((a, d) => a + d.leftTotal, 0) / dishes.length;
+  const mix = (c1, c2, t) => { const p = (c, i) => parseInt(c.slice(1 + 2 * i, 3 + 2 * i), 16); return `rgb(${[0, 1, 2].map((i) => Math.round(p(c1, i) + (p(c2, i) - p(c1, i)) * t)).join(',')})`; };
+  const colorOf = (d) => { const t = Math.max(0, Math.min(1, (d.leftTotal / Math.max(1, avgTotal) - 0.4) / 1.2)); return t < 0.5 ? mix('#B42318', '#C98A14', t * 2) : mix('#C98A14', '#2E7D4F', (t - 0.5) * 2); };
   const xAvg = dishes.reduce((a, d) => a + d.x, 0) / dishes.length;
   const sold = dishes.reduce((a, d) => a + d.sold, 0), left = dishes.reduce((a, d) => a + d.leftTotal, 0);
   const yAvg = key === 'cost' ? cat.foodCostShare : key === 'plate' ? left / Math.max(1, sold) : left / dishes.length;
@@ -1188,7 +1195,7 @@ function menuMatrix(cat, m, state, again) {
   for (const d of [...dishes].sort((a, b) => b.leftTotal - a.leftTotal)) {
     const cx = x(d.x), cy = y(d.y), r = rOf(d), at = place(cx, cy, r, d.name);
     const g = el('g', { class: 'mx-dish', tabindex: '0' });
-    g.append(el('circle', { cx, cy, r, class: 'mx-dot' }));
+    g.append(el('circle', { cx, cy, r, class: 'mx-dot', fill: colorOf(d), stroke: colorOf(d) }));
     const show = () => {
       tip.setAttribute('visibility', 'visible');
       const bx = Math.min(cx + r + 6, W - R - 212), by = Math.max(T, cy - r - 56);
@@ -1206,7 +1213,7 @@ function menuMatrix(cat, m, state, again) {
   svg.append(bubbles, names, tip);
   const avgText = key === 'cost' ? `${pct(yAvg)} ${bar ? 'pour' : 'food'} cost` : key === 'plate' ? `${dollars(yAvg, { cents: true })} a ${bar ? 'drink' : 'plate'}` : `${dollars(yAvg)} each`;
   return card(
-    h('div', { class: 'small muted', text: `Each bubble is a ${bar ? 'drink' : 'dish'}, sized by the gross profit it brought in. Across: how many sold a day; up: ${label(mode.label).toLowerCase()}${mode.invert ? ', lowest at the top' : ''}. Dashed lines are ${cat.name.toLowerCase()}’s averages (${xAvg.toFixed(1)} a day, ${avgText}). Hover a bubble for its numbers.` }),
+    h('div', { class: 'small muted', text: `Each bubble is a ${bar ? 'drink' : 'dish'}, sized and coloured by the gross profit it brought in (red well under the average ${bar ? 'drink' : 'dish'}, green well over). Across: how many sold a day; up: ${label(mode.label).toLowerCase()}${mode.invert ? ', lowest at the top' : ''}. Dashed lines are ${cat.name.toLowerCase()}’s averages (${xAvg.toFixed(1)} a day, ${avgText}). Hover a bubble for its numbers.` }),
     h('div', { class: 'chart-wrap' }, svg));
 }
 
