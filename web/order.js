@@ -226,7 +226,11 @@ function itemSheet(item, editing) {
   const total = () => (item.variations.find((v) => v.id === variationId).price + optionsOf(item, [...picked]).reduce((s, o) => s + o.price, 0)) * quantity;
   const addBtn = h('button', { class: 'btn dark wide' });
   const qtyText = h('span', { class: 'strong' });
-  const refresh = () => { addBtn.textContent = `${editing ? 'Update' : 'Add'} · ${money(total())}`; qtyText.textContent = String(quantity); };
+  // "Add · Bufala Margherita · $18": a long name wraps to a second line.
+  const refresh = () => {
+    addBtn.textContent = `${editing ? 'Update' : 'Add'} · ${item.name} · ${money(total())}`;
+    qtyText.textContent = String(quantity);
+  };
   const variations = item.variations.length > 1 ? h('fieldset', {}, h('legend', { text: 'Size' }), item.variations.map((v) => {
     const input = h('input', { type: 'radio', name: 'variation', value: v.id, checked: v.id === variationId ? true : undefined });
     input.addEventListener('change', () => { variationId = v.id; refresh(); });

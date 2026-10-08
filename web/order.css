@@ -149,6 +149,7 @@ h2 { font-size: 22px; font-weight: 600; letter-spacing: -.01em; margin: 24px 0 1
 .sheet-foot { padding: 12px 20px calc(14px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--card); }
 .sheet-foot .row { gap: 12px; }
 .sheet-foot .btn { flex: 1; }
+.sheet-foot .btn.dark { min-width: 0; height: auto; min-height: 50px; padding-top: 8px; padding-bottom: 8px; line-height: 1.25; text-align: center; text-wrap: balance; }
 @keyframes sheet-up { from { transform: translateY(40px); opacity: .6; } }
 @keyframes fade-in { from { opacity: 0; } }
 @media (min-width: 640px) {
