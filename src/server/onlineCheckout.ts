@@ -227,6 +227,20 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
   /** Sends the confirmation in the background: paying never waits on it. */
   const confirmLater = (id: string) => { confirm(id).catch((err) => console.error(`online order ${id}: confirmation email: ${(err as Error).message}`)); };
 
+  // The order as it goes to Square: its lines, the pickup time in UTC, and who's picking it up.
+  async function squareOrderFor(o: OrderRow, idempotencyKey = '') {
+    const r = await restaurant();
+    const pickupAt = (await db.query<{ t: string }>('SELECT to_char((($1::date + $2::time) AT TIME ZONE $3) AT TIME ZONE \'UTC\', \'YYYY-MM-DD"T"HH24:MI:SS"Z"\') AS t', [o.day, o.window_starts, r.timezone])).rows[0]!.t;
+    return { idempotencyKey, locationId: ready!.locationId, referenceId: o.id.slice(0, 8), lines: (typeof o.lines === 'string' ? JSON.parse(o.lines) : o.lines) as CartLine[], pickupAt,
+      customer: { name: o.customer_name, phone: `+1${o.customer_phone.replace(/\D/g, '').slice(-10)}`, ...(o.customer_email ? { email: o.customer_email } : {}) }, note: 'Online order: pizzas partially cooked, finished at home.' };
+  }
+
+  // Cancels the order in Square and forgets it, so the next Pay starts a fresh one. A failure leaves it for closeUnpaid.
+  async function dropSquareOrder(id: string, squareOrderId: string) {
+    try { await ready!.square.cancelUnpaid(squareOrderId, `cancel-${squareOrderId}`); } catch (err) { console.error(`online order ${id}: couldn’t cancel it in Square: ${(err as Error).message}`); return; }
+    await db.query('UPDATE online_orders SET square_order_id = NULL WHERE id = $1 AND square_order_id = $2', [id, squareOrderId]);
+  }
+
   async function loadOrder(id: string): Promise<OrderRow | undefined> {
     return (await db.query<OrderRow>('SELECT id, restaurant_id, day::text AS day, window_starts::text AS window_starts, pizzas, status, hold_until, customer_name, customer_phone, customer_email, lines, subtotal_cents, tax_cents, total_cents, tip_cents, square_order_id, receipt_url, hold_until > now() AS still_held FROM online_orders WHERE id = $1', [id])).rows[0];
   }
@@ -285,7 +299,6 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       if (!first || !last) throw new HttpError(400, 'Your first and last name, please.');
       const digits = phone.replace(/\D/g, '');
       if (digits.length !== 10 && !(digits.length === 11 && digits.startsWith('1'))) throw new HttpError(400, 'A phone number, so we can reach you about the order.');
-      const e164 = `+1${digits.slice(-10)}`;
       if (!email) throw new HttpError(400, 'Your email, for your order confirmation.');
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'That email doesn’t look right.');
       if (b.understood !== true) throw new HttpError(400, 'Please confirm you know the pizzas are partially cooked, to finish at home.');
@@ -321,10 +334,11 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
         `INSERT INTO online_orders (restaurant_id, day, window_starts, pizzas, hold_until, customer_name, customer_phone, customer_email, lines, subtotal_cents, total_cents, tip_cents, understood_partial)
          VALUES ($1, $2, $3, $4, now() + make_interval(mins => $5::int), $6, $7, $8, $9::jsonb, $10, $10, $11, true) RETURNING id`,
         [r.id, now.date, b.window, cart.pizzas, HOLD_MINUTES, name, phone, email, JSON.stringify(cart.lines), cart.subtotal, tip])).rows[0]!.id;
-      const pickupAt = (await db.query<{ t: string }>('SELECT to_char((($1::date + $2::time) AT TIME ZONE $3) AT TIME ZONE \'UTC\', \'YYYY-MM-DD"T"HH24:MI:SS"Z"\') AS t', [now.date, b.window, r.timezone])).rows[0]!.t;
+      // Square works out the tax and total now; the order itself goes to Square only when they press Pay, so one left on the
+      // payment page never shows as open on the POS (where its pizzas would count as committed).
       try {
-        const order = await ready.square.createPickupOrder({ idempotencyKey: id, locationId: ready.locationId, referenceId: id.slice(0, 8), lines: cart.lines, pickupAt, customer: { name, phone: e164, email }, note: 'Online order: pizzas partially cooked, finished at home.' });
-        await db.query('UPDATE online_orders SET square_order_id = $2, tax_cents = $3, total_cents = $4 WHERE id = $1', [id, order.id, order.tax, order.total]);
+        const priced = await ready.square.priceOrder(await squareOrderFor((await loadOrder(id))!));
+        await db.query('UPDATE online_orders SET tax_cents = $2, total_cents = $3 WHERE id = $1', [id, priced.tax, priced.total]);
       } catch (err) {
         await db.query("UPDATE online_orders SET status = 'failed', failure = $2 WHERE id = $1", [id, (err as Error).message.slice(0, 500)]);
         console.error(`online order ${id}: ${(err as Error).message}`);
@@ -339,7 +353,7 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       const sourceId = typeof b.sourceId === 'string' ? b.sourceId : '';
       if (!sourceId || sourceId.length > 500) throw new HttpError(400, 'The card details didn’t come through. Try again.');
       const order = await loadOrder(m[1]!);
-      if (!order || !order.square_order_id) throw new HttpError(404, 'That order isn’t here. Start again from the menu.');
+      if (!order) throw new HttpError(404, 'That order isn’t here. Start again from the menu.');
       if (order.status === 'paid') return confirmLater(order.id), send(res, 200, summary(order)), true;
       if (order.status !== 'held' && order.status !== 'expired') throw new HttpError(409, 'That order can’t be paid any more. Start again from the menu.');
       // One payment at a time: a second Pay while the first is with Square waits for it.
@@ -353,7 +367,7 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       try {
         // Already paid in Square (an earlier Pay went through, but its answer never got back): no second charge.
         let already;
-        try { already = await ready.square.paidWith(order.square_order_id); } catch (err) { console.error(`online order ${order.id}: couldn’t ask Square whether it’s paid: ${(err as Error).message}`); }
+        if (order.square_order_id) try { already = await ready.square.paidWith(order.square_order_id); } catch (err) { console.error(`online order ${order.id}: couldn’t ask Square whether it’s paid: ${(err as Error).message}`); }
         if (already) {
           await db.query("UPDATE online_orders SET status = 'paid', square_payment_id = $2, paid_at = now(), failure = NULL WHERE id = $1", [order.id, already.id]);
           return confirmLater(order.id), send(res, 200, summary((await loadOrder(order.id))!)), true;
@@ -377,15 +391,36 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
         }
         // One key per card token: pressing Pay twice can't charge twice, and a declined card can be retried with another.
         const key = `${order.id}:${createHash('sha256').update(sourceId).digest('hex').slice(0, 8)}`;
+        // The Square order, created now (kept until it's paid or the card is declined, so a lost answer is caught above).
+        let squareOrderId = order.square_order_id;
+        if (!squareOrderId) {
+          let made;
+          try { made = await ready.square.createPickupOrder(await squareOrderFor(order, key)); } catch (err) {
+            await db.query('UPDATE online_orders SET failure = $2 WHERE id = $1', [order.id, (err as Error).message.slice(0, 500)]);
+            console.error(`online order ${order.id}: ${(err as Error).message}`);
+            throw new HttpError(502, 'We couldn’t finish the payment. Try again in a moment: you won’t be charged twice.');
+          }
+          squareOrderId = made.id;
+          await db.query('UPDATE online_orders SET square_order_id = $2 WHERE id = $1', [order.id, squareOrderId]);
+          if (made.total !== order.total_cents) {
+            await dropSquareOrder(order.id, squareOrderId);
+            await db.query("UPDATE online_orders SET status = 'failed', failure = 'total changed' WHERE id = $1", [order.id]);
+            throw new HttpError(409, 'A price just changed. You haven’t been charged: go back to your order to see the new total.', { backToOrder: true });
+          }
+        }
         try {
-          const payment = await ready.square.payOrder({ idempotencyKey: key, orderId: order.square_order_id, locationId: ready.locationId, sourceId, amount: order.total_cents, tip: order.tip_cents, ...(typeof b.verificationToken === 'string' ? { verificationToken: b.verificationToken } : {}), ...(order.customer_email ? { email: order.customer_email } : {}) });
-          if (payment.status !== 'COMPLETED' && payment.status !== 'APPROVED') throw new HttpError(402, 'The payment didn’t go through. Try another card.');
+          const payment = await ready.square.payOrder({ idempotencyKey: key, orderId: squareOrderId, locationId: ready.locationId, sourceId, amount: order.total_cents, tip: order.tip_cents, ...(typeof b.verificationToken === 'string' ? { verificationToken: b.verificationToken } : {}), ...(order.customer_email ? { email: order.customer_email } : {}) });
+          if (payment.status !== 'COMPLETED' && payment.status !== 'APPROVED') { await dropSquareOrder(order.id, squareOrderId); throw new HttpError(402, 'The payment didn’t go through. Try another card.'); }
           await db.query("UPDATE online_orders SET status = 'paid', square_payment_id = $2, receipt_url = $3, paid_at = now(), failure = NULL WHERE id = $1", [order.id, payment.id, payment.receiptUrl ?? null]);
         } catch (err) {
           if (err instanceof HttpError) throw err;
           const codes = (err as { codes?: string[] }).codes ?? [];
           await db.query('UPDATE online_orders SET failure = $2 WHERE id = $1', [order.id, (err as Error).message.slice(0, 500)]);
-          if (err instanceof SquareApiError && err.status >= 400 && err.status < 500 && codes.length) throw new HttpError(402, codes.some((c) => /CVV|ADDRESS|POSTAL|EXPIRATION/.test(c)) ? 'The card details didn’t match. Check them and try again.' : 'The card was declined. Try another card.');
+          if (err instanceof SquareApiError && err.status >= 400 && err.status < 500 && codes.length) {
+            // Declined: nothing was charged, so the order leaves the POS until they try another card.
+            await dropSquareOrder(order.id, squareOrderId);
+            throw new HttpError(402, codes.some((c) => /CVV|ADDRESS|POSTAL|EXPIRATION/.test(c)) ? 'The card details didn’t match. Check them and try again.' : 'The card was declined. Try another card.');
+          }
           console.error(`online order ${order.id} payment: ${(err as Error).message}`);
           throw new HttpError(502, 'We couldn’t finish the payment. Try again in a moment: you won’t be charged twice.');
         }

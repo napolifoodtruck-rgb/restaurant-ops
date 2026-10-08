@@ -117,32 +117,40 @@ export class SquareCheckout {
     return out;
   }
 
-  /** A pickup order, open in Square once paid (an unpaid order stays out of the POS). */
-  async createPickupOrder(o: PickupOrderIn): Promise<SquareOrderOut> {
+  /** The order as Square takes it: catalog items in production, named lines with their prices in the sandbox. */
+  #orderBody(o: PickupOrderIn) {
     const byCatalog = this.environment === 'production';
-    const data = await this.#post('/v2/orders', {
-      idempotency_key: o.idempotencyKey,
-      order: {
-        location_id: o.locationId,
-        reference_id: o.referenceId,
-        source: { name: 'Online ordering' },
-        line_items: o.lines.map((l) => (byCatalog
-          ? { catalog_object_id: l.variationId, quantity: String(l.quantity), modifiers: l.modifiers.map((m) => ({ catalog_object_id: m.id })) }
-          : { name: l.variationName && l.variationName !== 'Regular' ? `${l.name} (${l.variationName})` : l.name, quantity: String(l.quantity), base_price_money: money(l.unitPrice - l.modifiers.reduce((s, m) => s + m.price, 0)),
-            modifiers: l.modifiers.map((m) => ({ name: m.name, base_price_money: money(m.price) })) })),
-        fulfillments: [{
-          type: 'PICKUP',
-          state: 'PROPOSED',
-          pickup_details: {
-            recipient: { display_name: o.customer.name, phone_number: o.customer.phone, ...(o.customer.email ? { email_address: o.customer.email } : {}) },
-            schedule_type: 'SCHEDULED',
-            pickup_at: o.pickupAt,
-            ...(o.note ? { note: o.note } : {}),
-          },
-        }],
-        pricing_options: { auto_apply_taxes: true },
-      },
-    });
+    return {
+      location_id: o.locationId,
+      reference_id: o.referenceId,
+      source: { name: 'Online ordering' },
+      line_items: o.lines.map((l) => (byCatalog
+        ? { catalog_object_id: l.variationId, quantity: String(l.quantity), modifiers: l.modifiers.map((m) => ({ catalog_object_id: m.id })) }
+        : { name: l.variationName && l.variationName !== 'Regular' ? `${l.name} (${l.variationName})` : l.name, quantity: String(l.quantity), base_price_money: money(l.unitPrice - l.modifiers.reduce((s, m) => s + m.price, 0)),
+          modifiers: l.modifiers.map((m) => ({ name: m.name, base_price_money: money(m.price) })) })),
+      fulfillments: [{
+        type: 'PICKUP',
+        state: 'PROPOSED',
+        pickup_details: {
+          recipient: { display_name: o.customer.name, phone_number: o.customer.phone, ...(o.customer.email ? { email_address: o.customer.email } : {}) },
+          schedule_type: 'SCHEDULED',
+          pickup_at: o.pickupAt,
+          ...(o.note ? { note: o.note } : {}),
+        },
+      }],
+      pricing_options: { auto_apply_taxes: true },
+    };
+  }
+
+  /** What Square would charge for the order (tax included), without creating it: nothing shows on the POS. */
+  async priceOrder(o: Omit<PickupOrderIn, 'idempotencyKey'>): Promise<{ total: number; tax: number }> {
+    const order = (await this.#post('/v2/orders/calculate', { order: this.#orderBody({ ...o, idempotencyKey: '' }) })).order ?? {};
+    return { total: Number(order.total_money?.amount ?? 0), tax: Number(order.total_tax_money?.amount ?? 0) };
+  }
+
+  /** A pickup order, open in Square from now on: created only to be paid right away. */
+  async createPickupOrder(o: PickupOrderIn): Promise<SquareOrderOut> {
+    const data = await this.#post('/v2/orders', { idempotency_key: o.idempotencyKey, order: this.#orderBody(o) });
     const order = data.order ?? {};
     return { id: order.id, version: order.version, total: Number(order.total_money?.amount ?? 0), tax: Number(order.total_tax_money?.amount ?? 0) };
   }
