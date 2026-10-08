@@ -23,6 +23,7 @@ function literal(v: unknown): string {
   if (typeof v === 'number') return String(v);
   if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
   if (v instanceof Date) return `'${v.toISOString()}'::timestamptz`;
+  if (Buffer.isBuffer(v)) return `'\\x${v.toString('hex')}'::bytea`;
   return `'${String(v).replace(/'/g, "''")}'`;
 }
 
@@ -46,11 +47,12 @@ export function startTestDb(): Db | undefined {
     async query(sql, params = []) {
       const text = sql.replace(/\$(\d+)/g, (_, n) => literal(params[Number(n) - 1]));
       const returns = /^\s*(select|with)\b/i.test(text) || /\breturning\b/i.test(text);
+      // Sent on stdin, so a big value (a photo) isn't limited by the command line.
       if (!returns) {
-        await psql(['-c', text]);
+        await psql(['-f', '-'], `${text};`);
         return { rows: [] };
       }
-      const out = await psql(['-c', `WITH q AS (${text}) SELECT coalesce(json_agg(q), '[]') FROM q`]);
+      const out = await psql(['-f', '-'], `WITH q AS (${text}) SELECT coalesce(json_agg(q), '[]') FROM q;`);
       return { rows: JSON.parse(out.trim() || '[]') };
     },
     async script(sql) {

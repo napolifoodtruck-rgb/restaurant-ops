@@ -5016,6 +5016,180 @@ function spendBox(me, side) {
   return box;
 }
 
+/** Find an ingredient as you type (products only); picking one calls onPick({ id, name, unit, perUnit }). */
+function ingredientPick(initial, onPick, onType) {
+  const input = h('input', { type: 'text', placeholder: 'Ingredient', 'aria-label': 'Ingredient', autocomplete: 'off', value: initial || '' });
+  const pop = h('div', { class: 'search-pop', hidden: true });
+  let timer;
+  input.addEventListener('input', () => {
+    onType?.();
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const q = input.value.trim();
+      if (q.length < 2) { pop.hidden = true; return; }
+      const res = await costGet(`/api/costs/search?q=${encodeURIComponent(q)}`);
+      if (!res.ok || input.value.trim() !== q) return;
+      pop.hidden = false;
+      fill(pop, res.data.products.length ? res.data.products.slice(0, 10).map((p) => h('button', { class: 'linkish lrow', type: 'button', onclick: () => { input.value = p.name; pop.hidden = true; onPick(p); } },
+        h('span', { class: 'grow', text: p.name }), h('span', { class: 'small muted', text: p.perUnit !== undefined ? perUnitText(p.perUnit, p.unit) : UNIT_LABEL(p.unit) }))) : h('div', { class: 'small muted', text: 'No ingredient by that name.' }));
+    }, 180);
+  });
+  const wrap = h('div', { class: 'search-wrap' }, input, pop);
+  wrap.set = (name) => { input.value = name; };
+  return wrap;
+}
+
+/** A photo, made small enough to send (long edge 2000 px, JPEG), as { mediaType, data (base64), preview }. */
+async function shrinkPhoto(file) {
+  if (file.type === 'application/pdf') {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    let bin = ''; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    return { mediaType: 'application/pdf', data: btoa(bin), preview: null, name: file.name };
+  }
+  const url = await new Promise((ok, no) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = no; fr.readAsDataURL(file); });
+  const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = url; });
+  const scale = Math.min(1, 2000 / Math.max(img.width, img.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  const jpeg = c.toDataURL('image/jpeg', 0.85);
+  return { mediaType: 'image/jpeg', data: jpeg.split(',')[1], preview: jpeg, name: file.name };
+}
+
+/** Photograph an invoice: one or more pages, then the app reads it. */
+function photoCard(me, connected) {
+  const pages = [];
+  const thumbs = h('div', { class: 'scan-thumbs' });
+  const err = h('div', { class: 'error' });
+  const read = h('button', { class: 'btn primary', text: 'Read it', disabled: true });
+  const picker = h('input', { type: 'file', accept: 'image/*,application/pdf', capture: 'environment', multiple: true, hidden: true, 'aria-label': 'Invoice photo' });
+  const draw = () => {
+    fill(thumbs, pages.map((p, i) => h('div', { class: 'scan-thumb' }, p.preview ? h('img', { src: p.preview, alt: `Page ${i + 1}` }) : h('div', { class: 'scan-pdf', text: `PDF · ${p.name}` }),
+      h('button', { class: 'link', type: 'button', text: 'Remove', onclick: () => { pages.splice(i, 1); draw(); } }))));
+    read.disabled = !pages.length;
+    take.textContent = pages.length ? '+ Another page' : '📷 Photograph an invoice';
+  };
+  const take = h('button', { class: 'btn', type: 'button', text: '📷 Photograph an invoice', onclick: () => picker.click() });
+  picker.addEventListener('change', async () => {
+    err.textContent = '';
+    for (const f of [...picker.files]) {
+      try { pages.push(await shrinkPhoto(f)); } catch { err.textContent = `Couldn’t open ${f.name}.`; }
+    }
+    picker.value = '';
+    draw();
+  });
+  read.onclick = async () => {
+    err.textContent = '';
+    const res = await api('POST', '/api/invoices/scan', { pages: pages.map((p) => ({ mediaType: p.mediaType, data: p.data })) });
+    if (!res.ok) return (err.textContent = res.data.error ?? 'That didn’t send.');
+    scanScreen(me, res.data.id);
+  };
+  return h('section', { class: 'card' },
+    h('h2', { text: 'From a photo' }),
+    h('div', { class: 'small muted', text: connected ? 'Take a photo of each page (or pick a PDF). The app reads the lines and matches them to your ingredients; you check them beside the photo before anything is priced.' : 'The invoice reader isn’t connected yet: add ANTHROPIC_API_KEY in Render’s settings. You can still type invoices in below.' }),
+    thumbs, err, h('div', { class: 'row wrap' }, take, read), picker);
+}
+
+const SCAN_FLAG = {
+  unsure: ['Hard to read', 'warn'], math: ['Doesn’t add up', 'warn'], noProduct: ['New item: pick the ingredient', 'blue'],
+  noAmount: ['How much is one?', 'blue'], priceJump: ['Price changed a lot', 'warn'], credit: ['Credit: not counted', ''],
+};
+
+/** One invoice photo: reading, or read and ready to check beside the photo. */
+async function scanScreen(me, id) {
+  loadingScreen(me, 'orders', 'Invoice');
+  const back = h('button', { class: 'btn', text: '← Invoices', onclick: () => invoicesScreen(me) });
+  const load = async () => {
+    const r = await api('GET', `/api/invoices/scan/${id}`);
+    if (!r.ok) return show(shell(me, 'orders', [h('h1', { text: 'Invoice' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' }), back]));
+    const x = r.data;
+    const pagesBox = h('div', { class: 'scan-pages' }, [...Array(x.pages).keys()].map((i) => h('a', { href: `/api/invoices/scan/${id}/page/${i + 1}`, target: '_blank', rel: 'noopener' },
+      h('img', { src: `/api/invoices/scan/${id}/page/${i + 1}`, alt: `Page ${i + 1}`, loading: 'lazy' }))));
+    if (x.status === 'reading') {
+      show(shell(me, 'orders', [h('header', {}, h('div', { class: 'kicker', text: 'Invoice photo' }), h('h1', { text: 'Reading…' }), h('div', { class: 'sub', text: 'Usually 20 to 40 seconds. You can leave this page; it’ll be under Photos to check.' })),
+        page([h('section', { class: 'card' }, h('div', { class: 'spinner' }))], [sideBox('', pagesBox), sideBox('', sideActions(back))])]));
+      setTimeout(() => { if (document.querySelector('.spinner')) load(); }, 2500);
+      return;
+    }
+    if (x.status === 'failed') {
+      return show(shell(me, 'orders', [h('header', {}, h('div', { class: 'kicker', text: 'Invoice photo' }), h('h1', { text: 'Couldn’t read it' }), h('div', { class: 'sub', text: x.error ?? '' })),
+        page([h('section', { class: 'card' }, h('div', { class: 'row wrap' },
+          h('button', { class: 'btn primary', text: 'Try again', onclick: async () => { await api('POST', `/api/invoices/scan/${id}/retry`); load(); } }),
+          h('button', { class: 'btn', text: 'Type it in instead', onclick: () => invoicesScreen(me) }),
+          h('button', { class: 'link', text: 'Throw it away', onclick: async () => { await api('POST', `/api/invoices/scan/${id}/discard`); invoicesScreen(me); } })))],
+        [sideBox('', pagesBox), sideBox('', sideActions(back))])]));
+    }
+    if (x.status !== 'read') return show(shell(me, 'orders', [h('header', {}, h('div', { class: 'kicker', text: 'Invoice photo' }), h('h1', { text: x.status === 'saved' ? 'Saved' : 'Thrown away' })), page([h('section', { class: 'card small muted', text: x.status === 'saved' ? 'This invoice is in. Its prices are in use.' : 'This photo was thrown away.' })], [sideBox('', pagesBox), sideBox('', sideActions(back))])]));
+    renderScan(me, id, x, pagesBox, back);
+  };
+  load();
+}
+
+function renderScan(me, id, x, pagesBox, back) {
+  const mt = x.matched, read = x.read;
+  const err = h('div', { class: 'error' });
+  // Vendor: the one it matched, any other, or a new one.
+  const vendorIn = h('input', { type: 'text', value: mt.vendor.name, 'aria-label': 'Vendor' });
+  const vendorNote = h('div', { class: 'small muted', text: mt.vendor.how === 'known' ? 'A vendor you buy from.' : 'New vendor: it’ll be added.' });
+  const dateIn = h('input', { type: 'date', value: mt.date ?? iso(new Date()), max: iso(new Date()), 'aria-label': 'Date' });
+  const numIn = h('input', { type: 'text', value: mt.number ?? '', placeholder: 'Invoice #', 'aria-label': 'Invoice number' });
+  const money = (v) => (v === undefined || v === null ? '' : dollars(v, { cents: true }));
+
+  const rows = mt.lines.map((l) => {
+    const line = { l, productId: l.productId, include: Boolean(l.productId && l.baseQuantity > 0 && !l.flags.includes('credit')) };
+    const tags = h('div', { class: 'scan-flags' });
+    const qtyIn = h('input', { inputmode: 'decimal', class: 'amount', value: l.baseQuantity > 0 ? String(l.baseQuantity) : '', 'aria-label': 'How much came in' });
+    const unitOut = h('span', { class: 'small muted', text: l.baseUnit ? UNIT_LABEL(l.baseUnit) : '' });
+    const totalIn = h('input', { inputmode: 'decimal', class: 'amount money-in', value: String(l.read.total), 'aria-label': 'Line total' });
+    const keep = h('input', { type: 'checkbox', checked: line.include, 'aria-label': 'Count this line' });
+    keep.addEventListener('change', () => { line.include = keep.checked; });
+    const pick = ingredientPick(l.productName ?? '', (p) => { line.productId = p.id; line.unit = p.unit; unitOut.textContent = UNIT_LABEL(p.unit); if (!keep.checked && qtyIn.value) { keep.checked = true; line.include = true; } }, () => { line.productId = null; });
+    const chips = l.how === 'guess' && l.candidates?.length > 1 ? h('div', { class: 'small scan-alts' }, h('span', { class: 'muted', text: 'Or:' }), l.candidates.slice(1).map((c) => h('button', { class: 'link', type: 'button', text: c.name, onclick: () => { line.productId = c.id; pick.set(c.name); } }))) : null;
+    const flags = [...l.flags, ...(l.how === 'guess' ? ['guess'] : [])];
+    fill(tags, flags.map((f) => f === 'guess' ? h('span', { class: 'tag blue', text: 'Best guess: check it' }) : h('span', { class: `tag ${SCAN_FLAG[f]?.[1] ?? ''}`, text: f === 'priceJump' && l.was ? `${l.perBase > l.was ? 'Up' : 'Down'} ${Math.round(Math.abs(l.perBase / l.was - 1) * 100)}% (was ${perUnitText(l.was, l.baseUnit)})` : SCAN_FLAG[f]?.[0] ?? f })));
+    line.get = () => ({ productId: line.productId, quantity: parseAmount(qtyIn.value), unit: line.unit ?? l.baseUnit, total: parseAmount(totalIn.value), description: l.read.description, itemKey: l.itemKey,
+      perQuantity: l.read.quantity ? parseAmount(qtyIn.value) / l.read.quantity : undefined });
+    line.row = h('div', { class: `scan-line${flags.length ? ' flagged' : ''}` },
+      h('div', { class: 'scan-read' }, keep, h('div', {},
+        h('b', { text: l.read.description }),
+        h('div', { class: 'small muted', text: [l.read.code ? `#${l.read.code}` : '', `${l.read.quantity} ${l.read.unit ?? ''}`.trim(), l.read.pack, l.read.unitPrice !== undefined ? `@ ${money(l.read.unitPrice)}` : '', `= ${money(l.read.total)}`].filter(Boolean).join(' · ') }))),
+      h('div', { class: 'scan-ours' }, pick, chips, h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Came in' }), qtyIn, unitOut, h('span', { class: 'small muted', text: 'for' }), totalIn), tags));
+    return line;
+  });
+
+  const banners = [
+    mt.duplicateOf ? h('div', { class: 'note', text: `${mt.duplicateOf.source === 'app' ? 'This invoice is already saved' : 'MarginEdge already has this invoice'}${mt.duplicateOf.number ? ` (#${mt.duplicateOf.number})` : ''}${mt.duplicateOf.date ? `, ${shortDate(mt.duplicateOf.date)}` : ''}. Saving keeps it as a check and teaches the app this vendor’s items; prices won’t count it twice.` }) : null,
+    mt.totalDifference && Math.abs(mt.totalDifference) >= 0.05 ? h('div', { class: 'note warn-note', text: `The lines, tax and charges come to ${money((read.total ?? 0) - mt.totalDifference)}, but the invoice says ${money(read.total)}: ${money(Math.abs(mt.totalDifference))} ${mt.totalDifference > 0 ? 'missing' : 'extra'}. A line may be misread or missing.` }) : null,
+    read.notes ? h('div', { class: 'note', text: `On the invoice: ${read.notes}` }) : null,
+  ];
+  const save = async () => {
+    err.textContent = '';
+    const name = vendorIn.value.trim();
+    const vendor = mt.vendor.key && name === mt.vendor.name ? (mt.vendor.key.startsWith('app:') ? { id: mt.vendor.key.slice(4) } : { meId: mt.vendor.key }) : { name };
+    const lines = rows.filter((r) => r.include).map((r) => r.get());
+    if (lines.some((l) => !l.productId)) return (err.textContent = 'Each line you’re counting needs its ingredient.');
+    const res = await api('POST', `/api/invoices/scan/${id}/save`, { vendor, date: dateIn.value, number: numIn.value.trim() || undefined, lines });
+    if (!res.ok) return (err.textContent = res.data.error ?? 'That didn’t save.');
+    costCache.clear();
+    invoicesScreen(me);
+  };
+  const extras = [read.tax ? `Tax ${money(read.tax)}` : '', read.delivery ? `Delivery ${money(read.delivery)}` : '', read.otherCharges ? `Other charges ${money(read.otherCharges)}` : '', read.total !== undefined ? `Total ${money(read.total)}` : ''].filter(Boolean).join(' · ');
+  const main = h('section', { class: 'card' },
+    h('div', { class: 'row wrap inv-head' }, h('div', {}, vendorIn, vendorNote), dateIn, numIn),
+    ...banners,
+    h('div', { class: 'small muted', text: 'Each line as printed on the left; on the right, the ingredient and how much came in, in the way you count it. Untick a line to leave it out.' }),
+    h('div', { class: 'scan-lines' }, rows.map((r) => r.row)),
+    extras ? h('div', { class: 'small', text: extras }) : null,
+    err,
+    h('div', { class: 'row wrap' }, h('button', { class: 'btn primary', text: mt.duplicateOf ? 'Save as a check' : 'Save', onclick: save }), h('span', { class: 'grow' }),
+      h('button', { class: 'link', text: 'Throw it away', onclick: async () => { await api('POST', `/api/invoices/scan/${id}/discard`); invoicesScreen(me); } })));
+  show(shell(me, 'orders', [
+    h('header', {}, h('div', { class: 'kicker', text: 'Invoice photo · check it' }), h('h1', { text: mt.vendor.name }),
+      h('div', { class: 'sub', text: `${rows.filter((r) => r.l.flags.length || r.l.how === 'guess').length} of ${rows.length} lines to look at. Tap the photo to open it full size.` })),
+    page([main], [sideBox('', pagesBox), sideBox('', sideActions(back))], { sticky: true }),
+  ]));
+}
+
 /**
  * Invoices typed into the app: the garden's harvests (free), cash and farmers-market buys, a
  * vendor that isn't on MarginEdge. Each line is an ingredient, how much came in, and what it cost;
@@ -5025,7 +5199,7 @@ async function invoicesScreen(me, opts = {}) {
   loadingScreen(me, 'orders', 'Invoices');
   const r = await api('GET', '/api/invoices');
   if (!r.ok) return show(shell(me, 'orders', [h('h1', { text: 'Invoices' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
-  const { vendors, invoices } = r.data;
+  const { vendors, invoices, scans = [], readerConnected } = r.data;
   const garden = vendors.find((v) => v.kind === 'garden');
   const today = iso(new Date());
 
@@ -5044,29 +5218,12 @@ async function invoicesScreen(me, opts = {}) {
   const lines = h('div', { class: 'inv-lines' });
   const totalOut = h('b', { text: '' });
 
-  const productPicker = (line) => {
-    const input = h('input', { type: 'text', placeholder: 'Ingredient', 'aria-label': 'Ingredient', autocomplete: 'off' });
-    const pop = h('div', { class: 'search-pop', hidden: true });
-    let timer;
-    input.addEventListener('input', () => {
-      line.product = null;
-      clearTimeout(timer);
-      timer = setTimeout(async () => {
-        const q = input.value.trim();
-        if (q.length < 2) { pop.hidden = true; return; }
-        const res = await costGet(`/api/costs/search?q=${encodeURIComponent(q)}`);
-        if (!res.ok || input.value.trim() !== q) return;
-        pop.hidden = false;
-        fill(pop, res.data.products.length ? res.data.products.slice(0, 10).map((p) => h('button', { class: 'linkish lrow', type: 'button', onclick: () => {
-          line.product = p; input.value = p.name; pop.hidden = true;
-          if (!line.unit.value) line.unit.value = p.unit;
-          line.unitHint.textContent = `counted in ${UNIT_LABEL(p.unit)}`;
-          line.qty.focus();
-        } }, h('span', { class: 'grow', text: p.name }), h('span', { class: 'small muted', text: p.perUnit !== undefined ? perUnitText(p.perUnit, p.unit) : UNIT_LABEL(p.unit) }))) : h('div', { class: 'small muted', text: 'No ingredient by that name.' }));
-      }, 180);
-    });
-    return h('div', { class: 'search-wrap' }, input, pop);
-  };
+  const productPicker = (line) => ingredientPick('', (p) => {
+    line.product = p;
+    if (!line.unit.value) line.unit.value = p.unit;
+    line.unitHint.textContent = `counted in ${UNIT_LABEL(p.unit)}`;
+    line.qty.focus();
+  }, () => { line.product = null; });
   const lineRows = [];
   const addLine = () => {
     const line = { product: null };
@@ -5136,10 +5293,14 @@ async function invoicesScreen(me, opts = {}) {
       return row;
     })) : h('div', { class: 'small muted', text: 'Nothing typed in yet.' }));
 
+  const waiting = scans.length ? h('section', { class: 'card' }, h('h2', { text: 'Photos to check' }),
+    h('div', { class: 'list' }, scans.map((x) => h('button', { class: 'linkish lrow', onclick: () => scanScreen(me, x.id) },
+      h('span', { class: 'grow', text: x.vendor || 'Invoice photo' }),
+      h('span', { class: `small ${x.status === 'failed' ? 'error-text' : 'muted'}`, text: x.status === 'reading' ? 'reading…' : x.status === 'failed' ? 'couldn’t read' : `ready to check · ${shortDate(x.createdAt.slice(0, 10))}` }))))) : null;
   show(shell(me, 'orders', [
-    h('header', {}, h('div', { class: 'kicker', text: 'Orders' }), h('h1', { text: 'Invoices typed in' }),
-      h('div', { class: 'sub', text: 'MarginEdge still reads your regular invoices. These are the rest, priced the same way.' })),
-    page([form, list], [sideBox('', sideActions(h('button', { class: 'btn', text: '← Orders', onclick: () => ordersScreen(me) })))]),
+    h('header', {}, h('div', { class: 'kicker', text: 'Orders' }), h('h1', { text: 'Invoices' }),
+      h('div', { class: 'sub', text: 'Photograph an invoice for the app to read, or type one in. MarginEdge still reads your regular invoices for now.' })),
+    page([photoCard(me, readerConnected), waiting, form, list], [sideBox('', sideActions(h('button', { class: 'btn', text: '← Orders', onclick: () => ordersScreen(me) })))]),
   ]));
 }
 

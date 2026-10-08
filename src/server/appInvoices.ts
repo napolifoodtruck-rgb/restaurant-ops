@@ -99,7 +99,12 @@ export async function invoiceRoutes(db: Db, req: IncomingMessage, res: ServerRes
     const fromMe = model.imported.vendors.filter((v) => !v.externalId.startsWith('app:')).map((v) => ({ meId: v.externalId, name: v.name })).sort((a, b) => a.name.localeCompare(b.name));
     const name = (id: string) => model.book.products.get(id)?.name ?? id;
     const invoices = await loadAppInvoices(db, who.restaurantId);
+    // Photos still being read or waiting for a check.
+    const scans = (await db.query<{ id: string; status: string; error: string | null; vendor: string | null; created_at: string }>(
+      "SELECT id, status, error, result->>'vendor' AS vendor, created_at::text AS created_at FROM invoice_scans WHERE restaurant_id = $1 AND status IN ('reading', 'read', 'failed') AND created_at > now() - interval '30 days' ORDER BY created_at DESC", [who.restaurantId])).rows;
     return send(res, 200, {
+      scans: scans.map((x) => ({ id: x.id, status: x.status, error: x.error, vendor: x.vendor, createdAt: x.created_at })),
+      readerConnected: Boolean(process.env.ANTHROPIC_API_KEY?.trim()),
       vendors: [...ours.map((v) => ({ id: v.id, name: v.name, kind: v.kind })), ...fromMe],
       invoices: invoices.slice(0, 100).map((i) => ({ ...i, total: Math.round(i.lines.reduce((a, l) => a + l.total, 0) * 100) / 100, lines: i.lines.map((l) => ({ ...l, name: name(l.productId) })) })),
     }), true;
@@ -108,46 +113,9 @@ export async function invoiceRoutes(db: Db, req: IncomingMessage, res: ServerRes
   if (method === 'POST' && path === '/api/invoices') {
     const b = await body(req);
     const model = await getModel(db, who.restaurantId, today);
-    const date = String(b.date ?? '');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > today) throw new HttpError(400, 'Pick the day it came in (not a day still to come).');
-    const v = (b.vendor ?? {}) as { id?: string; meId?: string; name?: string; kind?: string };
-    let vendorId: string | null = null, meVendorId: string | null = null, vendorName = '', kind = 'vendor';
-    if (v.id) {
-      const row = (await db.query<{ id: string; name: string; kind: string }>('SELECT id, name, kind FROM vendors WHERE restaurant_id = $1 AND id = $2', [who.restaurantId, v.id])).rows[0];
-      if (!row) throw new HttpError(400, 'Pick the vendor from the list.');
-      vendorId = row.id; vendorName = row.name; kind = row.kind;
-    } else if (v.meId) {
-      const me = model.imported.vendors.find((x) => x.externalId === v.meId && !x.externalId.startsWith('app:'));
-      if (!me) throw new HttpError(400, 'Pick the vendor from the list.');
-      meVendorId = me.externalId; vendorName = me.name;
-    } else {
-      vendorName = String(v.name ?? '').replace(/\s+/g, ' ').trim();
-      kind = v.kind === 'garden' ? 'garden' : 'vendor';
-      if (!vendorName) throw new HttpError(400, 'Who is it from?');
-      // One of ours by that name already, or a new one (added once the lines check out).
-      const row = (await db.query<{ id: string; kind: string }>('SELECT id, kind FROM vendors WHERE restaurant_id = $1 AND lower(name) = lower($2) LIMIT 1', [who.restaurantId, vendorName])).rows[0];
-      if (row) { vendorId = row.id; kind = row.kind; }
-    }
-    const lines = Array.isArray(b.lines) ? (b.lines as any[]) : [];
-    if (!lines.length) throw new HttpError(400, 'Add at least one line.');
-    const clean = lines.map((l, i) => {
-      const product = model.imported.products.find((p) => p.externalId === String(l?.productId ?? '')) ?? undefined;
-      const quantity = Number(l?.quantity), total = kind === 'garden' ? 0 : Number(l?.total), unit = String(l?.unit ?? '').trim();
-      if (!product) throw new HttpError(400, `Line ${i + 1}: pick the ingredient from the list.`);
-      if (!(quantity > 0)) throw new HttpError(400, `Line ${i + 1}: how much came in?`);
-      if (!(total >= 0)) throw new HttpError(400, `Line ${i + 1}: what did it cost?`);
-      if (!unit || baseOf(product, unit) === undefined) throw new HttpError(400, `Line ${i + 1}: ${product.name} is counted in ${product.baseUnit ?? 'its own unit'}; ${unit || 'that'} won’t convert. Try ${product.baseUnit}.`);
-      return { lineNumber: i + 1, productId: product.externalId, description: String(l?.description ?? product.name).slice(0, 200), quantity, unit, total };
-    });
-    if (!vendorId && !meVendorId) vendorId = (await db.query<{ id: string }>("INSERT INTO vendors (restaurant_id, name, kind, ordering_method) VALUES ($1, $2, $3, 'other') RETURNING id", [who.restaurantId, vendorName, kind])).rows[0]!.id;
-    const inv = (await db.query<{ id: string }>(
-      'INSERT INTO app_invoices (restaurant_id, vendor_id, me_vendor_id, vendor_name, invoice_date, number, note, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
-      [who.restaurantId, vendorId, meVendorId, vendorName, date, b.number ? String(b.number).slice(0, 60) : null, b.note ? String(b.note).slice(0, 500) : null, who.staffId])).rows[0]!;
-    for (const l of clean) {
-      await db.query('INSERT INTO app_invoice_lines (invoice_id, line_number, product_id, description, quantity, unit, total) VALUES ($1, $2, $3, $4, $5, $6, $7)', [inv.id, l.lineNumber, l.productId, l.description, l.quantity, l.unit, l.total]);
-    }
+    const id = await createAppInvoice(db, who, model, today, b);
     invalidate(who.restaurantId);
-    return send(res, 200, { ok: true, id: inv.id }), true;
+    return send(res, 200, { ok: true, id }), true;
   }
 
   const one = path.match(/^\/api\/invoices\/([0-9a-f-]{36})$/);
@@ -158,4 +126,51 @@ export async function invoiceRoutes(db: Db, req: IncomingMessage, res: ServerRes
     return send(res, 200, { ok: true }), true;
   }
   throw new HttpError(404, 'Not found.');
+}
+
+/**
+ * Saves one typed (or read) invoice: { vendor: { id } | { meId } | { name, kind }, date, number?,
+ * note?, lines: [{ productId, quantity, unit, total, description? }] }. Returns its id. Checks
+ * everything before writing; a new vendor is only added once the lines check out.
+ */
+export async function createAppInvoice(db: Db, who: SignedIn, model: Awaited<ReturnType<typeof getModel>>, today: string, b: Record<string, unknown>, scanId?: string): Promise<string> {
+  const date = String(b.date ?? '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > today) throw new HttpError(400, 'Pick the day it came in (not a day still to come).');
+  const v = (b.vendor ?? {}) as { id?: string; meId?: string; name?: string; kind?: string };
+  let vendorId: string | null = null, meVendorId: string | null = null, vendorName = '', kind = 'vendor';
+  if (v.id) {
+    const row = (await db.query<{ id: string; name: string; kind: string }>('SELECT id, name, kind FROM vendors WHERE restaurant_id = $1 AND id = $2', [who.restaurantId, v.id])).rows[0];
+    if (!row) throw new HttpError(400, 'Pick the vendor from the list.');
+    vendorId = row.id; vendorName = row.name; kind = row.kind;
+  } else if (v.meId) {
+    const me = model.imported.vendors.find((x) => x.externalId === v.meId && !x.externalId.startsWith('app:'));
+    if (!me) throw new HttpError(400, 'Pick the vendor from the list.');
+    meVendorId = me.externalId; vendorName = me.name;
+  } else {
+    vendorName = String(v.name ?? '').replace(/\s+/g, ' ').trim();
+    kind = v.kind === 'garden' ? 'garden' : 'vendor';
+    if (!vendorName) throw new HttpError(400, 'Who is it from?');
+    // One of ours by that name already, or a new one (added once the lines check out).
+    const row = (await db.query<{ id: string; kind: string }>('SELECT id, kind FROM vendors WHERE restaurant_id = $1 AND lower(name) = lower($2) LIMIT 1', [who.restaurantId, vendorName])).rows[0];
+    if (row) { vendorId = row.id; kind = row.kind; }
+  }
+  const lines = Array.isArray(b.lines) ? (b.lines as any[]) : [];
+  if (!lines.length) throw new HttpError(400, 'Add at least one line.');
+  const clean = lines.map((l, i) => {
+    const product = model.imported.products.find((p) => p.externalId === String(l?.productId ?? '')) ?? undefined;
+    const quantity = Number(l?.quantity), total = kind === 'garden' ? 0 : Number(l?.total), unit = String(l?.unit ?? '').trim();
+    if (!product) throw new HttpError(400, `Line ${i + 1}: pick the ingredient from the list.`);
+    if (!(quantity > 0)) throw new HttpError(400, `Line ${i + 1}: how much came in?`);
+    if (!(total >= 0)) throw new HttpError(400, `Line ${i + 1}: what did it cost?`);
+    if (!unit || baseOf(product, unit) === undefined) throw new HttpError(400, `Line ${i + 1}: ${product.name} is counted in ${product.baseUnit ?? 'its own unit'}; ${unit || 'that'} won’t convert. Try ${product.baseUnit}.`);
+    return { lineNumber: i + 1, productId: product.externalId, description: String(l?.description ?? product.name).slice(0, 200), quantity, unit, total };
+  });
+  if (!vendorId && !meVendorId) vendorId = (await db.query<{ id: string }>("INSERT INTO vendors (restaurant_id, name, kind, ordering_method) VALUES ($1, $2, $3, 'other') RETURNING id", [who.restaurantId, vendorName, kind])).rows[0]!.id;
+  const inv = (await db.query<{ id: string }>(
+    'INSERT INTO app_invoices (restaurant_id, vendor_id, me_vendor_id, vendor_name, invoice_date, number, note, created_by, scan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id',
+    [who.restaurantId, vendorId, meVendorId, vendorName, date, b.number ? String(b.number).slice(0, 60) : null, b.note ? String(b.note).slice(0, 500) : null, who.staffId, scanId ?? null])).rows[0]!;
+  for (const l of clean) {
+    await db.query('INSERT INTO app_invoice_lines (invoice_id, line_number, product_id, description, quantity, unit, total) VALUES ($1, $2, $3, $4, $5, $6, $7)', [inv.id, l.lineNumber, l.productId, l.description, l.quantity, l.unit, l.total]);
+  }
+  return inv.id;
 }
