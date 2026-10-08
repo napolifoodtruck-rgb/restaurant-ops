@@ -555,6 +555,13 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.deepEqual([limeNow.status, limeNow.adds.map((x: any) => [x.name, x.amount, x.unit])], ['set', [['Simple Syrup 1:1', 0.5, 'floz']]]);
   assert.equal((await call('POST', '/api/modifiers/answer', { body: { answers: [{ key: lime.key, clear: true }] }, cookies: ownerSession })).status, 200);
   assert.equal((await call('GET', '/api/modifiers?recipe=nope', { cookies: ownerSession })).status, 404);
+
+  // Invoices typed in: managers only; a line needs an ingredient from the list and a day that's been.
+  assert.equal((await call('GET', '/api/invoices', { cookies: marcoOnExpo })).status, 403);
+  assert.deepEqual((await call('GET', '/api/invoices', { cookies: ownerSession })).json.invoices, []);
+  const harvest = { vendor: { name: 'Our garden', kind: 'garden' }, date: '2026-01-02', lines: [{ productId: 'nope', quantity: 1, unit: 'lb' }] };
+  assert.equal((await call('POST', '/api/invoices', { body: { ...harvest, date: '2999-01-01' }, cookies: ownerSession })).status, 400);
+  assert.match((await call('POST', '/api/invoices', { body: harvest, cookies: ownerSession })).json.error, /pick the ingredient/);
   assert.ok(Array.isArray((await call('GET', '/api/costs/spend?area=bar', { cookies: ownerSession })).json.vendors));
 
   // Ideas: managers and owners only; Done sets one aside (listed), Bring back undoes it.

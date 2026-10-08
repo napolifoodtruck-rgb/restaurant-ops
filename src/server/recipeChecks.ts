@@ -6,6 +6,7 @@
 
 import { boughtNotInRecipes, notBoughtLately, quietVendors, type QuietVendor, type ProductKind, type Bought, type CheckProduct, type NotBought, type NotInRecipes, type WeeklyUse } from '../core/ingredientChecks.ts';
 import { purchaseKind } from '../core/costReports.ts';
+import { packBaseOf } from '../connectors/marginedge.ts';
 import { dimensionOf } from '../core/units.ts';
 import type { Model } from './model.ts';
 
@@ -34,9 +35,10 @@ export function recipeChecks(model: Model, today: string, dismissed: string[] = 
     return { id: p.id, name: p.name, baseUnit: p.baseUnit, kind: kindOf.get(p.id) ?? 'other', ...(unitPrice !== undefined ? { unitPrice } : {}), ...(dimension ? { dimension } : {}) };
   });
   const vendorName = new Map(model.imported.vendors.map((v) => [v.externalId, v.name]));
-  const bought: Bought[] = model.imported.prices.filter((pt) => pt.perBaseUnit > 0).map((pt) => ({
+  // Anything that came in counts as bought, the garden's free herbs too.
+  const bought: Bought[] = model.imported.prices.filter((pt) => packBaseOf(pt) > 0).map((pt) => ({
     productId: pt.productExternalId, date: pt.date, invoiceId: pt.invoiceExternalId,
-    packBase: pt.price / pt.perBaseUnit, packs: pt.quantity, dollars: pt.price * pt.quantity,
+    packBase: packBaseOf(pt), packs: pt.quantity, dollars: pt.price * pt.quantity,
     ...(pt.vendorExternalId && vendorName.get(pt.vendorExternalId) ? { vendor: vendorName.get(pt.vendorExternalId)! } : {}),
   }));
 
@@ -74,7 +76,8 @@ export function recipeChecks(model: Model, today: string, dismissed: string[] = 
       .map((x) => ({ ...x, side: sideOf(kindOf.get(x.productId) ?? 'food'), recipes: (recipesOf.get(x.productId) ?? []).sort() })),
     notInRecipes: boughtNotInRecipes(input).filter((x) => !gone.has(notInRecipesKey(x.productId))).map((x) => ({ ...x, side: sideOf(x.kind) })),
     // Vendors gone quiet: food and bar only (a cleaning supplier skipping a month doesn't touch food cost).
-    quietVendors: quietVendors(model.imported.invoices.filter((i) => i.invoiceDate && !i.isCredit && (i.vendorExternalId || i.vendorName)).map((i) => {
+    // The garden goes quiet every winter; that's not a vendor to chase.
+    quietVendors: quietVendors(model.imported.invoices.filter((i) => i.invoiceDate && !i.isCredit && (i.vendorExternalId || i.vendorName) && !(i.vendorExternalId && model.gardenVendors.has(i.vendorExternalId))).map((i) => {
       const kinds = i.lines.map((l) => (l.productExternalId ? kindOf.get(l.productExternalId) : undefined)).filter((k): k is ProductKind => Boolean(k));
       const kind = (['food', 'bar', 'other'] as const).map((k) => [k, kinds.filter((x) => x === k).length] as const).sort((a, b) => b[1] - a[1])[0]!;
       return { vendorId: i.vendorExternalId ?? i.vendorName!, vendor: (i.vendorName ?? 'A vendor').replace(/\s+/g, ' ').trim(), date: i.invoiceDate!, kind: kind[1] ? kind[0] : 'other' };

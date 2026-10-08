@@ -1083,3 +1083,13 @@ button.donut-row { display: flex; min-width: 0; }
 .matrix-chart .hover-box { fill: var(--card); stroke: var(--line); } .matrix-chart .hover-date { font-size: 11px; fill: var(--muted); } .matrix-chart .hover-cost { font-size: 13px; font-weight: 600; fill: var(--ink); }
 .matrix-chart .mx-label { pointer-events: none; } .matrix-chart .mx-leader { stroke: var(--muted); stroke-width: 1; opacity: .6; }
 .price-moved { color: var(--blue); font-weight: 600; }
+
+/* Invoices typed in. */
+.inv-head { gap: 8px; margin: 10px 0; } .inv-head select, .inv-head input { min-width: 160px; }
+.inv-lines { display: grid; gap: 8px; margin-bottom: 8px; }
+.inv-line { display: grid; grid-template-columns: minmax(180px, 1fr) 90px 80px 100px auto; gap: 8px; align-items: center; }
+.inv-line > .small { grid-column: 1 / -1; margin-top: -4px; }
+.inv-line [hidden] { display: none; }
+.inv-row { display: flex; gap: 12px; align-items: center; }
+@media (max-width: 700px) { .inv-line { grid-template-columns: 1fr 1fr; } }
+.inv-line .search-wrap, .inv-line input { width: 100%; min-width: 0; box-sizing: border-box; }

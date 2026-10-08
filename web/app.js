@@ -2705,8 +2705,8 @@ function sourceBox(src, kind) {
   const days = src.date ? (Date.now() - Date.parse(`${src.date}T12:00:00`)) / 86_400_000 : 0;
   const age = days > 182 ? ' age-red' : days > 91 ? ' age-yellow' : '';
   if (src.from === 'manual') return h('div', { class: `src${age}` }, h('b', { text: 'Set by hand' }), src.date ? shortDate(src.date) : '');
-  const vendor = (src.vendor ?? 'Invoice').replace(/,?\s+(inc|llc|co|corp|ltd|company)\.?$/i, '').trim();
-  return h('div', { class: `src${age}`, title: `${src.vendor ?? 'Invoice'}, ${dateWithYear(src.date)}${src.invoices > 1 ? `: the average of ${src.invoices} invoices in the last 60 days` : ''}` },
+  const vendor = `${src.garden ? '🌱 ' : ''}${(src.vendor ?? 'Invoice').replace(/,?\s+(inc|llc|co|corp|ltd|company)\.?$/i, '').trim()}`;
+  return h('div', { class: `src${age}`, title: `${src.garden ? 'Our garden (free), with what was bought: ' : ''}${src.vendor ?? 'Invoice'}, ${dateWithYear(src.date)}${src.invoices > 1 ? `: the average of ${src.invoices} invoices in the last 60 days` : ''}` },
     h('b', { text: vendor }), `${days > 300 ? dateWithYear(src.date) : shortDate(src.date)}${src.invoices > 1 ? ` · avg of ${src.invoices}` : ''}`);
 }
 /** Find a recipe or ingredient as you type; picking one opens it in the tree. */
@@ -3550,7 +3550,8 @@ function cardEditor(me, d, card, start = {}) {
       const age = (Date.now() - Date.parse(`${src.date}T12:00:00`)) / 86_400_000;
       const when = age > 300 ? dateWithYear(src.date) : shortDate(src.date);
       el.title = `${src.vendor ?? 'Invoice'}, ${when}${src.invoices > 1 ? `: the average of ${src.invoices} invoices in the last 60 days, latest shown` : ''}`;
-      const vendor = (src.vendor ?? 'Invoice').replace(/,?\s+(inc|llc|co|corp|ltd|company)\.?$/i, '').trim();
+      const vendor = `${src.garden ? '🌱 ' : ''}${(src.vendor ?? 'Invoice').replace(/,?\s+(inc|llc|co|corp|ltd|company)\.?$/i, '').trim()}`;
+      if (src.garden) el.title = `From our garden (free), averaged with what was bought in the last 60 days. Latest: ${when}`;
       return fill(el, h('b', { text: vendor }), h('span', { text: `${when}${src.invoices > 1 ? ` · avg of ${src.invoices}` : ''}` }));
     }
     if (src.from === 'free') { el.title = src.manual ? 'Marked as costing nothing' : 'Water, ice and soda water cost nothing'; return fill(el, h('b', { text: 'Free' }), h('span', { text: src.manual ? 'set by hand' : 'costs nothing' })); }
@@ -4997,7 +4998,9 @@ async function ordersScreen(me) {
       h('div', { class: 'seg', role: 'group', 'aria-label': 'Kitchen, bar or both' },
         ['kitchen', 'bar', 'both'].map((a) => h('button', { class: side === a ? 'on' : '', 'aria-pressed': String(side === a), text: a === 'both' ? 'Both' : AREA_NAMES[a], onclick: () => { me.ordersSide = a; if (a !== 'both') me.side = a; ordersScreen(me); } })))),
     page(active.length ? h('div', { class: 'stack' }, active.map(vendorCard)) : h('div', { class: 'card small muted', text: 'No vendors with regular deliveries yet. They appear after a few weeks of invoices.' }),
-      [week, status, spendBox(me, side), cutoffs, recentBox, pausedBox]),
+      [week, status, spendBox(me, side), cutoffs, recentBox, pausedBox,
+        sideBox('Invoices typed in', h('div', { class: 'small muted', text: 'The garden, cash and market buys, and vendors not on MarginEdge.' }),
+          sideActions(h('button', { class: 'btn', text: '🌱 Log a garden harvest', onclick: () => invoicesScreen(me, { garden: true }) }), h('button', { class: 'btn', text: 'Add an invoice', onclick: () => invoicesScreen(me) })))]),
   ]));
 }
 
@@ -5011,6 +5014,133 @@ function spendBox(me, side) {
     fill(box, h('div', { class: 'small muted strong', text: 'Spent, last 30 days' }), dn, h('div', { class: 'small muted', text: 'From the invoices. Click a vendor for what you bought from them, and an item for its price over time.' }));
   });
   return box;
+}
+
+/**
+ * Invoices typed into the app: the garden's harvests (free), cash and farmers-market buys, a
+ * vendor that isn't on MarginEdge. Each line is an ingredient, how much came in, and what it cost;
+ * they price ingredients just like MarginEdge's invoices (the 60-day average of what came in).
+ */
+async function invoicesScreen(me, opts = {}) {
+  loadingScreen(me, 'orders', 'Invoices');
+  const r = await api('GET', '/api/invoices');
+  if (!r.ok) return show(shell(me, 'orders', [h('h1', { text: 'Invoices' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const { vendors, invoices } = r.data;
+  const garden = vendors.find((v) => v.kind === 'garden');
+  const today = iso(new Date());
+
+  // Who it's from: one of the vendors, or a new one (the garden is a vendor that costs nothing).
+  const NEW = '__new', NEW_GARDEN = '__garden';
+  const vendorSel = h('select', { 'aria-label': 'Vendor' },
+    h('option', { value: '', text: 'Pick a vendor…' }),
+    vendors.map((v) => h('option', { value: v.id ? `id:${v.id}` : `me:${v.meId}`, text: v.kind === 'garden' ? `🌱 ${v.name}` : v.name })),
+    h('option', { value: NEW, text: '+ A new vendor' }),
+    !garden ? h('option', { value: NEW_GARDEN, text: '+ Our garden (free)' }) : null);
+  const newName = h('input', { type: 'text', placeholder: 'Vendor name', 'aria-label': 'New vendor name', hidden: true });
+  const dateIn = h('input', { type: 'date', value: today, max: today, 'aria-label': 'Date it came in' });
+  const numberIn = h('input', { type: 'text', placeholder: 'Invoice # (optional)', 'aria-label': 'Invoice number' });
+  const isGarden = () => vendorSel.value === NEW_GARDEN || (garden && vendorSel.value === `id:${garden.id}`);
+  const err = h('div', { class: 'error' });
+  const lines = h('div', { class: 'inv-lines' });
+  const totalOut = h('b', { text: '' });
+
+  const productPicker = (line) => {
+    const input = h('input', { type: 'text', placeholder: 'Ingredient', 'aria-label': 'Ingredient', autocomplete: 'off' });
+    const pop = h('div', { class: 'search-pop', hidden: true });
+    let timer;
+    input.addEventListener('input', () => {
+      line.product = null;
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const q = input.value.trim();
+        if (q.length < 2) { pop.hidden = true; return; }
+        const res = await costGet(`/api/costs/search?q=${encodeURIComponent(q)}`);
+        if (!res.ok || input.value.trim() !== q) return;
+        pop.hidden = false;
+        fill(pop, res.data.products.length ? res.data.products.slice(0, 10).map((p) => h('button', { class: 'linkish lrow', type: 'button', onclick: () => {
+          line.product = p; input.value = p.name; pop.hidden = true;
+          if (!line.unit.value) line.unit.value = p.unit;
+          line.unitHint.textContent = `counted in ${UNIT_LABEL(p.unit)}`;
+          line.qty.focus();
+        } }, h('span', { class: 'grow', text: p.name }), h('span', { class: 'small muted', text: p.perUnit !== undefined ? perUnitText(p.perUnit, p.unit) : UNIT_LABEL(p.unit) }))) : h('div', { class: 'small muted', text: 'No ingredient by that name.' }));
+      }, 180);
+    });
+    return h('div', { class: 'search-wrap' }, input, pop);
+  };
+  const lineRows = [];
+  const addLine = () => {
+    const line = { product: null };
+    line.qty = h('input', { inputmode: 'decimal', placeholder: 'How much', 'aria-label': 'How much', class: 'amount' });
+    line.unit = h('input', { type: 'text', placeholder: 'unit', 'aria-label': 'Unit', class: 'unit-in', list: 'inv-units' });
+    line.total = h('input', { inputmode: 'decimal', placeholder: '$ total', 'aria-label': 'Line total', class: 'amount money-in' });
+    line.unitHint = h('span', { class: 'small muted' });
+    line.total.addEventListener('input', sum);
+    line.row = h('div', { class: 'inv-line' }, productPicker(line), line.qty, line.unit, line.total,
+      h('button', { class: 'link', type: 'button', 'aria-label': 'Remove this line', text: '✕', onclick: () => { line.row.remove(); lineRows.splice(lineRows.indexOf(line), 1); sum(); } }), line.unitHint);
+    lineRows.push(line);
+    lines.append(line.row);
+    return line;
+  };
+  function sum() {
+    const t = lineRows.reduce((a, l) => a + (parseAmount(l.total.value) || 0), 0);
+    totalOut.textContent = isGarden() ? 'Free: from our garden' : t ? `Total ${dollars(t, { cents: true })}` : '';
+  }
+  const fit = () => {
+    newName.hidden = vendorSel.value !== NEW;
+    numberIn.hidden = isGarden();
+    for (const l of lineRows) l.total.hidden = isGarden();
+    sum();
+  };
+  vendorSel.addEventListener('change', fit);
+  addLine();
+  if (opts.garden) vendorSel.value = garden ? `id:${garden.id}` : NEW_GARDEN;
+  fit();
+
+  const save = async () => {
+    err.textContent = '';
+    const v = vendorSel.value;
+    const vendor = v.startsWith('id:') ? { id: v.slice(3) } : v.startsWith('me:') ? { meId: v.slice(3) } : v === NEW ? { name: newName.value } : v === NEW_GARDEN ? { name: 'Our garden', kind: 'garden' } : null;
+    if (!vendor) return (err.textContent = 'Who is it from?');
+    const body = { vendor, date: dateIn.value, ...(numberIn.value.trim() && !isGarden() ? { number: numberIn.value.trim() } : {}),
+      lines: lineRows.filter((l) => l.product || l.qty.value).map((l) => ({ productId: l.product?.id ?? '', quantity: parseAmount(l.qty.value), unit: l.unit.value.trim(), total: isGarden() ? 0 : parseAmount(l.total.value) })) };
+    const res = await api('POST', '/api/invoices', body);
+    if (!res.ok) return (err.textContent = res.data.error ?? 'That didn’t save.');
+    costCache.clear();
+    invoicesScreen(me);
+  };
+
+  const form = h('section', { class: 'card' },
+    h('h2', { text: opts.garden ? 'Log a garden harvest' : 'Add an invoice' }),
+    h('div', { class: 'small muted', text: 'Each line: the ingredient, how much came in, and what it cost. From the garden it’s free, so leave out the money: it brings the ingredient’s average price down while the garden’s producing.' }),
+    h('div', { class: 'row wrap inv-head' }, vendorSel, newName, dateIn, numberIn),
+    h('datalist', { id: 'inv-units' }, ['lb', 'oz', 'g', 'kg', 'each', 'bunch', 'qt', 'gal', 'l', 'ml', 'floz', 'case'].map((u) => h('option', { value: u }))),
+    lines,
+    h('div', { class: 'row wrap' }, h('button', { class: 'btn small-btn', type: 'button', text: '+ Another line', onclick: () => { addLine(); fit(); } }), h('span', { class: 'grow' }), totalOut),
+    err,
+    h('div', { class: 'row' }, h('button', { class: 'btn primary', text: 'Save', onclick: save })));
+
+  const list = h('section', { class: 'card' }, h('h2', { text: 'Typed in so far' }),
+    invoices.length ? h('div', { class: 'list' }, invoices.map((inv) => {
+      const remove = h('button', { class: 'link', text: 'Remove' });
+      const row = h('div', { class: 'inv-row' },
+        h('div', { class: 'grow' },
+          h('div', {}, h('b', { text: `${inv.kind === 'garden' ? '🌱 ' : ''}${inv.vendorName}` }), h('span', { class: 'small muted', text: ` · ${shortDate(inv.date)}${inv.number ? ` · #${inv.number}` : ''}` })),
+          h('div', { class: 'small muted', text: inv.lines.map((l) => `${qty(l.quantity)} ${UNIT_LABEL(l.unit)} ${l.name}${inv.kind === 'garden' ? '' : ` ${dollars(l.total, { cents: true })}`}`).join(' · ') })),
+        h('span', { class: 'small', text: inv.kind === 'garden' ? 'free' : dollars(inv.total, { cents: true }) }), remove);
+      // Two taps to take one out, no pop-up.
+      remove.onclick = async () => {
+        if (remove.textContent !== 'Sure?') { remove.textContent = 'Sure?'; setTimeout(() => { if (remove.isConnected) remove.textContent = 'Remove'; }, 4000); return; }
+        const res = await api('DELETE', `/api/invoices/${inv.id}`);
+        if (res.ok) { costCache.clear(); row.remove(); }
+      };
+      return row;
+    })) : h('div', { class: 'small muted', text: 'Nothing typed in yet.' }));
+
+  show(shell(me, 'orders', [
+    h('header', {}, h('div', { class: 'kicker', text: 'Orders' }), h('h1', { text: 'Invoices typed in' }),
+      h('div', { class: 'sub', text: 'MarginEdge still reads your regular invoices. These are the rest, priced the same way.' })),
+    page([form, list], [sideBox('', sideActions(h('button', { class: 'btn', text: '← Orders', onclick: () => ordersScreen(me) })))]),
+  ]));
 }
 
 /** One vendor's order for one delivery: lines to review, then approve, then send. */

@@ -8,7 +8,7 @@
 
 import { createHash } from 'node:crypto';
 import type { Db } from './db.ts';
-import { blendedPrices, importMarginEdge, type ImportAnswers, type ImportedProduct, type ImportResult } from '../connectors/marginedge.ts';
+import { blendedPrices, importMarginEdge, packBaseOf, type ImportAnswers, type ImportedProduct, type ImportResult } from '../connectors/marginedge.ts';
 import { buildRecipes, FREE_PRODUCTS, recipeId, type RecipeCard } from '../connectors/marginedgeRecipes.ts';
 import { packSize, withPackSize } from '../core/packSizes.ts';
 import { squareItemSales, squareMenuItems, squareModifierSales, type SquareCatalogObject } from '../connectors/square.ts';
@@ -23,6 +23,7 @@ import { withIngredientAmount } from '../core/portionCheck.ts';
 import { convert, type Quantity } from '../core/units.ts';
 import { storedItemSales, storedModifierSales } from './squareSync.ts';
 import { storedMarginEdge } from './marginedgeSync.ts';
+import { appImport, appInvoicesStamp, loadAppInvoices, type AppInvoiceRow } from './appInvoices.ts';
 
 // ---------------------------------------------------------------- the kitchen book
 
@@ -192,7 +193,7 @@ export async function saveBook(db: Db, restaurantId: string, key: BookKey, value
 // ---------------------------------------------------------------- the model
 
 /** Where a product's price came from: the latest invoice (and how many recent ones are averaged), a price set in the app, or MarginEdge's last price. */
-export type PriceSource = { from: 'invoice'; vendor?: string; date: string; invoices: number } | { from: 'manual'; date?: string } | { from: 'marginedge' } | { from: 'free'; manual?: boolean };
+export type PriceSource = { from: 'invoice'; vendor?: string; date: string; invoices: number; garden?: boolean } | { from: 'manual'; date?: string } | { from: 'marginedge' } | { from: 'free'; manual?: boolean };
 
 /** Free by nature, when nothing prices it: tap water, ice, soda water or club soda from the gun. */
 export function costsNothing(name: string): boolean {
@@ -230,6 +231,8 @@ export interface Model {
   rough: Set<string>;
   /** Where each product's price came from. */
   priceSource: Map<string, PriceSource>;
+  /** Vendor ids that are the restaurant's own garden. */
+  gardenVendors: Set<string>;
 }
 
 const cache = new Map<string, { stamp: string; model: Promise<Model> }>();
@@ -282,6 +285,8 @@ interface Base {
   rawRows: Awaited<ReturnType<typeof storedItemSales>>;
   modRows: Awaited<ReturnType<typeof storedModifierSales>>;
   dataFrom?: string;
+  /** Invoices typed into the app (the garden, cash buys), added to MarginEdge's in the model. */
+  appRows: AppInvoiceRow[];
 }
 const baseCache = new Map<string, { stamp: string; base: Promise<Base> }>();
 
@@ -290,7 +295,7 @@ async function getBase(db: Db, restaurantId: string, from: string, today: string
   const synced = (await db.query<{ stamp: string | null }>(
     "SELECT max(finished_at)::text AS stamp FROM sync_runs WHERE restaurant_id = $1 AND status = 'ok'", [restaurantId])).rows[0]?.stamp ?? '';
   // Import answers (which invoice line is which product) change how invoices read, so they're part of the stamp.
-  const stamp = `${synced}|${createHash('sha1').update(JSON.stringify(answers)).digest('hex')}`;
+  const stamp = `${synced}|${await appInvoicesStamp(db, restaurantId)}|${createHash('sha1').update(JSON.stringify(answers)).digest('hex')}`;
   const hit = baseCache.get(key);
   if (hit && hit.stamp === stamp) return hit.base;
   const mine = [...baseCache.keys()].filter((k) => k.startsWith(`${restaurantId}|`));
@@ -323,14 +328,19 @@ async function buildBase(db: Db, restaurantId: string, from: string, today: stri
   const rawRows = await storedItemSales(db, restaurantId, from, today);
   const modRows = await storedModifierSales(db, restaurantId, from, today);
   const dataFrom = (await db.query<{ day: string | null }>('SELECT min(day)::text AS day FROM pos_item_sales_daily WHERE restaurant_id = $1', [restaurantId])).rows[0]?.day ?? undefined;
-  return { me, imported, menuItems, images, rawRows, modRows, ...(dataFrom ? { dataFrom } : {}) };
+  const appRows = await loadAppInvoices(db, restaurantId);
+  return { me, imported, menuItems, images, rawRows, modRows, ...(dataFrom ? { dataFrom } : {}), appRows };
 }
 
 async function buildModel(db: Db, restaurantId: string, from: string, today: string): Promise<Model> {
   const missing: string[] = [];
   const bookData = await loadBook(db, restaurantId);
   const answers: PilotImportAnswers = bookData.importAnswers ?? {};
-  const { me, imported, menuItems, images, rawRows, modRows, dataFrom } = await getBase(db, restaurantId, from, today, answers);
+  const base = await getBase(db, restaurantId, from, today, answers);
+  const { me, menuItems, images, rawRows, modRows, dataFrom } = base;
+  // Invoices typed into the app join MarginEdge's.
+  const typed = appImport(base.appRows, base.imported.products);
+  const imported: ImportResult = { ...base.imported, vendors: [...base.imported.vendors, ...typed.vendors], invoices: [...base.imported.invoices, ...typed.invoices], prices: [...base.imported.prices, ...typed.prices] };
   if (!me) missing.push('marginedge');
   if (!bookData.recipeCards?.length) missing.push('recipeCards');
 
@@ -356,14 +366,14 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     if (day > today) continue;
     const cur = lastPoint.get(pt.productExternalId);
     if (!cur || pt.date >= cur.date) lastPoint.set(pt.productExternalId, pt);
-    if (day > since && pt.perBaseUnit > 0) recentInvoices.set(pt.productExternalId, (recentInvoices.get(pt.productExternalId) ?? new Set()).add(pt.invoiceExternalId));
+    if (day > since && packBaseOf(pt) > 0) recentInvoices.set(pt.productExternalId, (recentInvoices.get(pt.productExternalId) ?? new Set()).add(pt.invoiceExternalId));
   }
   const products: Product[] = [...allProducts, ...FREE_PRODUCTS].filter((p) => p.baseUnit).map((p) => {
     let price = blended.get(p.externalId);
     const last = lastPoint.get(p.externalId);
     if (price !== undefined && last) {
       const vendor = last.vendorExternalId ? vendorName.get(last.vendorExternalId) : undefined;
-      priceSource.set(p.externalId, { from: 'invoice', ...(vendor ? { vendor } : {}), date: last.date.slice(0, 10), invoices: recentInvoices.get(p.externalId)?.size || 1 });
+      priceSource.set(p.externalId, { from: 'invoice', ...(vendor ? { vendor } : {}), date: last.date.slice(0, 10), invoices: recentInvoices.get(p.externalId)?.size || 1, ...(last.vendorExternalId && typed.garden.has(last.vendorExternalId) ? { garden: true } : {}) });
     }
     const manual = answers.manualPrices?.[p.externalId];
     if (price === undefined && manual) {
@@ -475,5 +485,5 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     // A dish change already answered: a version on that button starts within a week of the suggested day.
     .filter((c) => !(c.kind === 'dishChanged' && c.catalogId && c.suggestedDate && [...linkAnswers.confirm, ...linkAnswers.newDish].some((v) => v.catalogId === c.catalogId && v.from && Math.abs(Date.parse(v.from) - Date.parse(c.suggestedDate!)) <= 7 * 86_400_000)));
 
-  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded, menuStatus: linkAnswers.menuStatus ?? [], rough: new Set((bookData.recipeCards ?? []).filter((c) => c.status === 'rough').map((c) => recipeId(c.name))), priceSource };
+  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded, menuStatus: linkAnswers.menuStatus ?? [], rough: new Set((bookData.recipeCards ?? []).filter((c) => c.status === 'rough').map((c) => recipeId(c.name))), priceSource, gardenVendors: typed.garden };
 }
