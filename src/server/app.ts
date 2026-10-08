@@ -666,7 +666,7 @@ export function createApp(config: AppConfig) {
         const merge = (links.priceMerge ?? []).filter((x) => x.catalogId !== id);
         if (b.action === 'split') split.push(id);
         else if (b.action === 'merge') {
-          if (typeof b.into !== 'string' || !b.into || b.into === id) throw new HttpError(400, 'Same drink as which?');
+          if (typeof b.into !== 'string' || !b.into || b.into === id) throw new HttpError(400, 'Same item as which?');
           merge.push({ catalogId: id, into: b.into });
         } else if (b.action !== 'reset') throw new HttpError(400, 'Split, merge or reset.');
         await saveBook(db, who.restaurantId, 'linkAnswers', { ...links, priceSplit: split, priceMerge: merge }, who.staffId);

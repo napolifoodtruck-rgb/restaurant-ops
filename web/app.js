@@ -1914,7 +1914,8 @@ async function menuScreen(me) {
   const sameAs = (x) => {
     const sib = siblings(x);
     if (!sib.length || !manager) return null;
-    const pick = h('select', { class: 'small-select', 'aria-label': `${x.name} is the same drink as` }, h('option', { value: '', text: 'Same drink as…' }), sib.map((o) => h('option', { value: o.pos.catalogId, text: o.name })));
+    const what = side === 'bar' ? 'drink' : 'dish';
+    const pick = h('select', { class: 'small-select', 'aria-label': `${x.name} is the same ${what} as`, title: `A discount button for the same ${what} (a special price): its sales count with the other` }, h('option', { value: '', text: `Same ${what} as…` }), sib.map((o) => h('option', { value: o.pos.catalogId, text: o.name })));
     pick.addEventListener('change', () => pick.value && priceVariation(pick, { catalogId: x.pos.catalogId, action: 'merge', into: pick.value }));
     return pick;
   };
