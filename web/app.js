@@ -3960,7 +3960,7 @@ async function todayScreen(me, filter = 'all') {
   const go = (g) => ({
     count: () => prepCount(me, g.stationId, g.date), review: () => prepReview(me, g.stationId, g.date), work: () => prepWork(me, g.stationId, g.date),
     menu: () => menuScreen(me), performance: () => marginsScreen(me), settings: () => home(me),
-    cards: () => cardsScreen(me), drafts: () => draftsScreen(me), recipeChecks: () => { if (g.side) me.side = g.side; recipeChecksScreen(me, { from: returnTo('Today', () => todayScreen(me)) }); }, order: () => orderScreen(me, g.vendorId), orders: () => { if (g.side) { me.side = g.side; me.ordersSide = g.side; } ordersScreen(me); },
+    cards: () => cardsScreen(me), drafts: () => draftsScreen(me), recipeChecks: () => { if (g.side) me.side = g.side; recipeChecksScreen(me, { from: returnTo('Today', () => todayScreen(me)) }); }, scan: () => scanScreen(me, g.scanId), invoices: () => invoicesScreen(me), order: () => orderScreen(me, g.vendorId), orders: () => { if (g.side) { me.side = g.side; me.ordersSide = g.side; } ordersScreen(me); },
   })[g.to]?.();
   const targetOf = (b) => (b.type === 'dismiss' ? { dedupeKey: b.dedupeKey } : { catalogId: b.catalogId, itemName: b.itemName, ...(b.variationName ? { variationName: b.variationName } : {}), ...(b.from ? { from: b.from } : {}) });
   // A line folded up in place: what was done, and Undo. Saving happens behind it.
@@ -5053,8 +5053,36 @@ async function shrinkPhoto(file) {
   c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
   c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
   const jpeg = c.toDataURL('image/jpeg', 0.85);
-  return { mediaType: 'image/jpeg', data: jpeg.split(',')[1], preview: jpeg, name: file.name };
+  return { mediaType: 'image/jpeg', data: jpeg.split(',')[1], preview: jpeg, name: file.name, ...photoChecks(img) };
 }
+
+/**
+ * How readable a photo looks before it's sent: sharpness (the spread of a Laplacian over a
+ * 1000 px grey copy: text in focus has strong edges, a blurry shot doesn't), whether it's big
+ * enough, and a tiny fingerprint to spot the same page added twice.
+ */
+function photoChecks(img) {
+  const scale = Math.min(1, 1000 / Math.max(img.width, img.height));
+  const w = Math.max(1, Math.round(img.width * scale)), hgt = Math.max(1, Math.round(img.height * scale));
+  const c = document.createElement('canvas'); c.width = w; c.height = hgt;
+  const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0, w, hgt);
+  const px = ctx.getImageData(0, 0, w, hgt).data;
+  const g = new Float32Array(w * hgt);
+  for (let i = 0; i < w * hgt; i++) g[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
+  let n = 0, sum = 0, sq = 0;
+  for (let y = 1; y < hgt - 1; y++) for (let x = 1; x < w - 1; x++) {
+    const i = y * w + x, v = 4 * g[i] - g[i - 1] - g[i + 1] - g[i - w] - g[i + w];
+    n++; sum += v; sq += v * v;
+  }
+  const sharpness = n ? sq / n - (sum / n) ** 2 : 0;
+  // A 16×16 grey fingerprint.
+  const f = document.createElement('canvas'); f.width = 16; f.height = 16;
+  const fx = f.getContext('2d'); fx.drawImage(img, 0, 0, 16, 16);
+  const fp = [...fx.getImageData(0, 0, 16, 16).data].filter((_, i) => i % 4 === 0);
+  return { sharpness: Math.round(sharpness), small: Math.min(img.width, img.height) < 800, print: fp };
+}
+const BLURRY = 60;
+const samePrint = (a, b) => a && b && a.reduce((t, v, i) => t + Math.abs(v - b[i]), 0) / a.length < 6;
 
 /** Photograph an invoice: one or more pages, then the app reads it. */
 function photoCard(me, connected) {
@@ -5064,8 +5092,19 @@ function photoCard(me, connected) {
   const read = h('button', { class: 'btn primary', text: 'Read it', disabled: true });
   const picker = h('input', { type: 'file', accept: 'image/*,application/pdf', capture: 'environment', multiple: true, hidden: true, 'aria-label': 'Invoice photo' });
   const draw = () => {
-    fill(thumbs, pages.map((p, i) => h('div', { class: 'scan-thumb' }, p.preview ? h('img', { src: p.preview, alt: `Page ${i + 1}` }) : h('div', { class: 'scan-pdf', text: `PDF · ${p.name}` }),
-      h('button', { class: 'link', type: 'button', text: 'Remove', onclick: () => { pages.splice(i, 1); draw(); } }))));
+    const blurry = (p) => p.sharpness !== undefined && p.sharpness < BLURRY;
+    fill(thumbs, pages.map((p, i) => {
+      // Worth a retake: blurry, too small, or the same page already added. A blurry page with a
+      // sharper shot of it is the one to drop.
+      const better = pages.some((q, j) => j !== i && samePrint(q.print, p.print) && (q.sharpness ?? 0) > (p.sharpness ?? 0) && !blurry(q));
+      const twice = pages.slice(0, i).some((q) => samePrint(q.print, p.print) && !blurry(q));
+      const warn = better && blurry(p) ? 'Retaken: drop this one' : twice ? 'Same page twice?' : blurry(p) ? 'Looks blurry: retake?' : p.small ? 'Small: closer?' : null;
+      return h('div', { class: `scan-thumb${warn ? ' warn' : ''}` }, p.preview ? h('img', { src: p.preview, alt: `Page ${i + 1}` }) : h('div', { class: 'scan-pdf', text: `PDF · ${p.name}` }),
+        warn ? h('span', { class: 'tag warn', text: warn }) : h('span', { class: 'small muted', text: `Page ${i + 1}` }),
+        h('button', { class: 'link', type: 'button', text: warn && !warn.startsWith('Retaken') ? 'Remove and retake' : 'Remove', onclick: () => { pages.splice(i, 1); draw(); } }));
+    }));
+    const doubtful = pages.some((p) => (blurry(p) && !pages.some((q) => q !== p && samePrint(q.print, p.print) && !blurry(q))) || p.small);
+    read.textContent = doubtful ? 'Read it anyway' : 'Read it';
     read.disabled = !pages.length;
     take.textContent = pages.length ? '+ Another page' : '📷 Photograph an invoice';
   };
@@ -5080,7 +5119,9 @@ function photoCard(me, connected) {
   });
   read.onclick = async () => {
     err.textContent = '';
-    const res = await api('POST', '/api/invoices/scan', { pages: pages.map((p) => ({ mediaType: p.mediaType, data: p.data })) });
+    // The same page twice goes once: its sharpest shot.
+    const send = pages.filter((p, i) => !pages.some((q, j) => j !== i && samePrint(q.print, p.print) && ((q.sharpness ?? 0) > (p.sharpness ?? 0) || ((q.sharpness ?? 0) === (p.sharpness ?? 0) && j < i))));
+    const res = await api('POST', '/api/invoices/scan', { pages: send.map((p) => ({ mediaType: p.mediaType, data: p.data })) });
     if (!res.ok) return (err.textContent = res.data.error ?? 'That didn’t send.');
     scanScreen(me, res.data.id);
   };
@@ -5093,6 +5134,7 @@ function photoCard(me, connected) {
 const SCAN_FLAG = {
   unsure: ['Hard to read', 'warn'], math: ['Doesn’t add up', 'warn'], noProduct: ['New item: pick the ingredient', 'blue'],
   noAmount: ['How much is one?', 'blue'], priceJump: ['Price changed a lot', 'warn'], credit: ['Credit: not counted', ''],
+  handwritten: ['Hand-corrected', 'warn'], alreadyIn: ['Already saved', ''],
 };
 
 /** One invoice photo: reading, or read and ready to check beside the photo. */
@@ -5136,7 +5178,7 @@ function renderScan(me, id, x, pagesBox, back) {
   const money = (v) => (v === undefined || v === null ? '' : dollars(v, { cents: true }));
 
   const rows = mt.lines.map((l) => {
-    const line = { l, productId: l.productId, include: Boolean(l.productId && l.baseQuantity > 0 && !l.flags.includes('credit')) };
+    const line = { l, productId: l.productId, include: Boolean(l.productId && l.baseQuantity > 0 && !l.flags.includes('credit') && !l.flags.includes('alreadyIn')) };
     const tags = h('div', { class: 'scan-flags' });
     const qtyIn = h('input', { inputmode: 'decimal', class: 'amount', value: l.baseQuantity > 0 ? String(l.baseQuantity) : '', 'aria-label': 'How much came in' });
     const unitOut = h('span', { class: 'small muted', text: l.baseUnit ? UNIT_LABEL(l.baseUnit) : '' });
@@ -5146,7 +5188,7 @@ function renderScan(me, id, x, pagesBox, back) {
     const pick = ingredientPick(l.productName ?? '', (p) => { line.productId = p.id; line.unit = p.unit; unitOut.textContent = UNIT_LABEL(p.unit); if (!keep.checked && qtyIn.value) { keep.checked = true; line.include = true; } }, () => { line.productId = null; });
     const chips = l.how === 'guess' && l.candidates?.length > 1 ? h('div', { class: 'small scan-alts' }, h('span', { class: 'muted', text: 'Or:' }), l.candidates.slice(1).map((c) => h('button', { class: 'link', type: 'button', text: c.name, onclick: () => { line.productId = c.id; pick.set(c.name); } }))) : null;
     const flags = [...l.flags, ...(l.how === 'guess' ? ['guess'] : [])];
-    fill(tags, flags.map((f) => f === 'guess' ? h('span', { class: 'tag blue', text: 'Best guess: check it' }) : h('span', { class: `tag ${SCAN_FLAG[f]?.[1] ?? ''}`, text: f === 'priceJump' && l.was ? `${l.perBase > l.was ? 'Up' : 'Down'} ${Math.round(Math.abs(l.perBase / l.was - 1) * 100)}% (was ${perUnitText(l.was, l.baseUnit)})` : SCAN_FLAG[f]?.[0] ?? f })));
+    fill(tags, flags.map((f) => f === 'guess' ? h('span', { class: 'tag blue', text: 'Best guess: check it' }) : h('span', { class: `tag ${SCAN_FLAG[f]?.[1] ?? ''}`, text: f === 'priceJump' && l.was ? `${l.perBase > l.was ? 'Up' : 'Down'} ${Math.round(Math.abs(l.perBase / l.was - 1) * 100)}% (was ${perUnitText(l.was, l.baseUnit)})` : f === 'handwritten' && l.read.handwritten ? `Hand-corrected: ${l.read.handwritten}` : SCAN_FLAG[f]?.[0] ?? f })));
     line.get = () => ({ productId: line.productId, quantity: parseAmount(qtyIn.value), unit: line.unit ?? l.baseUnit, total: parseAmount(totalIn.value), description: l.read.description, itemKey: l.itemKey,
       perQuantity: l.read.quantity ? parseAmount(qtyIn.value) / l.read.quantity : undefined });
     line.row = h('div', { class: `scan-line${flags.length ? ' flagged' : ''}` },
@@ -5158,7 +5200,12 @@ function renderScan(me, id, x, pagesBox, back) {
   });
 
   const banners = [
-    mt.duplicateOf ? h('div', { class: 'note', text: `${mt.duplicateOf.source === 'app' ? 'This invoice is already saved' : 'MarginEdge already has this invoice'}${mt.duplicateOf.number ? ` (#${mt.duplicateOf.number})` : ''}${mt.duplicateOf.date ? `, ${shortDate(mt.duplicateOf.date)}` : ''}. Saving keeps it as a check and teaches the app this vendor’s items; prices won’t count it twice.` }) : null,
+    mt.duplicateOf ? h('div', { class: 'note', text: mt.duplicateOf.source === 'app'
+      ? `This invoice is already saved${mt.duplicateOf.number ? ` (#${mt.duplicateOf.number})` : ''}${mt.duplicateOf.date ? `, ${shortDate(mt.duplicateOf.date)}` : ''}. Lines it already has are unticked; saving adds the rest to it, so nothing counts twice.`
+      : `MarginEdge already has this invoice${mt.duplicateOf.number ? ` (#${mt.duplicateOf.number})` : ''}${mt.duplicateOf.date ? `, ${shortDate(mt.duplicateOf.date)}` : ''}. Saving keeps it as a check and teaches the app this vendor’s items; prices won’t count it twice.` }) : null,
+    ...(x.samePaper ?? []).map((o) => h('div', { class: 'note warn-note' },
+      h('div', { text: `This invoice${mt.number ? ` (#${mt.number})` : ''} was also photographed ${shortDate(o.createdAt.slice(0, 10))} (${o.pages} page${o.pages === 1 ? '' : 's'}) and isn’t saved yet. Are these more pages of it?` }),
+      h('button', { class: 'btn small-btn', text: 'Join them and read again', onclick: async () => { const r2 = await api('POST', `/api/invoices/scan/${id}/join`, { into: o.id }); if (r2.ok) scanScreen(me, r2.data.id); else err.textContent = r2.data.error ?? 'Couldn’t join them.'; } }))),
     mt.totalDifference && Math.abs(mt.totalDifference) >= 0.05 ? h('div', { class: 'note warn-note', text: `The lines, tax and charges come to ${money((read.total ?? 0) - mt.totalDifference)}, but the invoice says ${money(read.total)}: ${money(Math.abs(mt.totalDifference))} ${mt.totalDifference > 0 ? 'missing' : 'extra'}. A line may be misread or missing.` }) : null,
     read.notes ? h('div', { class: 'note', text: `On the invoice: ${read.notes}` }) : null,
   ];
@@ -5181,7 +5228,7 @@ function renderScan(me, id, x, pagesBox, back) {
     h('div', { class: 'scan-lines' }, rows.map((r) => r.row)),
     extras ? h('div', { class: 'small', text: extras }) : null,
     err,
-    h('div', { class: 'row wrap' }, h('button', { class: 'btn primary', text: mt.duplicateOf ? 'Save as a check' : 'Save', onclick: save }), h('span', { class: 'grow' }),
+    h('div', { class: 'row wrap' }, h('button', { class: 'btn primary', text: mt.duplicateOf?.source === 'app' ? 'Add the new lines' : mt.duplicateOf ? 'Save as a check' : 'Save', onclick: save }), h('span', { class: 'grow' }),
       h('button', { class: 'link', text: 'Throw it away', onclick: async () => { await api('POST', `/api/invoices/scan/${id}/discard`); invoicesScreen(me); } })));
   show(shell(me, 'orders', [
     h('header', {}, h('div', { class: 'kicker', text: 'Invoice photo · check it' }), h('h1', { text: mt.vendor.name }),

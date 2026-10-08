@@ -1113,3 +1113,4 @@ button.donut-row { display: flex; min-width: 0; }
 @media (max-width: 900px) { .scan-line { grid-template-columns: 1fr; } }
 .spinner { width: 28px; height: 28px; border: 3px solid var(--line); border-top-color: var(--ink); border-radius: 50%; animation: spin 0.9s linear infinite; margin: 20px auto; }
 .scan-alts { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.scan-thumb.warn img { outline: 2px solid var(--orange); }

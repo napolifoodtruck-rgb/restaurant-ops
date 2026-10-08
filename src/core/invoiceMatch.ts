@@ -19,7 +19,7 @@ export interface KnownVendor { key: string; name: string }
 export interface PastLine { vendorKey: string; code?: string; description: string; productId: string; perQuantity: number; unitPrice: number; date: string }
 export interface Learned { productId: string; per: number }
 export interface MatchProduct { id: string; name: string; baseUnit: string }
-export interface PastInvoice { externalId: string; vendorKey?: string; number?: string; date?: string; total: number }
+export interface PastInvoice { externalId: string; vendorKey?: string; number?: string; date?: string; total: number; lines?: { description: string; total: number }[] }
 
 export interface MatchInput {
   read: ReadInvoice;
@@ -36,7 +36,7 @@ export interface MatchInput {
   invoices: PastInvoice[];
 }
 
-export type LineFlag = 'unsure' | 'math' | 'noProduct' | 'noAmount' | 'priceJump' | 'credit';
+export type LineFlag = 'unsure' | 'math' | 'noProduct' | 'noAmount' | 'priceJump' | 'credit' | 'handwritten' | 'alreadyIn';
 
 export interface MatchedLine {
   read: ReadLine;
@@ -97,6 +97,7 @@ export function matchInvoice(input: MatchInput): MatchedInvoice {
     const key = itemKey(l);
     const flags: LineFlag[] = [];
     if (l.unsure) flags.push('unsure');
+    if (l.handwritten) flags.push('handwritten');
     if (l.quantity < 0 || l.total < 0) flags.push('credit');
     if (l.unitPrice !== undefined && Math.abs(l.unitPrice * l.quantity - l.total) > Math.max(0.05, Math.abs(l.total) * 0.01)) flags.push('math');
     let how: MatchedLine['how'] = 'none', productId: string | undefined, perQuantity: number | undefined, perFrom: MatchedLine['perFrom'];
@@ -146,6 +147,15 @@ export function matchInvoice(input: MatchInput): MatchedInvoice {
   const num = (n?: string) => (n ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const dup = vendor.key ? input.invoices.find((i) => i.vendorKey === vendor.key && ((read.invoiceNumber && num(i.number) && num(i.number) === num(read.invoiceNumber))
     || (read.invoiceDate && i.date === read.invoiceDate && read.total !== undefined && Math.abs(i.total - read.total) < 0.01))) : undefined;
+  // Lines that invoice already has (the same page sent twice): left out unless the manager says.
+  if (dup?.lines) {
+    const left = dup.lines.map((l) => `${itemKey({ description: l.description })}|${Math.round(l.total * 100)}`);
+    for (const l of lines) {
+      const k = `${itemKey({ description: l.read.description })}|${Math.round(l.read.total * 100)}`;
+      const at = left.indexOf(k);
+      if (at >= 0) { left.splice(at, 1); l.flags.push('alreadyIn'); }
+    }
+  }
   if (dup) result.duplicateOf = { externalId: dup.externalId, ...(dup.number ? { number: dup.number } : {}), ...(dup.date ? { date: dup.date } : {}), source: dup.externalId.startsWith('app:') ? 'app' : 'marginedge' };
   return result;
 }

@@ -37,7 +37,7 @@ export interface TodayItem {
   due?: string;
   /** Money behind it, for ordering the rest. */
   dollars?: number;
-  go: { to: 'count' | 'review' | 'work' | 'menu' | 'performance' | 'settings' | 'cards' | 'drafts' | 'order' | 'orders' | 'recipeChecks'; stationId?: string; date?: string; vendorId?: string; side?: 'kitchen' | 'bar' };
+  go: { to: 'count' | 'review' | 'work' | 'menu' | 'performance' | 'settings' | 'cards' | 'drafts' | 'order' | 'orders' | 'recipeChecks' | 'scan' | 'invoices'; stationId?: string; date?: string; vendorId?: string; side?: 'kitchen' | 'bar'; scanId?: string };
   button: string;
   /** The side it's about (a station's side comes from its name: "Bar" is the bar's); none for syncs, which everyone sees. */
   side?: 'kitchen' | 'bar';
@@ -345,6 +345,16 @@ export async function todayView(db: Db, who: SignedIn, today: string, hour: numb
     const week = await getModel(db, who.restaurantId, today, { from: addDays(today, -6), to: today });
     const areaOf = await loadAreas(db, who.restaurantId);
     items.push(...await managerItems(db, who, model, today, areaOf));
+    // Invoice photos read and waiting for a check (or that couldn't be read): first thing, since
+    // nothing on them is priced until someone looks.
+    const scans = (await db.query<{ id: string; status: string; vendor: string | null; lines: string | null; created_at: string }>(
+      "SELECT id, status, result->>'vendor' AS vendor, jsonb_array_length(coalesce(result->'lines', '[]'::jsonb))::text AS lines, created_at::text AS created_at FROM invoice_scans WHERE restaurant_id = $1 AND status IN ('read', 'failed') AND created_at > now() - interval '30 days' ORDER BY created_at", [who.restaurantId])).rows;
+    for (const x of scans) {
+      const when = new Date(x.created_at).toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: 'numeric', minute: '2-digit' });
+      items.push(x.status === 'read'
+        ? { key: `scan:${x.id}`, group: 'setup', label: 'Invoice', tone: 'alert', due: today, dollars: 1_000_000, title: `Invoice${x.vendor ? ` from ${x.vendor}` : ''} ready to check`, detail: `Photographed ${when} · ${x.lines ?? 0} lines. Nothing on it is priced until it’s checked.`, go: { to: 'scan', scanId: x.id }, button: 'Check it' }
+        : { key: `scan:${x.id}`, group: 'setup', label: 'Invoice', tone: 'alert', due: today, dollars: 1_000_000, title: 'An invoice photo couldn’t be read', detail: `Photographed ${when}. Retake it, try again, or type it in.`, go: { to: 'scan', scanId: x.id }, button: 'Open it' });
+    }
     // Orders due soon that no manager has approved yet: one item per vendor with a cutoff set,
     // one item for the vendors delivering soon whose cutoff nobody has set yet.
     const dueSoon = await ordersDue(db, who, today);

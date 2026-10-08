@@ -154,17 +154,7 @@ export async function createAppInvoice(db: Db, who: SignedIn, model: Awaited<Ret
     const row = (await db.query<{ id: string; kind: string }>('SELECT id, kind FROM vendors WHERE restaurant_id = $1 AND lower(name) = lower($2) LIMIT 1', [who.restaurantId, vendorName])).rows[0];
     if (row) { vendorId = row.id; kind = row.kind; }
   }
-  const lines = Array.isArray(b.lines) ? (b.lines as any[]) : [];
-  if (!lines.length) throw new HttpError(400, 'Add at least one line.');
-  const clean = lines.map((l, i) => {
-    const product = model.imported.products.find((p) => p.externalId === String(l?.productId ?? '')) ?? undefined;
-    const quantity = Number(l?.quantity), total = kind === 'garden' ? 0 : Number(l?.total), unit = String(l?.unit ?? '').trim();
-    if (!product) throw new HttpError(400, `Line ${i + 1}: pick the ingredient from the list.`);
-    if (!(quantity > 0)) throw new HttpError(400, `Line ${i + 1}: how much came in?`);
-    if (!(total >= 0)) throw new HttpError(400, `Line ${i + 1}: what did it cost?`);
-    if (!unit || baseOf(product, unit) === undefined) throw new HttpError(400, `Line ${i + 1}: ${product.name} is counted in ${product.baseUnit ?? 'its own unit'}; ${unit || 'that'} won’t convert. Try ${product.baseUnit}.`);
-    return { lineNumber: i + 1, productId: product.externalId, description: String(l?.description ?? product.name).slice(0, 200), quantity, unit, total };
-  });
+  const clean = cleanLines(model, b.lines, kind === 'garden');
   if (!vendorId && !meVendorId) vendorId = (await db.query<{ id: string }>("INSERT INTO vendors (restaurant_id, name, kind, ordering_method) VALUES ($1, $2, $3, 'other') RETURNING id", [who.restaurantId, vendorName, kind])).rows[0]!.id;
   const inv = (await db.query<{ id: string }>(
     'INSERT INTO app_invoices (restaurant_id, vendor_id, me_vendor_id, vendor_name, invoice_date, number, note, created_by, scan_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id',
@@ -173,4 +163,31 @@ export async function createAppInvoice(db: Db, who: SignedIn, model: Awaited<Ret
     await db.query('INSERT INTO app_invoice_lines (invoice_id, line_number, product_id, description, quantity, unit, total) VALUES ($1, $2, $3, $4, $5, $6, $7)', [inv.id, l.lineNumber, l.productId, l.description, l.quantity, l.unit, l.total]);
   }
   return inv.id;
+}
+
+/** Lines as sent, checked: an ingredient from the list, an amount, a cost, a unit that converts. */
+function cleanLines(model: Awaited<ReturnType<typeof getModel>>, raw: unknown, free: boolean, from = 1) {
+  const lines = Array.isArray(raw) ? (raw as any[]) : [];
+  if (!lines.length) throw new HttpError(400, 'Add at least one line.');
+  return lines.map((l, i) => {
+    const product = model.imported.products.find((p) => p.externalId === String(l?.productId ?? '')) ?? undefined;
+    const quantity = Number(l?.quantity), total = free ? 0 : Number(l?.total), unit = String(l?.unit ?? '').trim();
+    if (!product) throw new HttpError(400, `Line ${i + 1}: pick the ingredient from the list.`);
+    if (!(quantity > 0)) throw new HttpError(400, `Line ${i + 1}: how much came in?`);
+    if (!(total >= 0)) throw new HttpError(400, `Line ${i + 1}: what did it cost?`);
+    if (!unit || baseOf(product, unit) === undefined) throw new HttpError(400, `Line ${i + 1}: ${product.name} is counted in ${product.baseUnit ?? 'its own unit'}; ${unit || 'that'} won’t convert. Try ${product.baseUnit}.`);
+    return { lineNumber: from + i, productId: product.externalId, description: String(l?.description ?? product.name).slice(0, 200), quantity, unit, total };
+  });
+}
+
+/** More lines on an invoice already saved: the rest of its pages, photographed later. */
+export async function appendAppInvoiceLines(db: Db, who: SignedIn, model: Awaited<ReturnType<typeof getModel>>, invoiceId: string, raw: unknown): Promise<number> {
+  const inv = (await db.query<{ id: string; kind: string | null; next: string }>(
+    'SELECT i.id, v.kind, (SELECT coalesce(max(line_number), 0) + 1 FROM app_invoice_lines WHERE invoice_id = i.id)::text AS next FROM app_invoices i LEFT JOIN vendors v ON v.id = i.vendor_id WHERE i.restaurant_id = $1 AND i.id = $2', [who.restaurantId, invoiceId])).rows[0];
+  if (!inv) throw new HttpError(404, 'No invoice by that id.');
+  if (!Array.isArray(raw) || !raw.length) return 0;
+  const clean = cleanLines(model, raw, inv.kind === 'garden', Number(inv.next));
+  for (const l of clean) await db.query('INSERT INTO app_invoice_lines (invoice_id, line_number, product_id, description, quantity, unit, total) VALUES ($1, $2, $3, $4, $5, $6, $7)', [inv.id, l.lineNumber, l.productId, l.description, l.quantity, l.unit, l.total]);
+  await db.query('UPDATE app_invoices SET updated_at = now() WHERE id = $1', [inv.id]);
+  return clean.length;
 }

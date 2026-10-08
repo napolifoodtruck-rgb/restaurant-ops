@@ -20,6 +20,8 @@ export interface ReadLine {
   total: number;
   /** True when the reader wasn't sure of a number on this line. */
   unsure?: boolean;
+  /** A handwritten change applied to this line, in a few words ("shorted 1 cs", "qty 2 → 1"). */
+  handwritten?: string;
 }
 
 export interface ReadInvoice {
@@ -75,6 +77,7 @@ const TOOL = {
             unitPrice: { type: 'number' },
             total: { type: 'number', description: 'Extended price for the line. Negative for credits.' },
             unsure: { type: 'boolean', description: 'True if any number on this line was hard to read.' },
+            handwritten: { type: 'string', description: 'If a handwritten mark changes this line (crossed out, shorted, a new quantity or price), what it says in a few words, e.g. "shorted 1 cs" or "qty 2 → 1". The quantity and total fields then hold the corrected numbers. Leave out when nothing is handwritten.' },
           },
         },
       },
@@ -103,6 +106,8 @@ export async function readInvoice(pages: readonly ReadPage[], opts: ReaderOption
     `This is a supplier invoice for a restaurant${pages.length > 1 ? `, ${pages.length} pages in order` : ''}. Record it with record_invoice.`,
     'Copy numbers exactly as printed; do not correct or compute them. Use the quantity actually shipped or delivered.',
     'Include every product line, credits and returns as negative lines. Leave out subtotal, tax, delivery and deposit summary rows from lines (put them in their own fields).',
+    'Handwritten corrections (a crossed-out quantity, "short 1", a refused item) change the line only when they are clear: then record the corrected quantity and total and say what changed in handwritten. If a mark is unclear, keep the printed numbers, set unsure, and describe the mark in notes.',
+    'If two images show the same page, record its lines once and say so in notes. If a page seems to be missing (page 1 of 2 with no page 2, totals carried forward), say so in notes.',
     opts.vendors?.length ? `Known vendors (use the exact name if it is one of these): ${opts.vendors.join('; ')}.` : '',
   ].filter(Boolean).join('\n') });
   const res = await (opts.fetch ?? fetch)(`${opts.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
@@ -132,6 +137,7 @@ export function cleanRead(input: any): ReadInvoice {
     if (pack) line.pack = pack;
     if (unitPrice !== undefined) line.unitPrice = unitPrice;
     if (l.unsure === true) line.unsure = true;
+    if (str(l.handwritten)) line.handwritten = str(l.handwritten)!;
     return line;
   }).filter(Boolean);
   const date = str(input?.invoiceDate);

@@ -19,7 +19,7 @@ import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, invalidate, type Model } from './model.ts';
-import { baseOf, createAppInvoice } from './appInvoices.ts';
+import { appendAppInvoiceLines, baseOf, createAppInvoice } from './appInvoices.ts';
 import { readInvoice, ReaderError, type ReadInvoice, type ReadPage } from '../connectors/claudeInvoices.ts';
 import { itemKey, matchInvoice, vendorKey, type Learned, type PastLine } from '../core/invoiceMatch.ts';
 import { packBaseOf } from '../connectors/marginedge.ts';
@@ -86,7 +86,8 @@ async function matched(db: Db, restaurantId: string, model: Model, read: ReadInv
     baseOf: (id, unit) => { const p = byId.get(id); return p ? baseOf(p, unit) : undefined; },
     priceNow: (id) => model.book.unitCost(id),
     // Already in, from MarginEdge or saved here before (the same photo taken twice).
-    invoices: model.imported.invoices.map((i) => ({ externalId: i.externalId, ...(i.vendorExternalId ? { vendorKey: i.vendorExternalId } : {}), ...(i.invoiceNumber ? { number: i.invoiceNumber } : {}), ...(i.invoiceDate ? { date: i.invoiceDate } : {}), total: i.total })),
+    invoices: model.imported.invoices.map((i) => ({ externalId: i.externalId, ...(i.vendorExternalId ? { vendorKey: i.vendorExternalId } : {}), ...(i.invoiceNumber ? { number: i.invoiceNumber } : {}), ...(i.invoiceDate ? { date: i.invoiceDate } : {}), total: i.total,
+      ...(i.externalId.startsWith('app:') ? { lines: i.lines.map((l) => ({ description: l.description, total: l.lineTotal })) } : {}) })),
   });
   return { ...m, lines: m.lines.map((l) => ({ ...l, ...(l.productId ? { productName: byId.get(l.productId)?.name ?? l.productId } : {}) })) };
 }
@@ -115,7 +116,7 @@ export async function scanRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     return send(res, 200, { id, connected: Boolean(scanSettings.apiKey()) }), true;
   }
 
-  const m = path.match(/^\/api\/invoices\/scan\/([0-9a-f-]{36})(?:\/(page)\/(\d+)|\/(save|discard|retry))?$/);
+  const m = path.match(/^\/api\/invoices\/scan\/([0-9a-f-]{36})(?:\/(page)\/(\d+)|\/(save|discard|retry|join))?$/);
   if (!m) throw new HttpError(404, 'Not found.');
   const scan = (await db.query<{ id: string; status: string; result: any; error: string | null; usage: any; app_invoice_id: string | null; created_at: string; pages: string }>(
     'SELECT s.id, s.status, s.result, s.error, s.usage, s.app_invoice_id, s.created_at::text AS created_at, (SELECT count(*) FROM invoice_scan_pages p WHERE p.scan_id = s.id)::text AS pages FROM invoice_scans s WHERE s.restaurant_id = $1 AND s.id = $2', [who.restaurantId, m[1]])).rows[0];
@@ -130,13 +131,33 @@ export async function scanRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     return true;
   }
 
+  if (method === 'POST' && m[4] === 'join') {
+    // This photo is more pages of another one not yet saved: its pages go on the end, read again.
+    const b = await body(req);
+    const into = String(b.into ?? '');
+    const other = (await db.query<{ id: string; status: string }>('SELECT id, status FROM invoice_scans WHERE restaurant_id = $1 AND id = $2', [who.restaurantId, into])).rows[0];
+    if (!other || other.id === scan.id || !['read', 'failed'].includes(other.status) || scan.status === 'saved') throw new HttpError(409, 'Those can’t be joined.');
+    await db.query('UPDATE invoice_scan_pages SET scan_id = $1, page = page + (SELECT coalesce(max(page), 0) FROM invoice_scan_pages WHERE scan_id = $1) WHERE scan_id = $2', [other.id, scan.id]);
+    await db.query("UPDATE invoice_scans SET status = 'discarded', updated_at = now() WHERE id = $1", [scan.id]);
+    await db.query("UPDATE invoice_scans SET status = 'reading', error = NULL, updated_at = now() WHERE id = $1", [other.id]);
+    void readScan(db, who.restaurantId, other.id);
+    return send(res, 200, { ok: true, id: other.id }), true;
+  }
+
   if (method === 'GET' && !m[4]) {
     const model = scan.status === 'read' && result ? await getModel(db, who.restaurantId, today) : undefined;
+    // Another photo, not saved yet, of the same invoice (same vendor and number): likely its other pages.
+    const samePaper = result?.invoiceNumber ? (await db.query<{ id: string; pages: string; created_at: string; vendor: string; number: string }>(
+      `SELECT s.id, (SELECT count(*) FROM invoice_scan_pages p WHERE p.scan_id = s.id)::text AS pages, s.created_at::text AS created_at, s.result->>'vendor' AS vendor, s.result->>'invoiceNumber' AS number
+         FROM invoice_scans s WHERE s.restaurant_id = $1 AND s.id <> $2 AND s.status = 'read' AND s.created_at > now() - interval '14 days'`, [who.restaurantId, scan.id])).rows
+      .filter((o) => vendorKey(o.vendor ?? '') === vendorKey(result.vendor) && (o.number ?? '').replace(/\W/g, '').toLowerCase() === result.invoiceNumber!.replace(/\W/g, '').toLowerCase())
+      .map((o) => ({ id: o.id, pages: Number(o.pages), createdAt: o.created_at })) : [];
     return send(res, 200, {
       id: scan.id, status: scan.status, error: scan.error, pages: Number(scan.pages), createdAt: scan.created_at,
       ...(scan.app_invoice_id ? { invoiceId: scan.app_invoice_id } : {}),
       ...(result ? { read: result } : {}),
       ...(model && result ? { matched: await matched(db, who.restaurantId, model, result) } : {}),
+      ...(samePaper.length ? { samePaper } : {}),
     }), true;
   }
 
@@ -160,7 +181,12 @@ export async function scanRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     // The same invoice MarginEdge already has: kept as a check of the reading, not counted twice.
     const check = await matched(db, who.restaurantId, model, result);
     let invoiceId: string | null = null;
-    if (!check.duplicateOf || b.countAnyway === true) invoiceId = await createAppInvoice(db, who, model, today, b, scan.id);
+    // Saved here before (another photo of it): the lines it didn't have go onto it. MarginEdge's
+    // own copy: kept as a check only.
+    if (check.duplicateOf?.source === 'app') {
+      invoiceId = check.duplicateOf.externalId.slice(4);
+      await appendAppInvoiceLines(db, who, model, invoiceId, b.lines);
+    } else if (!check.duplicateOf || b.countAnyway === true) invoiceId = await createAppInvoice(db, who, model, today, b, scan.id);
     // Learn each confirmed line: this vendor's item is this ingredient, one of them holds this much.
     const vName = String((b.vendor as any)?.name ?? '') || (await (async () => {
       const v = b.vendor as any;
