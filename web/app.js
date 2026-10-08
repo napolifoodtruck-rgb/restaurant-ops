@@ -535,8 +535,7 @@ function perfToolbar(me, state, m, current, again, mode) {
   // The presets as the period dropdown wants them: a key, a label, and the dates (90 days is the default, no dates).
   const presets = presetRanges().map(([label, r]) => [label, label, r ?? { from: m.from, to: m.to }]);
   const chosen = presetRanges().find(([, r]) => same(r, state.range));
-  return h('section', { class: 'card toolbar one-row' },
-    names.length > 1 ? seg('Category', names.map((n) => [n, n === current, () => again({ category: n })]), 'wrap-seg') : null,
+  const toolbar = h('section', { class: 'card toolbar one-row' },
     // Full price or specials alone, where specials buttons (Tuesday $10, half-price Wednesday) sold.
     m.hasSpecials ? seg('Which sales', [['All', 'all'], ['Full price', 'full'], ['Specials', 'special']].map(([text, p]) => [text, (state.price ?? 'all') === p, () => marginsScreen(me, { ...state, price: p })])) : null,
     periodPicker(presets, chosen ? chosen[0] : 'custom', { from: m.from, to: m.to }, (key, r) => {
@@ -544,6 +543,31 @@ function perfToolbar(me, state, m, current, again, mode) {
       marginsScreen(me, { ...state, range: key === 'custom' ? r : preset?.[1] ?? null });
     }),
     mode ? h('div', { class: 'tool-end' }, seg('Table or charts', [['Table', mode !== 'charts', () => again({ mode: 'table' })], ['Charts', mode === 'charts', () => again({ mode: 'charts' })]])) : null);
+  return names.length > 1 ? [categoryStrip(me, m, current, again), toolbar] : toolbar;
+}
+
+/**
+ * The categories across the top of Performance, one tile each: its cost against the goal and
+ * its gross profit, so the strip reads as a summary before it's a way to switch. Scrolls
+ * sideways when there are more than fit.
+ */
+function categoryStrip(me, m, current, again) {
+  const bar = sideOf(me) === 'bar';
+  const goal = bar ? POUR_COST_GOAL : FOOD_COST_GOAL;
+  const tile = (name, lines, label) => h('button', { class: `cat-tile${name === current ? ' on' : ''}`, role: 'tab', 'aria-selected': String(name === current), 'aria-label': label, onclick: () => again({ category: name }) },
+    h('span', { class: 'cat-name', text: name }), ...lines);
+  const tiles = [
+    ...m.categories.map((c) => {
+      const st = foodCostStatus(c.foodCostShare, goal);
+      return tile(c.name, [h('span', { class: `cat-pct ${st.cls}`, text: `${pct(c.foodCostShare)} ${bar ? 'pour' : 'food'}` }), h('span', { class: 'cat-sub', text: `${dollars(c.leftOver)} profit` })],
+        `${c.name}: ${pct(c.foodCostShare)} ${bar ? 'pour' : 'food'} cost, ${st.label.replace(/^\S+\s/, '').toLowerCase()}; ${dollars(c.leftOver)} gross profit`);
+    }),
+    ...(m.salesOnly ?? []).map((c) => tile(c.name, [h('span', { class: 'cat-pct muted', text: 'no costs yet' }), h('span', { class: 'cat-sub', text: `${dollars(c.netSales)} sales` })], `${c.name}: no costs yet, ${dollars(c.netSales)} sales`)),
+  ];
+  const strip = h('div', { class: 'cat-strip', role: 'tablist', 'aria-label': 'Category' }, tiles);
+  // Keep the chosen one in view when the strip scrolls.
+  requestAnimationFrame(() => strip.querySelector('.cat-tile.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+  return strip;
 }
 
 /**
