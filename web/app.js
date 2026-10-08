@@ -3264,6 +3264,7 @@ function recipeView(me, r, opts) {
         r.usedBy.length ? sideBox('Used in', h('div', { class: 'small' }, usedIn())) : null,
         r.linked ? soldAsBox(r, opts.reload) : null,
         cost ? sideBox('Cost · managers only', h('div', { class: 'big', text: money2(r.cost * scale) }), h('div', { class: 'small muted', text: `${prep ? `for ${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}` : r.kind === 'drink' ? 'a drink' : 'a plate'}${r.complete ? '' : ' · some lines have no price yet'}` })) : null,
+        r.canEdit && r.sameAs?.length ? sameDishBox(r, (name) => recipePage(me, name, opts)) : null,
         r.canEdit && r.id ? (history ??= recipeHistoryBox(r, (name) => recipePage(me, name, opts))) : null);
       return;
     }
@@ -3279,6 +3280,24 @@ function recipeView(me, r, opts) {
   };
   draw();
   return page ? { head, body, side: [...side.children].length ? side : null } : body;
+}
+
+/**
+ * Two recipes that look like one dish (a draft made from the POS button, a misspelling): keep one.
+ * The other's buttons, uses in other recipes, prep lists and menu answers move to the one kept.
+ */
+function sameDishBox(r, go) {
+  const err = h('div', { class: 'error' });
+  const merge = (from, into) => pageAction(async () => {
+    if (!confirmText(`Keep “${into}” and take out “${from}”? Its Square buttons, prep lists and anything that used it move to “${into}”. “${from}” stays in the history.`)) return;
+    const res = await api('POST', '/api/cards/merge', { from, into });
+    if (!res.ok) return (err.textContent = res.data.error ?? 'That didn’t work.');
+    go(into);
+  });
+  return sideBox('Same dish?', r.sameAs.map((other) => h('div', { class: 'stack' },
+    h('div', { class: 'small', text: `“${other}” looks like the same dish.` }),
+    h('button', { class: 'btn', text: `Keep ${other}`, onclick: () => merge(r.name, other) }),
+    h('button', { class: 'btn', text: `Keep ${r.name}`, onclick: () => merge(other, r.name) }))), err);
 }
 
 const VERSION_CHANGE = { created: 'Written', edited: 'Changed', renamed: 'Renamed', removed: 'Taken out', restored: 'Put back', imported: 'Brought into the app' };

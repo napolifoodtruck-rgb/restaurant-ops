@@ -24,6 +24,8 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   const refunds = new Map<string, number>();
   const live = new Map<string, any>();
   const stock = new Map<string, number>();
+  // Tickets open on the POS, as Square's order search returns them.
+  const openTables: any[] = [];
   // Orders paid in Square (order id → payment id); `dropAnswer`: the next charge goes through but its answer is lost.
   const paidInSquare = new Map<string, string>();
   const cancelledInSquare = new Set<string>();
@@ -49,6 +51,7 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
     }
     const body = JSON.parse(init.body ?? '{}');
     if (path === '/v2/inventory/counts/batch-retrieve') return reply(200, { counts: body.catalog_object_ids.filter((id: string) => stock.has(id)).map((id: string) => ({ catalog_object_id: id, state: 'IN_STOCK', quantity: String(stock.get(id)) })) });
+    if (path === '/v2/orders/search') return reply(200, { orders: body.query.filter.state_filter.states.includes('OPEN') ? openTables : [] });
     if (path === '/v2/catalog/batch-retrieve') {
       // With related objects: the modifier lists of the items asked for, as set in `live`.
       const listIds = body.include_related_objects ? body.object_ids.flatMap((id: string) => ((live.get(id) ?? objects.find((o) => o.id === id))?.item_data?.modifier_list_info ?? []).map((i: any) => i.modifier_list_id)) : [];
@@ -211,11 +214,12 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   const firstTry = square.find((x) => x.path === '/v2/orders')!;
   assert.equal(firstTry.body.idempotency_key.startsWith(held.json.id), true);
   assert.equal(cancelledInSquare.size, 1);
-  assert.equal((await db!.query('SELECT square_order_id FROM online_orders WHERE id = $1', [held.json.id])).rows[0].square_order_id, null);
+  const squareOrderOf = async (id: string) => (await db!.query<{ square_order_id: string | null }>('SELECT square_order_id FROM online_orders WHERE id = $1', [id])).rows[0]!.square_order_id;
+  assert.equal(await squareOrderOf(held.json.id), null);
   const paid = await customer('POST', `/api/order/${held.json.id}/pay`, { sourceId: 'cnon:card-ok' });
   assert.deepEqual([paid.status, paid.json.status, paid.json.receiptUrl], [200, 'paid', 'https://squareup.com/receipt/x']);
   const payment = square.at(-1)!.body;
-  const paidOrderId = (await db!.query('SELECT square_order_id FROM online_orders WHERE id = $1', [held.json.id])).rows[0].square_order_id;
+  const paidOrderId = (await squareOrderOf(held.json.id))!;
   assert.deepEqual([payment.amount_money.amount, payment.tip_money.amount, payment.order_id, payment.location_id], [3978, 300, paidOrderId, 'loc-1']);
   assert.equal(cancelledInSquare.has(paidOrderId), false);
   assert.ok(payment.idempotency_key.length <= 45);
@@ -284,6 +288,14 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   stock.set('var-marg', 1);
   const tooMany = await customer('POST', '/api/order/checkout', { ...order, window: '18:00', lines: [{ variationId: 'var-marg', quantity: 2 }], tip: 0 });
   assert.deepEqual([tooMany.status, tooMany.json.backToOrder, /only have 1 Margherita left/.test(tooMany.json.error)], [409, true, true]);
+  // Pizzas on unpaid tables are taken off the count; paid tickets and online orders aren't (Square already did).
+  stock.set('var-marg', 3);
+  const ticket = (source: string, due: number, quantity: string) => ({ source: { name: source }, net_amount_due_money: { amount: due }, line_items: [{ catalog_object_id: 'var-marg', quantity }, { catalog_object_id: 'var-other', quantity: '5' }] });
+  openTables.push(ticket('Point of Sale', 4300, '2'), ticket('Point of Sale', 0, '1'), ticket('Square Online', 2000, '1'), ticket('Online ordering', 2000, '1'));
+  const tableHasThem = await customer('POST', '/api/order/checkout', { ...order, window: '18:00', lines: [{ variationId: 'var-marg', quantity: 2 }], tip: 0 });
+  assert.deepEqual([tableHasThem.status, /only have 1 Margherita left/.test(tableHasThem.json.error)], [409, true]);
+  openTables.length = 0;
+  stock.set('var-marg', 1);
   const lastOne = await customer('POST', '/api/order/checkout', { ...order, window: '18:00', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
   assert.equal(lastOne.status, 201);
   live.set('item-marg', margNow({ location_overrides: [{ location_id: 'loc-1', sold_out: true }] }));
@@ -331,8 +343,7 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.equal((await customer('POST', `/api/order/${changed.json.id}/release`)).json.status, 'released');
   assert.equal(await left20(), room);
   // Neither got as far as Pay, so neither was ever sent to Square: nothing on the POS to clear up.
-  const squareIdOf = async (id: string) => (await db!.query<{ square_order_id: string | null }>('SELECT square_order_id FROM online_orders WHERE id = $1', [id])).rows[0]!.square_order_id;
-  assert.deepEqual([await squareIdOf(first.json.id), await squareIdOf(changed.json.id)], [null, null]);
+  assert.deepEqual([await squareOrderOf(first.json.id), await squareOrderOf(changed.json.id)], [null, null]);
   // One left open in Square (a Pay whose answer never came back, then they walked away): half an hour past its hold it's
   // given up and cancelled there; it can't be paid after.
   const walkedAway = await customer('POST', '/api/order/checkout', { ...order, window: '18:15', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });

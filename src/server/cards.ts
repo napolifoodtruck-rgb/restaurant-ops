@@ -8,6 +8,7 @@
  *   POST /api/cards                         { card, previousName?, link?: [posItem], unlink?: [posItem], changedFromToday? }
  *   POST /api/cards/batch                   { cards: [{ card, link }] } (a group of drafts at once)
  *   POST /api/cards/delete                  { name }
+ *   POST /api/cards/merge                   { from, into }: two recipes for one dish become the second
  *   POST /api/cards/no-card                 { items: [posItem] }: a fee or not a drink (corkage)
  *   GET  /api/cards/drafts?winePour=&draftPour=   bar drafts for drinks with no card yet
  *   GET  /api/cards/history?id=             a recipe's versions, newest first (who, when, what changed)
@@ -299,6 +300,31 @@ async function followRename(db: Db, who: SignedIn, state: { cards: RecipeCard[];
   return { cards, links, importChanged };
 }
 
+/** Words that don't tell two dishes apart: "Katahdin Pizza" is the Katahdin. */
+const FILLER = new Set(['pizza', 'pie', 'the', 'a', 'special', 'new', 'recipe', 'draft']);
+const simple = (name: string) => cardKey(name).split(/[^a-z0-9]+/).filter((w) => w && !FILLER.has(w)).join(' ');
+function editDistance(a: string, b: string): number {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)] as number[]);
+  for (let j = 1; j <= b.length; j++) d[0]![j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i]![j] = Math.min(d[i - 1]![j]! + 1, d[i]![j - 1]! + 1, d[i - 1]![j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[a.length]![b.length]!;
+}
+/**
+ * Other recipes that look like the same dish: the same name but for "pizza", or a letter or two off
+ * (a misspelling: Khatadin, Katahdin). Same kind only (a dish with dishes).
+ */
+export function sameDishAs(card: RecipeCard, cards: readonly RecipeCard[]): string[] {
+  const mine = simple(card.name), kind = kindOf(card);
+  if (!mine) return [];
+  return cards.filter((c) => c !== card && cardKey(c.name) !== cardKey(card.name) && kindOf(c) === kind).filter((c) => {
+    const theirs = simple(c.name);
+    if (!theirs) return false;
+    if (theirs === mine) return true;
+    const short = Math.min(theirs.length, mine.length);
+    return short >= 5 && editDistance(theirs, mine) <= (short >= 8 ? 2 : 1);
+  }).map((c) => c.name);
+}
+
 const SMALL_WORDS = new Set(['a', 'an', 'and', 'or', 'of', 'with', 'in', 'on', 'the', 'to', 'for', 'de', 'di', 'del', 'della', 'al', 'alla', 'e', 'la', 'le']);
 /** "apricot glaze" → "Apricot Glaze"; "BOH chili oil" → "BOH Chili Oil"; "Gluten Free dough1" → "Gluten Free Dough". */
 export function titleCase(name: string): string {
@@ -487,6 +513,28 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     await saveCards(db, who, list.map((ch) => ({ card: ch.card as CardInput, ...(typeof ch.previousName === 'string' ? { previousName: ch.previousName } : {}), link: posItemArg(ch.link), unlink: posItemArg(ch.unlink), ...(ch.changedFromToday === true ? { changedFromToday: true } : {}) })));
     const toFinish = (list[0]?.card?.ingredients ?? []).filter((i: any) => lineState(i, model, cards) !== 'ok').length;
     return send(res, 200, { saved: list.length, status: statuses[0], ...(statuses[0] === 'rough' ? { toFinish } : {}) }), true;
+  }
+
+  // Two recipes for one dish (a draft made from the button, and the real one): everything that pointed
+  // at the first (buttons, other recipes, prep lists, what came off the menu) moves to the second.
+  if (method === 'POST' && path === '/api/cards/merge') {
+    const b = await body(req);
+    const book = await loadBook(db, who.restaurantId);
+    let cards = [...(book.recipeCards ?? [])];
+    const from = cards.find((c) => c.name === String(b.from ?? '')), into = cards.find((c) => c.name === String(b.into ?? ''));
+    if (!from || !into) throw new HttpError(404, 'One of those recipes isn’t there any more. Reload and try again.');
+    if (from === into) throw new HttpError(400, 'That’s the same recipe.');
+    if (kindOf(from) !== kindOf(into)) throw new HttpError(400, 'Only a dish with a dish, a prep with a prep.');
+    const importAnswers = book.importAnswers ?? {};
+    cards = cards.filter((c) => c !== from);
+    const r = await followRename(db, who, { cards, links: book.linkAnswers ?? { confirm: [], newDish: [] }, importAnswers }, from.name, into.name);
+    const fromId = cardId(from), intoId = cardId(into);
+    const status = r.links.menuStatus ?? [];
+    const links = { ...r.links, menuStatus: status.some((m) => m.recipeId === intoId) ? status.filter((m) => m.recipeId !== fromId) : status.map((m) => (m.recipeId === fromId ? { ...m, recipeId: intoId } : m)) };
+    await saveBook(db, who.restaurantId, 'recipeCards', r.cards, who.staffId);
+    await saveBook(db, who.restaurantId, 'linkAnswers', links, who.staffId);
+    if (r.importChanged) await saveBook(db, who.restaurantId, 'importAnswers', importAnswers, who.staffId);
+    return send(res, 200, { ok: true, into: into.name }), true;
   }
 
   if (method === 'POST' && path === '/api/cards/delete') {

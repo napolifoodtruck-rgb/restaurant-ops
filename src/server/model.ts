@@ -13,7 +13,7 @@ import { blendedPrices, packBaseOf, type PurchasedProduct, type Purchasing } fro
 import { buildRecipes, cardId, FREE_PRODUCTS, type RecipeCard } from '../core/recipeCards.ts';
 import { packSize, withPackSize } from '../core/packSizes.ts';
 import { squareItemSales, squareMenuItems, squareModifierSales, type SquareCatalogObject } from '../connectors/square.ts';
-import { applyLinks, confirmLink, emptyLinkState, linkLookup, markNewDish, matchMenu, posName, type LinkQuestion, type PosMenuItem, type SoldItem } from '../core/menuLinks.ts';
+import { applyLinks, confirmLink, emptyLinkState, linkLookup, markNewDish, matchMenu, nameKey, posName, type LinkQuestion, type PosMenuItem, type SoldItem } from '../core/menuLinks.ts';
 import { foldedTotals, priceFolds, type FoldedVariation } from '../core/priceVariations.ts';
 import { menuMargins, type MarginReport, type MarginSaleLine } from '../core/margins.ts';
 import { modifierCosts, emptyModifierAnswers, type ModifierAnswers, type ModifierCosts } from '../core/modifiers.ts';
@@ -109,15 +109,42 @@ export function answerProblem(a: any): string | undefined {
 }
 
 /** The link answers with one more answer folded in. Later answers about the same item replace earlier ones. */
+/** The button an answer is about: its id, its name as sold ("Regular" or not), and from when. */
+const answerKey = (x: PosMenuItem & { from?: string }) => `${x.catalogId}|${nameKey(posName(x))}|${x.from ?? ''}`;
+
+/**
+ * One answer per button, the latest: a recipe picked today beats "needs a recipe" from yesterday
+ * and "not food" from the file. Answers with no time (loaded from a file) count as the oldest.
+ */
+export function latestAnswers(links: LinkAnswers): LinkAnswers {
+  const all = [
+    ...links.confirm.map((x, n) => ({ kind: 'confirm' as const, x, n })),
+    ...links.newDish.map((x, n) => ({ kind: 'newDish' as const, x, n })),
+    ...(links.notFood ?? []).map((x, n) => ({ kind: 'notFood' as const, x, n })),
+  ];
+  const order = (a: (typeof all)[number]) => a.x.at ?? '';
+  const winner = new Map<string, (typeof all)[number]>();
+  for (const a of all) {
+    const k = answerKey(a.x), w = winner.get(k);
+    // Later in time wins; with the same time (or none), the one added later in its list wins.
+    if (!w || order(a) > order(w) || (order(a) === order(w) && (a.kind === w.kind ? a.n > w.n : !a.x.at))) winner.set(k, a);
+  }
+  const keep = new Set([...winner.values()].map((w) => w.x));
+  return { ...links, confirm: links.confirm.filter((x) => keep.has(x)), newDish: links.newDish.filter((x) => keep.has(x)), notFood: (links.notFood ?? []).filter((x) => keep.has(x)) };
+}
+
 export function withAnswer(current: LinkAnswers, a: Exclude<Answer, { type: 'conversion' | 'price' }>, stamp: Stamp = {}): LinkAnswers {
-  const next: LinkAnswers = { confirm: [...current.confirm], newDish: [...current.newDish], notFood: [...(current.notFood ?? [])], dismissed: [...(current.dismissed ?? [])] };
+  // Everything else answered (menu status, price folds) stays as it is.
+  const next: LinkAnswers = { ...current, confirm: [...current.confirm], newDish: [...current.newDish], notFood: [...(current.notFood ?? [])], dismissed: [...(current.dismissed ?? [])] };
   const st = { ...(stamp.at ? { at: stamp.at } : {}), ...(stamp.by ? { by: stamp.by } : {}) };
   if (a.type === 'dismiss') {
     if (!next.dismissed!.some((d) => d.dedupeKey === a.dedupeKey)) next.dismissed!.push({ dedupeKey: a.dedupeKey, ...(a.note ? { note: a.note } : {}), ...st });
     return next;
   }
   const item = { catalogId: a.catalogId, itemName: a.itemName, ...(a.variationName ? { variationName: a.variationName } : {}), ...st };
-  const same = (x: PosMenuItem & { from?: string }) => x.catalogId === a.catalogId && x.itemName === a.itemName && (x.variationName ?? '') === (a.variationName ?? '') && (x.from ?? '') === ((a as any).from ?? '');
+  // A new answer replaces every earlier one about the same button ("Salsiccia" and "Salsiccia (Regular)" are one).
+  const key = answerKey({ ...a, ...((a as any).from ? { from: (a as any).from } : {}) });
+  const same = (x: PosMenuItem & { from?: string }) => answerKey(x) === key;
   next.confirm = next.confirm.filter((x) => !same(x));
   next.newDish = next.newDish.filter((x) => !same(x));
   next.notFood = next.notFood!.filter((x) => !same(x));
@@ -422,7 +449,7 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     sold.set(key, s);
   }
   const soldItems = [...sold.values()];
-  const linkAnswers = bookData.linkAnswers ?? { confirm: [], newDish: [] };
+  const linkAnswers = latestAnswers(bookData.linkAnswers ?? { confirm: [], newDish: [] });
   let state = emptyLinkState();
   for (const a of linkAnswers.confirm) {
     const recipe = (a.recipeId ? recipes.find((x) => x.id === a.recipeId) : undefined) ?? recipes.find((x) => x.name === a.recipe);
