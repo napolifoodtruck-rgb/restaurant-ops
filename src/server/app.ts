@@ -6,9 +6,9 @@
  *   GET  /api/setup              whether first-time setup is open
  *   POST /api/setup              first owner and restaurant, once, with SETUP_TOKEN
  *   POST /api/login/password     { email, password }
- *   POST /api/devices            { name, stationId? } (manager or up): enroll this iPad
+ *   POST /api/devices            { name, stationId?, floorPostId? } (manager or up): enroll this iPad
  *   GET  /api/devices            the kitchen iPads and their stations (manager or up)
- *   POST /api/devices/:id        { name?, stationId?, revoke? } (manager or up)
+ *   POST /api/devices/:id        { name?, stationId?, floorPostId?, revoke? } (manager or up)
  *   GET  /api/devices/staff      names for the PIN screen (enrolled iPad only)
  *   POST /api/login/pin          { staffId, pin } (enrolled iPad only)
  *   POST /api/logout
@@ -30,6 +30,7 @@
  *   GET  /api/menu               the menu from sales, what came off, to-dos (manager or up)
  *   POST /api/answers            answer a menu question: link, new dish, not food, dismiss (manager or up)
  *   /api/prep/…                  station prep lists: see prep.ts
+ *   /api/floor/…                 the front of house board on each POS iPad, and its setup: see floor.ts
  *   /api/plans/…                 dishes coming to the menu: see plans.ts
  *   GET  /api/today              what needs someone today: see today.ts
  *   /api/cards/…                 recipe cards, written in the app, and bar drafts: see cards.ts
@@ -58,6 +59,7 @@ import { localDateHour, marginEdgeApiFrom, runSync, squareApiFrom, type SyncSett
 import { posName } from '../core/menuLinks.ts';
 import { BOOK_KEYS, PRODUCT_ANSWERS, answerProblem, bookProblem, getModel, loadBook, saveBook, withAnswer, withoutAnswer, recentAnswers, withProductAnswer, type Answer } from './model.ts';
 import { bookParts } from './book.ts';
+import { floorRoutes } from './floor.ts';
 import { marginsView, menuView, posItemOf } from './views.ts';
 import { prepRoutes } from './prep.ts';
 import { planRoutes } from './plans.ts';
@@ -341,7 +343,7 @@ export function createApp(config: AppConfig) {
       const station = here?.stationId ? (await db.query<{ name: string }>('SELECT name FROM stations WHERE id = $1 AND active', [here.stationId])).rows[0] : undefined;
       const account = (await db.query<{ email: string | null; has_password: boolean }>('SELECT email, password_hash IS NOT NULL AS has_password FROM staff WHERE id = $1', [me.staffId])).rows[0];
       return send(res, 200, { me, ...(account ? { account: { email: account.email, hasPassword: account.has_password } } : {}),
-        ...(here ? { device: { id: here.id, name: here.name, ...(station ? { stationId: here.stationId, station: station.name } : {}) } } : {}) });
+        ...(here ? { device: { id: here.id, name: here.name, ...(station ? { stationId: here.stationId, station: station.name } : {}), ...(here.floorPostId ? { floorPostId: here.floorPostId } : {}) } } : {}) });
     }
 
     // Your own password: the current one, then the new one. Other password sign-ins end.
@@ -361,6 +363,13 @@ export function createApp(config: AppConfig) {
       return String(b.stationId);
     };
 
+    const floorPostOf = async (restaurantId: string, b: Record<string, unknown>): Promise<string | null> => {
+      if (b.floorPostId === undefined || b.floorPostId === null || b.floorPostId === '') return null;
+      const r = await db.query('SELECT 1 FROM floor_posts WHERE restaurant_id = $1 AND id = $2 AND active', [restaurantId, String(b.floorPostId)]);
+      if (!r.rows.length) throw new HttpError(400, 'No such post.');
+      return String(b.floorPostId);
+    };
+
     if (method === 'POST' && path === '/api/devices') {
       const who = await signedIn(req);
       if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Only a manager can set up an iPad.');
@@ -368,20 +377,22 @@ export function createApp(config: AppConfig) {
       const name = str(b, 'name').trim();
       if (!name) throw new HttpError(400, 'Name this iPad.');
       const stationId = await stationOf(who.restaurantId, b);
+      const floorPostId = await floorPostOf(who.restaurantId, b);
       const { token, hash } = newToken();
-      const r = await db.query<{ id: string }>('INSERT INTO devices (restaurant_id, name, token_hash, enrolled_by, station_id) VALUES ($1, $2, $3, $4, $5) RETURNING id', [who.restaurantId, name, hash, who.staffId, stationId]);
+      const r = await db.query<{ id: string }>('INSERT INTO devices (restaurant_id, name, token_hash, enrolled_by, station_id, floor_post_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id', [who.restaurantId, name, hash, who.staffId, stationId, floorPostId]);
       const tenYears = new Date(Date.now() + 10 * 365 * 86_400_000);
-      return send(res, 201, { device: { id: r.rows[0]!.id, name, stationId } }, { 'set-cookie': cookie(DEVICE_COOKIE, token, tenYears, secureCookies) });
+      return send(res, 201, { device: { id: r.rows[0]!.id, name, stationId, floorPostId } }, { 'set-cookie': cookie(DEVICE_COOKIE, token, tenYears, secureCookies) });
     }
 
     if (method === 'GET' && path === '/api/devices') {
       const who = await signedIn(req);
       if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
       const here = await deviceFor(db, cookies(req)[DEVICE_COOKIE]);
-      const devices = (await db.query<{ id: string; name: string; station_id: string | null; last_seen_at: Date | null }>(
-        'SELECT id, name, station_id, last_seen_at FROM devices WHERE restaurant_id = $1 AND revoked_at IS NULL ORDER BY name', [who.restaurantId])).rows;
+      const devices = (await db.query<{ id: string; name: string; station_id: string | null; floor_post_id: string | null; last_seen_at: Date | null }>(
+        'SELECT id, name, station_id, floor_post_id, last_seen_at FROM devices WHERE restaurant_id = $1 AND revoked_at IS NULL ORDER BY name', [who.restaurantId])).rows;
+      const posts = (await db.query<{ id: string; name: string }>('SELECT id, name FROM floor_posts WHERE restaurant_id = $1 AND active ORDER BY sort_order, name', [who.restaurantId])).rows;
       const stations = (await db.query<{ id: string; name: string }>('SELECT id, name FROM stations WHERE restaurant_id = $1 AND active ORDER BY sort_order', [who.restaurantId])).rows;
-      return send(res, 200, { stations, devices: devices.map((d) => ({ id: d.id, name: d.name, stationId: d.station_id, lastSeen: d.last_seen_at, thisOne: d.id === here?.id })) });
+      return send(res, 200, { stations, posts, devices: devices.map((d) => ({ id: d.id, name: d.name, stationId: d.station_id, floorPostId: d.floor_post_id, lastSeen: d.last_seen_at, thisOne: d.id === here?.id })) });
     }
 
     const devicePath = path.match(/^\/api\/devices\/([0-9a-f-]{36})$/);
@@ -396,6 +407,7 @@ export function createApp(config: AppConfig) {
         return send(res, 200, { ok: true });
       }
       if ('stationId' in b) await db.query('UPDATE devices SET station_id = $1 WHERE restaurant_id = $2 AND id = $3', [await stationOf(who.restaurantId, b), who.restaurantId, id]);
+      if ('floorPostId' in b) await db.query('UPDATE devices SET floor_post_id = $1 WHERE restaurant_id = $2 AND id = $3', [await floorPostOf(who.restaurantId, b), who.restaurantId, id]);
       if (typeof b.name === 'string' && b.name.trim()) await db.query('UPDATE devices SET name = $1 WHERE restaurant_id = $2 AND id = $3', [b.name.trim(), who.restaurantId, id]);
       return send(res, 200, { ok: true });
     }
@@ -406,7 +418,7 @@ export function createApp(config: AppConfig) {
         'SELECT id, display_name, pin_hash IS NOT NULL AS has_pin FROM staff WHERE restaurant_id = $1 AND active ORDER BY display_name',
         [device.restaurantId],
       );
-      return send(res, 200, { device: device.name, staff: rows.map((r) => ({ id: r.id, name: r.display_name, hasPin: r.has_pin })) });
+      return send(res, 200, { device: device.name, ...(device.floorPostId ? { floorPostId: device.floorPostId } : {}), ...(device.stationId ? { stationId: device.stationId } : {}), staff: rows.map((r) => ({ id: r.id, name: r.display_name, hasPin: r.has_pin })) });
     }
 
     const pinPath = path.match(/^\/api\/staff\/([0-9a-f-]{36})\/pin$/);
@@ -769,6 +781,21 @@ export function createApp(config: AppConfig) {
         SELECT DISTINCT $1::uuid, $2::uuid, k, $4::timestamptz FROM jsonb_array_elements_text($3::jsonb) AS k
         ON CONFLICT (restaurant_id, staff_id, item_key) DO UPDATE SET until = EXCLUDED.until, snoozed_at = now()`, [who.restaurantId, who.staffId, JSON.stringify(keys), until]);
       return send(res, 200, { ok: true, until: new Date(until).toISOString() });
+    }
+
+    // The Floor: a POS iPad set to a post shows its board without anyone signed in.
+    if (path.startsWith('/api/floor')) {
+      const who = await sessionFor(db, cookies(req)[SESSION_COOKIE]);
+      const device = await deviceFor(db, cookies(req)[DEVICE_COOKIE]);
+      const restaurantId = who?.restaurantId ?? device?.restaurantId;
+      if (!restaurantId) throw new HttpError(401, 'Sign in first, or set this iPad up for the Floor.');
+      const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+      const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', weekday: 'short' }).formatToParts(new Date()).map((p) => [p.type, p.value]));
+      const mine = device && device.restaurantId === restaurantId ? { id: device.id, restaurantId, floorPostId: device.floorPostId } : undefined;
+      if (await floorRoutes(db, req, res, url, method, {
+        ...(who ? { who } : {}), ...(mine ? { device: mine } : {}), restaurantId, today: localDateHour(tz).date,
+        minutes: Number(parts.hour) * 60 + Number(parts.minute), weekday: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(String(parts.weekday)),
+      })) return;
     }
 
     if (path.startsWith('/api/prep')) {

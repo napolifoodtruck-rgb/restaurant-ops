@@ -38,6 +38,8 @@ export interface ReadInvoice {
   notes?: string;
 }
 
+import { askWithTool, DEFAULT_MODEL, ReaderError } from './claude.ts';
+
 export interface ReadPage { mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'application/pdf'; data: Buffer }
 
 export interface ReaderOptions {
@@ -50,7 +52,7 @@ export interface ReaderOptions {
   baseUrl?: string;
 }
 
-export const DEFAULT_MODEL = 'claude-sonnet-5-5';
+export { DEFAULT_MODEL, ReaderError } from './claude.ts';
 
 const TOOL = {
   name: 'record_invoice',
@@ -90,36 +92,20 @@ const TOOL = {
   },
 } as const;
 
-export class ReaderError extends Error {
-  status?: number;
-  constructor(message: string, status?: number) { super(message); if (status !== undefined) this.status = status; }
-}
-
 /** Reads one invoice (one or more pages). Returns what was read, and the tokens used. */
 export async function readInvoice(pages: readonly ReadPage[], opts: ReaderOptions): Promise<{ invoice: ReadInvoice; usage: { input: number; output: number }; model: string }> {
   if (!pages.length) throw new ReaderError('No pages.');
   const model = opts.model ?? DEFAULT_MODEL;
-  const content: unknown[] = pages.map((p) => p.mediaType === 'application/pdf'
-    ? { type: 'document', source: { type: 'base64', media_type: p.mediaType, data: p.data.toString('base64') } }
-    : { type: 'image', source: { type: 'base64', media_type: p.mediaType, data: p.data.toString('base64') } });
-  content.push({ type: 'text', text: [
+  const prompt = [
     `This is a supplier invoice for a restaurant${pages.length > 1 ? `, ${pages.length} pages in order` : ''}. Record it with record_invoice.`,
     'Copy numbers exactly as printed; do not correct or compute them. Use the quantity actually shipped or delivered.',
     'Include every product line, credits and returns as negative lines. Leave out subtotal, tax, delivery and deposit summary rows from lines (put them in their own fields).',
     'Handwritten corrections (a crossed-out quantity, "short 1", a refused item) change the line only when they are clear: then record the corrected quantity and total and say what changed in handwritten. If a mark is unclear, keep the printed numbers, set unsure, and describe the mark in notes.',
     'If two images show the same page, record its lines once and say so in notes. If a page seems to be missing (page 1 of 2 with no page 2, totals carried forward), say so in notes.',
     opts.vendors?.length ? `Known vendors (use the exact name if it is one of these): ${opts.vendors.join('; ')}.` : '',
-  ].filter(Boolean).join('\n') });
-  const res = await (opts.fetch ?? fetch)(`${opts.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-api-key': opts.apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model, max_tokens: 8000, tools: [TOOL], tool_choice: { type: 'tool', name: TOOL.name }, messages: [{ role: 'user', content }] }),
-  });
-  const data: any = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ReaderError(data?.error?.message ?? `The invoice reader answered ${res.status}.`, res.status);
-  const call = (data.content ?? []).find((c: any) => c.type === 'tool_use' && c.name === TOOL.name);
-  if (!call?.input) throw new ReaderError('The invoice reader didn’t send back an invoice.');
-  return { invoice: cleanRead(call.input), usage: { input: Number(data.usage?.input_tokens ?? 0), output: Number(data.usage?.output_tokens ?? 0) }, model };
+  ].filter(Boolean).join('\n');
+  const answer = await askWithTool(pages, prompt, TOOL, { ...opts, maxTokens: 8000 }, 'The invoice reader');
+  return { invoice: cleanRead(answer.input), usage: answer.usage, model };
 }
 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() && Number.isFinite(Number(v.replace(/[$,]/g, ''))) ? Number(v.replace(/[$,]/g, '')) : undefined);

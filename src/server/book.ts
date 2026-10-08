@@ -555,9 +555,11 @@ export async function saveImportAnswers(db: Db, restaurantId: string, a: PilotIm
   const importer = { ...(a.packs?.length ? { packs: a.packs } : {}), ...(a.merges?.length ? { merges: a.merges } : {}) };
   const rid = text(restaurantId);
   await db.script([
-    `DELETE FROM ingredient_answers WHERE restaurant_id = ${rid};`,
+    // Only these answers' own columns: allergens and menu names live on the same rows.
+    `UPDATE ingredient_answers SET conversions = NULL, manual_price = NULL, exclusive = false, partly_grown = NULL WHERE restaurant_id = ${rid};`,
     answerRows.length ? `INSERT INTO ingredient_answers (restaurant_id, ingredient_id, conversions, manual_price, exclusive, partly_grown)
-      SELECT ${rid}, x.ingredient_id, x.conversions, x.manual_price, x.exclusive, x.partly_grown FROM jsonb_to_recordset(${lit(answerRows)}) AS x(ingredient_id text, conversions jsonb, manual_price jsonb, exclusive boolean, partly_grown jsonb);` : '',
+      SELECT ${rid}, x.ingredient_id, x.conversions, x.manual_price, x.exclusive, x.partly_grown FROM jsonb_to_recordset(${lit(answerRows)}) AS x(ingredient_id text, conversions jsonb, manual_price jsonb, exclusive boolean, partly_grown jsonb)
+      ON CONFLICT (restaurant_id, ingredient_id) DO UPDATE SET conversions = EXCLUDED.conversions, manual_price = EXCLUDED.manual_price, exclusive = EXCLUDED.exclusive, partly_grown = EXCLUDED.partly_grown, updated_at = now();` : '',
     `DELETE FROM ingredient_aliases WHERE restaurant_id = ${rid};`,
     aliasRows.length ? `INSERT INTO ingredient_aliases (restaurant_id, name_key, name, ingredient_id) SELECT ${rid}, x.name_key, x.name, x.ingredient_id FROM jsonb_to_recordset(${lit(aliasRows)}) AS x(name_key text, name text, ingredient_id text);` : '',
     `DELETE FROM confirmed_portions WHERE restaurant_id = ${rid};`,
@@ -643,7 +645,7 @@ async function clearTables(db: Db, restaurantId: string): Promise<void> {
   await db.script([
     `DELETE FROM dish_links WHERE restaurant_id = ${rid};`, `DELETE FROM confirmed_portions WHERE restaurant_id = ${rid};`,
     `DELETE FROM dismissed_checks WHERE restaurant_id = ${rid};`, `DELETE FROM price_folds WHERE restaurant_id = ${rid};`, `DELETE FROM menu_status WHERE restaurant_id = ${rid};`,
-    `DELETE FROM ingredient_answers WHERE restaurant_id = ${rid};`, `DELETE FROM ingredient_aliases WHERE restaurant_id = ${rid};`,
+    `UPDATE ingredient_answers SET conversions = NULL, manual_price = NULL, exclusive = false, partly_grown = NULL WHERE restaurant_id = ${rid};`, `DELETE FROM ingredient_aliases WHERE restaurant_id = ${rid};`,
     `DELETE FROM importer_answers WHERE restaurant_id = ${rid};`, `DELETE FROM modifier_answers WHERE restaurant_id = ${rid};`,
     `UPDATE station_items SET recipe_id = NULL WHERE restaurant_id = ${rid};`, `UPDATE menu_plans SET recipe_id = NULL WHERE restaurant_id = ${rid};`,
     `DELETE FROM recipe_lines WHERE recipe_id IN (SELECT id FROM recipes WHERE restaurant_id = ${rid});`,

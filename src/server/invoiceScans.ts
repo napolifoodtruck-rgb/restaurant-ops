@@ -24,14 +24,10 @@ import { replaceMarginEdgeCopy } from './meImport.ts';
 import { readInvoice, ReaderError, type ReadInvoice, type ReadPage } from '../connectors/claudeInvoices.ts';
 import { itemKey, matchInvoice, vendorKey, type Learned, type PastLine } from '../core/invoiceMatch.ts';
 import { packBaseOf } from '../core/purchasing.ts';
+import { claudeSettings } from '../connectors/claude.ts';
 
-/** Where the reader's key and model come from; tests swap in a pretend fetch. */
-export const scanSettings = {
-  apiKey: (): string | undefined => process.env.ANTHROPIC_API_KEY?.trim() || undefined,
-  model: (): string | undefined => process.env.ANTHROPIC_MODEL?.trim() || undefined,
-  baseUrl: (): string | undefined => process.env.ANTHROPIC_BASE_URL?.trim() || undefined,
-  fetch: (...args: Parameters<typeof fetch>) => fetch(...args),
-};
+/** Where the reader's key and model come from; tests swap in a pretend fetch (shared with every Claude reader). */
+export const scanSettings = claudeSettings;
 
 const MAX_PAGES = 8;
 /** bytea as a Buffer (the test database hands it back as "\\x…" text). */

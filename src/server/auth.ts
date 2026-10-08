@@ -163,6 +163,19 @@ export async function signInWithPassword(db: Db, email: string, password: string
   return attempt(db, rows[0], password, 'password', null, now);
 }
 
+/**
+ * A PIN typed to take credit for something (a checklist item, a note), without signing in: the
+ * same wrong-try lockout as signing in.
+ */
+export async function checkPin(db: Db, restaurantId: string, staffId: string, pin: string, now = new Date()): Promise<{ ok: true; name: string } | { ok: false; error: string; status: number }> {
+  const { rows } = await db.query<StaffRow>(`${STAFF_SELECT} WHERE s.restaurant_id = $1 AND s.id = $2 AND s.active`, [restaurantId, staffId]);
+  const row = rows[0];
+  if (row && !row.pin_hash) return { ok: false, error: 'No PIN set for you yet. A manager can set one in Settings.', status: 400 };
+  const checked = await checkSecret(db, row, pin, 'pin', now);
+  if (checked.ok) return { ok: true, name: checked.row.display_name };
+  return checked.reason === 'locked' ? { ok: false, error: 'Too many wrong tries. Try again in a few minutes.', status: 423 } : { ok: false, error: 'That PIN didn’t match.', status: 403 };
+}
+
 export type PasswordChange = { ok: true } | { ok: false; reason: 'wrong' | 'weak' | 'noPassword'; error: string } | { ok: false; reason: 'locked'; lockedUntil: Date; error: string };
 
 /**
@@ -201,16 +214,16 @@ export async function signOut(db: Db, token: string | undefined): Promise<void> 
   if (token) await db.query('DELETE FROM sessions WHERE token_hash = $1', [tokenHash(token)]);
 }
 
-export interface Device { id: string; restaurantId: string; name: string; stationId: string | null }
+export interface Device { id: string; restaurantId: string; name: string; stationId: string | null; floorPostId: string | null }
 
 export async function deviceFor(db: Db, token: string | undefined): Promise<Device | undefined> {
   if (!token) return undefined;
-  const { rows } = await db.query<{ id: string; restaurant_id: string; name: string; station_id: string | null }>(
-    'UPDATE devices SET last_seen_at = now() WHERE token_hash = $1 AND revoked_at IS NULL RETURNING id, restaurant_id, name, station_id',
+  const { rows } = await db.query<{ id: string; restaurant_id: string; name: string; station_id: string | null; floor_post_id: string | null }>(
+    'UPDATE devices SET last_seen_at = now() WHERE token_hash = $1 AND revoked_at IS NULL RETURNING id, restaurant_id, name, station_id, floor_post_id',
     [tokenHash(token)],
   );
   const r = rows[0];
-  return r && { id: r.id, restaurantId: r.restaurant_id, name: r.name, stationId: r.station_id };
+  return r && { id: r.id, restaurantId: r.restaurant_id, name: r.name, stationId: r.station_id, floorPostId: r.floor_post_id };
 }
 
 const LEVELS: RoleLevel[] = ['line', 'lead', 'sous', 'chef', 'manager', 'owner'];
