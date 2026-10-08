@@ -59,7 +59,7 @@ Each cause is repeated or ruled out over time. A cause that keeps showing up bec
 
 ## Napoli's storage, in counting order (from the owner, Oct 8)
 
-The count sheet follows this order, top to bottom, shelf by shelf.
+The weekly count is Saturday afternoon. The count sheet follows this order, top to bottom, shelf by shelf.
 
 | Area | Shelf | What's there |
 |---|---|---|
