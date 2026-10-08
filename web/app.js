@@ -2353,18 +2353,18 @@ async function pickupWindowsCard(me) {
 // roll up (a marker on a dish is somewhere under it). Cooks: today's list, and a search for the rest.
 
 const MARKERS = [
-  ['notBought', '?', 'not bought lately', 'Not bought lately: the recipe may name a product you’ve stopped buying'],
+  ['notBought', '', 'ingredient not bought', 'Ingredient not bought: the recipe may name a product you’ve stopped buying'],
   ['noCost', '✕', 'no cost', 'No cost: a line with no price, or a unit that won’t convert'],
   ['red', '●', 'old price', 'A price over 6 months old, or MarginEdge’s last price'],
   ['yellow', '●', 'price getting old', 'A price over 3 months old'],
   ['rough', '✎', 'rough', 'Rough: not marked ready, so cooks don’t see it'],
 ];
 const hasMarks = (m) => Boolean(m && MARKERS.some(([k]) => m[k]?.length));
-/** Small chips for what's wrong under something: "? not bought lately", "✕ 2 no cost". */
+/** Small chips for what's wrong under something: "ingredient not bought", "✕ 2 no cost". */
 function markerChips(m, max = 3) {
   if (!m) return null;
   const chips = MARKERS.filter(([k]) => m[k]?.length).slice(0, max).map(([k, icon, label]) =>
-    h('span', { class: `mk mk-${k}`, title: `${label}: ${m[k].join(', ')}` }, `${icon} ${m[k].length > 1 ? `${m[k].length} ` : ''}${label}`));
+    h('span', { class: `mk mk-${k}`, title: `${label}: ${m[k].join(', ')}` }, `${icon ? `${icon} ` : ''}${m[k].length > 1 ? `${m[k].length} ` : ''}${label}`));
   return chips.length ? h('div', { class: 'mks' }, chips) : null;
 }
 /** A year of cost as a small line: no axes, the last point marked. */
@@ -2473,10 +2473,10 @@ async function recipesScreen(me, state = {}) {
   const tile = (key, cls, title, n, sub, go) => (n ? h('button', { class: `attn-tile ${cls}${filter === key ? ' on' : ''}`, 'aria-pressed': filter === key ? 'true' : 'false', onclick: go ?? (() => again({ ...state, filter: filter === key ? undefined : key })) },
     h('span', { class: 't', text: title }), h('b', { text: String(n) }), h('span', { class: 's', text: sub })) : null);
   const tiles = [
-    tile('checks', 'red', 'Recipe checks', c.checks, 'not bought lately, bought but in no recipe, vendors gone quiet', () => recipeChecksScreen(me, { from: here() })),
+    tile('checks', 'red', 'Recipe checks', c.checks, 'ingredients not bought, bought but in no recipe, vendors gone quiet', () => recipeChecksScreen(me, { from: here() })),
     tile('noCost', 'red', 'Can’t be fully costed', c.noCost, 'a line with no price, or a unit that won’t convert'),
     tile('red', 'red', 'Old prices', c.red, 'a price over 6 months old, or MarginEdge’s last'),
-    tile('notBought', 'red', 'Not bought lately', c.notBought, 'the recipe may name something you stopped buying'),
+    tile('notBought', 'red', 'Ingredient not bought', c.notBought, 'the recipe may name something you stopped buying'),
     tile('yellow', 'amber', 'Prices getting old', c.yellow, 'a price over 3 months old'),
     tile('rough', 'amber', 'Rough recipes', c.rough, 'not marked ready: cooks don’t see them'),
     tile('noRecipe', 'blue', 'Selling without a recipe', c.noRecipe, `${dollars(c.noRecipeSales)} in 90 days, not in food cost`, () => coverageScreen(me)),
@@ -2554,7 +2554,7 @@ async function treeMenu(me, side, down) {
   [sideBox('The markers', markerKey())]];
 }
 function markerKey() {
-  return h('div', { class: 'alertlist' }, MARKERS.map(([k, icon, , text]) => h('div', { class: 'a' }, h('span', { class: `mk mk-${k}`, text: icon }), h('span', { text }))),
+  return h('div', { class: 'alertlist' }, MARKERS.map(([k, icon, label, text]) => h('div', { class: 'a' }, h('span', { class: `mk mk-${k}`, text: icon || label }), h('span', { text: icon ? text : text.replace(/^[^:]+: /, '') }))),
     h('div', { class: 'small muted', text: 'A marker on a dish is somewhere under it: tap down to find it.' }));
 }
 /** "Needs a look" for a recipe or ingredient: each marker with what it's on, and the swap when there is one. */
