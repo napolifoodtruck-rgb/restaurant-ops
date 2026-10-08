@@ -456,7 +456,12 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     if (recipe) state = confirmLink(state, a, recipe.id, a.portion, a.from);
   }
   state = applyLinks(state, matchMenu(soldItems, recipes, state).newLinks);
-  for (const a of linkAnswers.newDish) state = markNewDish(state, a, a.from);
+  // "Needs a recipe" until one by its name is written: then it's linked to it.
+  for (const a of linkAnswers.newDish) {
+    // (Not one taken off a recipe by hand: that button isn't that recipe, whatever its name.)
+    const named = a.note === 'unlinked in the app' ? undefined : recipes.find((x) => x.kind === 'dish' && nameKey(x.name) === nameKey(posName(a)));
+    state = named ? confirmLink(state, a, named.id, undefined, a.from) : markNewDish(state, a, a.from);
+  }
   for (const a of linkAnswers.notFood ?? []) state = confirmLink(state, a, null);
   const lookup = linkLookup(state);
   const linkQuestions = matchMenu(soldItems, recipes, state).questions;

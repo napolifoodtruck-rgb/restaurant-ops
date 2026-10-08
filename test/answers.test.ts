@@ -71,7 +71,7 @@ test('product answers: weights, densities, pack contents and prices fold into th
 
 test('recipes that look like one dish: "pizza" left off, or a letter or two misspelled', async () => {
   const { sameDishAs } = await import('../src/server/cards.ts');
-  const card = (name: string, recipeType = 'Pizza') => ({ name, recipeType, category: 'Menu items', yields: [{ amount: 1, unit: 'each' }], ingredients: [] });
+  const card = (name: string, recipeType = 'Pizza') => ({ name, recipeType, category: 'Menu items', yields: [{ amount: 1, unit: 'each' }], ingredients: [], unreadLines: [], layout: 'standard' }) as unknown as Parameters<typeof sameDishAs>[0];
   const cards = [card('Katahdin'), card('Katahdin Pizza'), card('Khatadin Pizza'), card('Margherita'), card('Marinara pizza'), card('Marinara Sauce', 'Prep'), card('Greca'), card('Greens')];
   assert.deepEqual(sameDishAs(cards[1]!, cards), ['Katahdin', 'Khatadin Pizza']);
   assert.deepEqual(sameDishAs(cards[3]!, cards), []); // Margherita and Marinara are different pizzas
