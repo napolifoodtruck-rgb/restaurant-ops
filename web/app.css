@@ -1288,3 +1288,16 @@ button.donut-row { display: flex; min-width: 0; }
 .arow .aname { font-weight: 600; min-width: 160px; }
 .arow .allergy-chips .chip { height: 32px; padding: 0 10px; font-size: 13px; letter-spacing: .04em; }
 .big-allergy { font-size: 16px; }
+
+/* Inventory */
+.inv-list .inv-last { text-align: right; }
+.inv-section { gap: 4px; }
+.inv-row { display: grid; grid-template-columns: minmax(160px, 1.2fr) minmax(0, 2fr) minmax(110px, auto); gap: 6px 14px; align-items: center; padding: 10px 0; border-top: 1px solid var(--soft); }
+.inv-row.arrange { grid-template-columns: minmax(0, 1fr) auto; }
+.inv-parts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.inv-part { display: inline-flex; gap: 6px; align-items: center; }
+.inv-part select { height: 40px; max-width: 170px; }
+.inv-worth { text-align: right; }
+.inv-add { padding-top: 8px; }
+.inv-sec-head input[type=text] { font-size: 17px; font-weight: 700; width: 100%; height: 40px; border: 1px solid var(--line); border-radius: var(--radius); padding: 0 10px; }
+@media (max-width: 800px) { .inv-row { grid-template-columns: 1fr; } .inv-worth { text-align: left; } }

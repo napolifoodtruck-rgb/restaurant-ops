@@ -59,6 +59,7 @@ import { localDateHour, marginEdgeApiFrom, runSync, squareApiFrom, type SyncSett
 import { posName } from '../core/menuLinks.ts';
 import { BOOK_KEYS, PRODUCT_ANSWERS, answerProblem, bookProblem, getModel, loadBook, saveBook, withAnswer, withoutAnswer, recentAnswers, withProductAnswer, type Answer } from './model.ts';
 import { bookParts } from './book.ts';
+import { inventoryRoutes } from './inventory.ts';
 import { floorRoutes } from './floor.ts';
 import { marginsView, menuView, posItemOf } from './views.ts';
 import { prepRoutes } from './prep.ts';
@@ -707,6 +708,12 @@ export function createApp(config: AppConfig) {
       const who = await signedIn(req);
       const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
       if (await reportRoutes(db, res, url, who, localDateHour(tz).date)) return;
+    }
+
+    if (path.startsWith('/api/inventory')) {
+      const who = await signedIn(req);
+      const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+      if (await inventoryRoutes(db, req, res, url, method, who, localDateHour(tz).date)) return;
     }
 
     if (path.startsWith('/api/orders')) {

@@ -52,7 +52,7 @@ export function kindOf(c: RecipeCard): CardKind {
 const UNITS = ['each', 'g', 'kg', 'oz', 'lb', 'ml', 'l', 'floz', 'tsp', 'tbsp', 'cup', 'pt', 'qt', 'gal', 'dash'];
 
 /** The units an amount of this product (or card) can be given in. */
-function unitsFor(base: string, conversions: any): string[] {
+export function unitsFor(base: string, conversions: any): string[] {
   const custom = Object.keys(conversions?.customUnits ?? {});
   return [...new Set([base, ...custom, ...UNITS])].filter((u) => u === base || tryConvert({ amount: 1, unit: u }, base, conversions) !== undefined);
 }

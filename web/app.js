@@ -32,6 +32,7 @@ const ICONS = {
   orders: 'M3 7h11v9H3z M14 10h4l3 3v3h-7',
   reports: 'M6 3h9l4 4v14H6z M14 3v5h5 M9 12h7 M9 16h5',
   ideas: 'M9 18h6 M10 21h4 M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z',
+  inventory: 'M4 7l8-4 8 4v10l-8 4-8-4z M4 7l8 4 8-4 M12 11v10',
   floor: 'M3 9h18 M6 9v11 M18 9v11 M9 9V5h6v4',
   settings: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M19 12h2 M3 12h2 M12 3v2 M12 19v2 M17 7l1.5-1.5 M5.5 18.5L7 17 M17 17l1.5 1.5 M5.5 5.5L7 7',
 };
@@ -410,7 +411,7 @@ function pinPad(person, device) {
 function shell(me, active, content) {
   const manager = atLeast(me.roleLevel, 'manager');
   const nav = [
-    ['today', 'Today', todayScreen], ['ideas', 'Ideas', manager && ideasScreen], ['prep', 'Prep', prepHome], ['floor', 'Service', manager && floorManage], ['recipes', 'Recipes', recipesScreen], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['reports', 'Reports', manager && reportsScreen], ['orders', 'Orders', manager && ordersScreen],
+    ['today', 'Today', todayScreen], ['ideas', 'Ideas', manager && ideasScreen], ['prep', 'Prep', prepHome], ['floor', 'Service', manager && floorManage], ['recipes', 'Recipes', recipesScreen], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['reports', 'Reports', manager && reportsScreen], ['orders', 'Orders', manager && ordersScreen], ['inventory', 'Inventory', atLeast(me.roleLevel, 'chef') && inventoryHome],
   ];
   return h('div', { class: 'shell', 'data-active': active },
     h('nav', { class: 'rail', 'aria-label': 'Main' },
@@ -7056,6 +7057,141 @@ async function floorWineTab(reload) {
   };
   const missing = d.notCarded.length ? sideBox('Sold lately, no card yet', h('div', { class: 'small muted', text: 'Upload their tech sheets to make cards.' }), h('ul', { class: 'small plain-list' }, d.notCarded.map((b) => h('li', { text: b.name })))) : null;
   return page([err, d.wines.length ? h('section', { class: 'card' }, h('h2', { text: 'Where they’re from' }), italyMap(d.wines)) : null, d.wines.map(card), !d.wines.length ? h('div', { class: 'card muted', text: 'No wine cards yet. Upload the tech sheets on the right.' }) : null], [upload, missing]);
+}
+
+// ================================================================== Inventory
+// Three lists (Kitchen, Alcohol, Other), each in sections by where things are kept, counted the way
+// things are stored ("2 bags + 5 lb") and worth what it's worth at today's prices.
+
+const COUNTERS = { kitchen: 'The chef', bar: 'The bar manager', foh: 'The FOH manager' };
+async function inventoryHome(me) {
+  loadingScreen(me, 'inventory', 'Inventory');
+  const r = await api('GET', '/api/inventory');
+  if (!r.ok) return show(shell(me, 'inventory', [h('header', {}, h('h1', { text: 'Inventory' })), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const d = r.data;
+  const reload = () => refreshInPlace(() => inventoryHome(me));
+  const err = h('div', { class: 'error' });
+  const setUp = h('section', { class: 'card' }, h('h2', { text: 'Set up the lists' }),
+    h('div', { class: 'small muted', text: 'Three lists to start: Kitchen (the chef counts it), Alcohol (the bar manager) and Other: cleaning supplies and disposables (the FOH manager). Every ingredient goes on the list it belongs to; arrange each list by where things are kept, and move anything to another list.' }),
+    h('button', { class: 'btn dark', text: 'Make the three lists', onclick: () => pageAction(async () => {
+      for (const [name, countedBy] of [['Kitchen', 'kitchen'], ['Alcohol', 'bar'], ['Other', 'foh']]) await api('POST', '/api/inventory/lists', { name, countedBy });
+      await api('POST', '/api/inventory/place-all');
+      reload();
+    }) }));
+  const total = d.lists.reduce((a, l) => a + (l.last?.value ?? 0), 0);
+  const cards = d.lists.map((l) => h('section', { class: 'card inv-list' },
+    h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, h('h2', { text: l.name }), h('div', { class: 'small muted', text: `${COUNTERS[l.countedBy]} counts it · ${l.sections.reduce((a, s) => a + s.items, 0)} items in ${l.sections.length} section${l.sections.length === 1 ? '' : 's'}` })),
+      l.last ? h('div', { class: 'inv-last' }, h('div', { class: 'big', text: dollars(l.last.value) }), h('div', { class: 'small muted', text: `${l.last.finished ? 'Counted' : 'Being counted'} ${shortDate(l.last.day)}${l.last.unpriced ? ` · ${l.last.unpriced} without a price` : ''}` })) : h('div', { class: 'small muted', text: 'Not counted yet' })),
+    h('div', { class: 'row wrap' }, h('button', { class: 'btn dark', text: l.last && !l.last.finished && l.last.day === d.today ? 'Keep counting' : 'Count', onclick: () => inventoryList(me, l.id, 'count') }),
+      h('button', { class: 'btn', text: 'Arrange', onclick: () => inventoryList(me, l.id, 'arrange') }))));
+  const loose = d.notOnAList ? h('div', { class: 'note' }, `${d.notOnAList} ingredient${d.notOnAList === 1 ? ' isn’t' : 's aren’t'} on a list yet (bought lately or in a recipe). `,
+    h('button', { class: 'link', text: 'Put them on their likeliest lists', onclick: () => pageAction(async () => { const res = await api('POST', '/api/inventory/place-all'); if (!res.ok) return (err.textContent = res.data.error); reload(); }) })) : null;
+  const addList = atLeast(me.roleLevel, 'manager') && d.lists.length ? (() => {
+    const name = h('input', { type: 'text', placeholder: 'e.g. Bar fridges', 'aria-label': 'New list' });
+    const by = h('select', { 'aria-label': 'Who counts it' }, Object.entries(COUNTERS).map(([k, v]) => h('option', { value: k, text: v })));
+    return sideBox('Another list', name, by, h('button', { class: 'btn', text: 'Add list', onclick: () => pageAction(async () => { if (!name.value.trim()) return; await api('POST', '/api/inventory/lists', { name: name.value, countedBy: by.value }); reload(); }) }));
+  })() : null;
+  show(shell(me, 'inventory', [
+    h('header', { class: 'row wrap' }, h('div', { class: 'grow' }, h('div', { class: 'kicker', text: 'Counted Saturday afternoons' }), h('h1', { text: 'Inventory' }))),
+    page([err, loose, d.lists.length ? cards : setUp], [d.lists.length ? statBox('On hand', dollars(total), h('div', { class: 'small muted', text: 'At today’s prices, from each list’s last count.' })) : null, addList]),
+  ]));
+}
+
+/** A list, to count (amounts as things are stored) or to arrange (sections, order, which list). */
+async function inventoryList(me, listId, mode = 'count') {
+  loadingScreen(me, 'inventory', 'Inventory');
+  const r = await api('GET', `/api/inventory/lists/${listId}`);
+  if (!r.ok) return show(shell(me, 'inventory', [h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const d = r.data;
+  const reload = () => refreshInPlace(() => inventoryList(me, listId, mode));
+  let countId = d.count?.id ?? null;
+  const items = d.sections.flatMap((s) => s.items);
+  const totalEl = h('div', { class: 'big' });
+  const countedEl = h('div', { class: 'small muted' });
+  const drawTotal = () => {
+    const done = items.filter((i) => i.counted);
+    totalEl.textContent = dollars(done.reduce((a, i) => a + (i.counted.value ?? 0), 0));
+    countedEl.textContent = `${done.length} of ${items.length} counted${done.some((i) => i.counted.value === undefined) ? ` · ${done.filter((i) => i.counted.value === undefined).length} without a value` : ''}`;
+  };
+  const unitLabel = (i, u) => (i.sizes?.[u] ? `${u} (${nice(i.sizes[u])} ${UNIT_LABEL(i.base)})` : UNIT_LABEL(u));
+  const save = async (i, parts, out) => {
+    if (!countId) { const c = await api('POST', `/api/inventory/lists/${listId}/count`); if (!c.ok) return (out.textContent = c.data.error); countId = c.data.id; }
+    const res = await api('POST', `/api/inventory/counts/${countId}/line`, { kind: i.kind, itemId: i.id, parts });
+    if (!res.ok) { out.className = 'small error'; out.textContent = res.data.error ?? 'Not saved.'; return; }
+    i.counted = parts.length ? { parts, ...(res.data.amount !== undefined ? { amount: res.data.amount } : {}), ...(res.data.value !== undefined ? { value: res.data.value } : {}) } : undefined;
+    out.className = `small inv-worth${res.data.problem ? ' warn-text' : ''}`;
+    out.textContent = !parts.length ? '' : res.data.problem ? res.data.problem : `${nice(res.data.amount)} ${UNIT_LABEL(res.data.base)}${res.data.value !== undefined ? ` · ${money2(res.data.value)}` : ' · no price yet'}`;
+    drawTotal();
+  };
+  const countRow = (i) => {
+    let parts = i.counted?.parts?.length ? i.counted.parts.map((p) => ({ ...p })) : [{ amount: '', unit: i.units[0] }];
+    const out = h('div', { class: 'small inv-worth', text: i.counted ? (i.counted.amount !== undefined ? `${nice(i.counted.amount)} ${UNIT_LABEL(i.base)}${i.counted.value !== undefined ? ` · ${money2(i.counted.value)}` : ' · no price yet'}` : 'Can’t tell how much that is') : '' });
+    const partsBox = h('div', { class: 'inv-parts' });
+    let timer;
+    const changed = () => { clearTimeout(timer); timer = setTimeout(() => save(i, parts.filter((p) => p.amount !== '' && Number(p.amount) >= 0).map((p) => ({ amount: Number(p.amount), unit: p.unit })), out), 400); };
+    const draw = () => fill(partsBox, parts.map((p, n) => {
+      const amt = h('input', { inputmode: 'decimal', class: 'short', value: p.amount === '' ? '' : String(p.amount), placeholder: '0', 'aria-label': `How many (${i.name})` });
+      amt.addEventListener('input', () => { const v = parseAmount(amt.value); p.amount = amt.value.trim() === '' ? '' : Number.isNaN(v) ? p.amount : v; changed(); });
+      const unit = h('select', { 'aria-label': `Unit for ${i.name}` }, i.units.map((u) => h('option', { value: u, text: unitLabel(i, u), selected: u === p.unit ? true : undefined })));
+      unit.addEventListener('change', () => { p.unit = unit.value; changed(); });
+      return h('span', { class: 'inv-part' }, n ? h('span', { class: 'muted', text: '+' }) : null, amt, unit,
+        n ? h('button', { class: 'btn small-btn', 'aria-label': 'Remove this part', text: '×', onclick: () => { parts.splice(n, 1); draw(); changed(); } }) : null);
+    }), h('button', { class: 'btn small-btn', text: '+ unit', title: 'Count in more than one unit: 2 cases + 5 lb', onclick: () => { parts.push({ amount: '', unit: i.units.find((u) => !parts.some((p) => p.unit === u)) ?? i.units[0] }); draw(); } }));
+    draw();
+    return h('div', { class: 'inv-row' },
+      h('div', { class: 'inv-name' }, h('div', { class: 'strong', text: i.name }), i.last ? h('div', { class: 'small muted', text: `Last: ${i.last.parts.map((p) => `${nice(p.amount)} ${p.unit}`).join(' + ')} (${shortDate(i.last.day)})` }) : null),
+      partsBox, out);
+  };
+  // Arranging: order in the section, the section, the list; sections named for where they are.
+  const moveTo = (i, sectionId) => pageAction(async () => { await api('POST', '/api/inventory/place', { kind: i.kind, itemId: i.id, sectionId }); reload(); });
+  const arrangeRow = (i) => {
+    const where = h('select', { 'aria-label': `Move ${i.name}` }, h('option', { value: '', text: 'Move to…' }),
+      d.lists.map((l) => h('optgroup', { label: l.name }, l.sections.map((s) => h('option', { value: s.id, text: s.name })))), h('option', { value: '__off', text: 'Don’t count it' }));
+    where.addEventListener('change', () => where.value && moveTo(i, where.value === '__off' ? null : where.value));
+    return h('div', { class: 'inv-row arrange' }, h('div', { class: 'inv-name strong', text: i.name }),
+      h('div', { class: 'row tight' }, h('button', { class: 'btn small-btn', 'aria-label': `Move ${i.name} up`, text: '↑', onclick: () => pageAction(async () => { await api('POST', '/api/inventory/move', { kind: i.kind, itemId: i.id, dir: 'up' }); reload(); }) }),
+        h('button', { class: 'btn small-btn', 'aria-label': `Move ${i.name} down`, text: '↓', onclick: () => pageAction(async () => { await api('POST', '/api/inventory/move', { kind: i.kind, itemId: i.id, dir: 'down' }); reload(); }) }), where));
+  };
+  const addHere = (s) => {
+    const q = h('input', { type: 'search', placeholder: 'Add an item here…', 'aria-label': `Add an item to ${s.name}` });
+    const results = h('div', { class: 'list compact' });
+    let t;
+    q.addEventListener('input', () => { clearTimeout(t); t = setTimeout(async () => {
+      if (q.value.trim().length < 2) return fill(results);
+      const res = await api('GET', `/api/inventory/search?q=${encodeURIComponent(q.value.trim())}`);
+      fill(results, (res.data.items ?? []).slice(0, 8).map((x) => h('div', {}, h('span', { class: 'grow', text: x.name }), h('span', { class: 'small muted', text: x.section ? `on ${x.list} · ${x.section}` : 'not on a list' }),
+        h('button', { class: 'btn small-btn', text: x.section === s.name ? 'Here' : 'Put here', disabled: x.section === s.name ? true : undefined, onclick: () => moveTo(x, s.id) }))));
+    }, 250); });
+    return h('div', { class: 'inv-add' }, q, results);
+  };
+  const sectionHead = (s, n) => mode === 'arrange'
+    ? h('div', { class: 'row wrap inv-sec-head' },
+      (() => { const name = h('input', { type: 'text', value: s.name, 'aria-label': 'Section name' }); name.addEventListener('change', () => pageAction(async () => { await api('POST', '/api/inventory/sections', { id: s.id, name: name.value, holds: s.holds ?? '' }); })); return h('div', { class: 'grow' }, name); })(),
+      h('button', { class: 'btn small-btn', text: '↑', 'aria-label': 'Section up', disabled: n === 0 ? true : undefined, onclick: () => pageAction(async () => { await api('POST', '/api/inventory/sections', { id: s.id, move: 'up' }); reload(); }) }),
+      h('button', { class: 'btn small-btn', text: '↓', 'aria-label': 'Section down', onclick: () => pageAction(async () => { await api('POST', '/api/inventory/sections', { id: s.id, move: 'down' }); reload(); }) }),
+      !s.items.length ? h('button', { class: 'link', text: 'Remove', onclick: () => pageAction(async () => { await api('POST', '/api/inventory/sections', { id: s.id, active: false }); reload(); }) }) : null)
+    : h('h2', { text: s.name });
+  const sectionsEl = d.sections.map((s, n) => h('section', { class: 'card inv-section' }, sectionHead(s, n),
+    s.items.length ? s.items.map(mode === 'arrange' ? arrangeRow : countRow) : h('div', { class: 'small muted', text: 'Nothing here yet.' }),
+    mode === 'arrange' ? addHere(s) : null));
+  const newSection = mode === 'arrange' ? (() => {
+    const name = h('input', { type: 'text', placeholder: 'e.g. Walk-in · top shelf', 'aria-label': 'New section' });
+    return h('section', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Another section' }), h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, name),
+      h('button', { class: 'btn', text: 'Add', onclick: () => pageAction(async () => { if (!name.value.trim()) return; await api('POST', '/api/inventory/sections', { listId, name: name.value }); reload(); }) })));
+  })() : null;
+  drawTotal();
+  const finish = h('button', { class: 'btn dark', text: d.count?.finished ? 'Counted ✓ (finish again)' : 'Finish the count', onclick: () => pageAction(async () => {
+    if (!countId) return;
+    const res = await api('POST', `/api/inventory/counts/${countId}/finish`);
+    if (res.ok) { await floorMessage(`${d.list.name}: ${res.data.lines} items, ${dollars(res.data.value)} on hand.`); inventoryHome(me); }
+  }) });
+  show(shell(me, 'inventory', [
+    h('header', { class: 'row wrap' }, h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${COUNTERS[d.list.countedBy]} counts it` }), h('h1', { text: d.list.name })),
+      h('div', { class: 'seg' }, [['count', 'Count'], ['arrange', 'Arrange']].map(([k, label]) => h('button', { class: mode === k ? 'on' : '', text: label, onclick: () => inventoryList(me, listId, k) }))),
+      h('button', { class: 'btn', text: '← Inventory', onclick: () => inventoryHome(me) })),
+    page([sectionsEl, newSection], mode === 'count' ? [sideBox('Counted so far', totalEl, countedEl, h('div', { class: 'small muted', text: 'Saved as you go. Count the way it’s stored: “+ unit” for 2 cases + 5 lb.' }), finish)]
+      : [sideBox('Arranging', h('div', { class: 'small muted', text: 'Order the sections the way you walk them, and items the way they sit on the shelf. “Move to…” sends an item to another section or list.' }))], { sticky: true }),
+  ]));
 }
 
 start();
