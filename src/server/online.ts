@@ -76,18 +76,21 @@ export interface Pause {
   untilTime: string;
   /** For the rest of tonight, not a few minutes. */
   tonight: boolean;
+  /** Turned off until someone turns it back on (until and untilTime are then empty). */
+  off: boolean;
 }
 
 export const PAUSE_MINUTES = [15, 30, 60];
 
 /** The pause on online orders, while it lasts. */
 export async function loadPause(db: Db, restaurantId: string, timezone: string): Promise<Pause | undefined> {
-  const r = (await db.query<{ until: Date | string }>('SELECT until FROM online_pause WHERE restaurant_id = $1 AND until > now()', [restaurantId])).rows[0];
+  const r = (await db.query<{ until: Date | string; off: boolean }>("SELECT until, until = 'infinity' AS off FROM online_pause WHERE restaurant_id = $1 AND until > now()", [restaurantId])).rows[0];
   if (!r) return undefined;
+  if (r.off) return { until: '', untilTime: '', tonight: true, off: true };
   const until = new Date(r.until);
   const now = localNow(timezone);
   const end = localNow(timezone, until);
-  return { until: until.toISOString(), untilTime: end.time, tonight: end.date !== now.date || end.time >= LAST_WINDOW_ENDS };
+  return { until: until.toISOString(), untilTime: end.time, tonight: end.date !== now.date || end.time >= LAST_WINDOW_ENDS, off: false };
 }
 
 /** The order page's own content, as customers get it: the header photo's address (null: none) and its line of text. */
@@ -109,12 +112,12 @@ export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResp
       const b = await body(req);
       if (b.resume === true) await db.query('DELETE FROM online_pause WHERE restaurant_id = $1', [who.restaurantId]);
       else {
-        if (b.tonight !== true && !PAUSE_MINUTES.includes(b.minutes as number)) throw new HttpError(400, `Pause for ${PAUSE_MINUTES.join(', ')} minutes, or the rest of tonight.`);
-        // "The rest of tonight" runs to midnight, the restaurant's time.
+        if (b.off !== true && b.tonight !== true && !PAUSE_MINUTES.includes(b.minutes as number)) throw new HttpError(400, `Pause for ${PAUSE_MINUTES.join(', ')} minutes or the rest of tonight, or turn online orders off.`);
+        // "The rest of tonight" runs to midnight, the restaurant's time; "off" lasts until someone turns them back on.
         await db.query(`INSERT INTO online_pause (restaurant_id, until, paused_by)
-          VALUES ($1, CASE WHEN $2::boolean THEN ($3::date + 1)::timestamp AT TIME ZONE $4 ELSE now() + make_interval(mins => $5::int) END, $6)
+          VALUES ($1, CASE WHEN $7::boolean THEN 'infinity'::timestamptz WHEN $2::boolean THEN ($3::date + 1)::timestamp AT TIME ZONE $4 ELSE now() + make_interval(mins => $5::int) END, $6)
           ON CONFLICT (restaurant_id) DO UPDATE SET until = EXCLUDED.until, paused_by = EXCLUDED.paused_by, paused_at = now()`,
-        [who.restaurantId, b.tonight === true, now.date, timezone, b.tonight === true ? 0 : b.minutes, who.staffId]);
+        [who.restaurantId, b.tonight === true, now.date, timezone, b.tonight === true || b.off === true ? 0 : b.minutes, who.staffId, b.off === true]);
       }
     } else if (method !== 'GET') throw new HttpError(404, 'Not found.');
     const windows = await loadWindows(db, who.restaurantId, now.date);

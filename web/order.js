@@ -132,7 +132,7 @@ function pickupLine() {
 function pickupChoice(redraw) {
   const pizzas = Math.max(1, cartPizzas());
   const elsewhere = () => OTHER_ORDERING.href ? h('a', { class: 'elsewhere', href: OTHER_ORDERING.href, text: OTHER_ORDERING.label }) : null;
-  if (M.paused) return h('div', { class: 'pickup closed' }, h('span', { class: 'strong', text: M.paused.until ? `We’re very busy right now. Online orders open again at ${M.paused.until.label}.` : 'We’ve stopped taking online orders for tonight.' }), M.paused.until ? null : elsewhere());
+  if (M.paused) return h('div', { class: 'pickup closed' }, h('span', { class: 'strong', text: M.paused.off ? 'We’re not taking online orders right now.' : M.paused.until ? `We’re very busy right now. Online orders open again at ${M.paused.until.label}.` : 'We’ve stopped taking online orders for tonight.' }), M.paused.until ? null : elsewhere());
   if (!M.open) return h('div', { class: 'pickup closed' }, h('span', { class: 'strong', text: 'Online ordering is closed tonight.' }), elsewhere());
   const w = fitting(pizzas)[0];
   if (!w) {

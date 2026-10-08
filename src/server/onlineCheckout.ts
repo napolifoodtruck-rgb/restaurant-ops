@@ -225,7 +225,7 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
         now: now.time,
         open: Boolean(ready) && fit.kind !== 'closed' && !pause,
         // Paused for a busy spell: back at that time, or not again tonight.
-        paused: pause ? { until: pause.tonight ? null : { starts: pause.untilTime, label: clock(pause.untilTime) } } : null,
+        paused: pause ? { until: pause.tonight ? null : { starts: pause.untilTime, label: clock(pause.untilTime) }, ...(pause.off ? { off: true } : {}) } : null,
         items: publicMenu(menu),
         // The page's header photo and its line of text, as set on the Online screen.
         page: await loadOrderPage(db, r.id),
@@ -263,7 +263,7 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'That email doesn’t look right.');
       if (b.understood !== true) throw new HttpError(400, 'Please confirm you know the pizzas are partially cooked, to finish at home.');
       const pause = await loadPause(db, r.id, r.timezone);
-      if (pause) throw new HttpError(409, pause.tonight ? 'Sorry, we’ve stopped taking online orders for tonight.' : `Sorry, we’re very busy right now. We’ll take online orders again from ${clock(pause.untilTime)}.`);
+      if (pause) throw new HttpError(409, pause.off ? 'Sorry, we’re not taking online orders right now.' : pause.tonight ? 'Sorry, we’ve stopped taking online orders for tonight.' : `Sorry, we’re very busy right now. We’ll take online orders again from ${clock(pause.untilTime)}.`);
       if (typeof b.window !== 'string' || !isWindowStart(b.window)) throw new HttpError(400, 'Pick a pickup time.');
       if (!Array.isArray(b.lines)) throw new HttpError(400, 'Your cart is empty.');
 
