@@ -1,6 +1,6 @@
 /**
  * The kitchen book: recipes and every answer managers have given, kept in their own tables
- * (db/migrations/0035). The rest of the app reads and writes it in the shapes it always has
+ * (db/migrations/0037). The rest of the app reads and writes it in the shapes it always has
  * (recipe cards, link answers, import answers, modifier answers) through loadBook and saveBook;
  * this file turns those into rows and back.
  *
