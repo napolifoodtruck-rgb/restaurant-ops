@@ -119,19 +119,23 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   const starts = (await call('GET', `/api/online/windows?day=${today}`)).json.starts as string[];
   assert.equal((await call('POST', '/api/online/windows/plan', { cells: starts.map((s) => ({ weekday, starts: s, maxPizzas: s === '17:00' ? 2 : 4 })) })).status, 200);
 
-  // The order page's header: a photo and a line of text, set on the Online screen.
-  assert.deepEqual(menu.page, { headerImage: null, headerText: null });
+  // The order page: a header photo and the notice, set in Online settings. The notice starts as the usual words.
+  assert.equal(menu.page.headerImage, null);
+  assert.match(menu.page.notice, /^Every online pizza is partially cooked\.\n.+\n\nFully cooked pizzas and gluten-sensitive crust/);
+  assert.equal(menu.page.noticeChanged, false);
+  const usual = menu.page.notice;
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
   assert.equal((await call('POST', '/api/online/page', { headerImage: 'data:image/gif;base64,R0lGOD' })).status, 400);
-  assert.equal((await call('POST', '/api/online/page', { headerText: 'x'.repeat(121) })).status, 400);
-  assert.equal((await customer('POST', '/api/online/page', { headerText: 'Hi' })).status, 401);
-  const page = (await call('POST', '/api/online/page', { headerImage: `data:image/png;base64,${png}`, headerText: '  Neapolitan pizza,\n finish it at home ' })).json;
-  assert.equal(page.headerText, 'Neapolitan pizza, finish it at home');
+  assert.equal((await call('POST', '/api/online/page', { notice: 'x'.repeat(601) })).status, 400);
+  assert.equal((await customer('POST', '/api/online/page', { notice: 'Hi' })).status, 401);
+  const page = (await call('POST', '/api/online/page', { headerImage: `data:image/png;base64,${png}`, notice: '  Half-baked,   finish at home \r\n line two\n\n\n\n Gluten-free in person ' })).json;
+  assert.equal(page.notice, 'Half-baked, finish at home\nline two\n\nGluten-free in person');
+  assert.equal(page.noticeChanged, true);
   assert.match(page.headerImage, /^\/api\/order\/header-image\?v=\d+$/);
   assert.deepEqual((await customer('GET', '/api/order/menu')).json.page, page);
   const photo = await fetch(base + page.headerImage);
   assert.deepEqual([photo.status, photo.headers.get('content-type'), Buffer.from(await photo.arrayBuffer()).toString('base64')], [200, 'image/png', png]);
-  assert.deepEqual((await call('POST', '/api/online/page', { headerImage: null, headerText: '' })).json, { headerImage: null, headerText: null });
+  assert.deepEqual((await call('POST', '/api/online/page', { headerImage: null, notice: '' })).json, { headerImage: null, notice: usual, noticeChanged: false });
   assert.equal((await fetch(base + '/api/order/header-image')).status, 404);
 
   menu = (await customer('GET', '/api/order/menu')).json;

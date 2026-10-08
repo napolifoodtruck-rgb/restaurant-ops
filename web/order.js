@@ -6,9 +6,6 @@
 
 const root = document.getElementById('order');
 
-// What every online customer is told. Change the words here.
-const PARTIAL_TITLE = 'Every online pizza is partially cooked.';
-const PARTIAL_BODY = 'You finish it in your own oven at home, just before eating, so it tastes the way it does here. True Neapolitan pizza is ruined within minutes in a closed box.';
 // Napoli's own instructions for finishing a partially cooked pizza at home.
 // The confirmation email repeats these words (src/core/orderConfirmation.ts): change both.
 const FINISH_STEPS = [
@@ -17,7 +14,6 @@ const FINISH_STEPS = [
   'Cook 3 to 6 minutes, depending on how crisp you like it.',
   'Add any finishing toppings.',
 ];
-const IN_PERSON = 'Fully cooked pizzas and gluten-sensitive crust are in person only: come by or call, usually under 8 minutes.';
 const TIPS = [0, 10, 15, 20];
 
 function h(tag, props = {}, ...children) {
@@ -100,14 +96,17 @@ function header({ wide = false, cart: withCart = true } = {}) {
         links.length ? h('nav', { class: 'site', 'aria-label': 'Napoli' }, links.map(link)) : null,
         links.length ? h('details', { class: 'site-menu' }, h('summary', { 'aria-label': 'More pages', text: '☰' }), h('div', { class: 'drop' }, links.map(link))) : null,
         bag)),
-    // Under the header on the menu: the photo and line of text set on the Online screen, either or both.
-    wide && (M?.page?.headerImage || M?.page?.headerText) ? h('div', { class: `banner${M.page.headerImage ? '' : ' words'}` },
-      M.page.headerImage ? h('img', { src: M.page.headerImage, alt: '' }) : null,
-      M.page.headerText ? h('h1', { text: M.page.headerText }) : null) : null,
+    // Under the header on the menu: the photo set in Online settings.
+    wide && M?.page?.headerImage ? h('div', { class: 'banner' }, h('img', { src: M.page.headerImage, alt: '' })) : null,
   ];
 }
+/** What every online customer is told (set in Online settings): first line bold, later paragraphs smaller. */
 function partialNotice() {
-  return h('div', { class: 'notice' }, h('b', { text: PARTIAL_TITLE }), ' ', PARTIAL_BODY, h('div', { class: 'small', style: 'margin-top:8px', text: IN_PERSON }));
+  const [first = '', ...rest] = (M?.page?.notice ?? '').split(/\n\s*\n/);
+  const [title, ...lines] = first.split('\n');
+  if (!title) return null;
+  return h('div', { class: 'notice' }, h('b', { text: title }), lines.length ? ` ${lines.join(' ')}` : '',
+    rest.map((p) => h('div', { class: 'small', style: 'margin-top:8px', text: p.split('\n').join(' ') })));
 }
 function finishSteps() {
   return h('div', { class: 'card finish' }, h('div', { class: 'strong', text: 'Finishing at home' }), h('ol', {}, FINISH_STEPS.map((t) => h('li', { text: t }))));

@@ -93,13 +93,23 @@ export async function loadPause(db: Db, restaurantId: string, timezone: string):
   return { until: until.toISOString(), untilTime: end.time, tonight: end.date !== now.date || end.time >= LAST_WINDOW_ENDS, off: false };
 }
 
-/** The order page's own content, as customers get it: the header photo's address (null: none) and its line of text. */
-export async function loadOrderPage(db: Db, restaurantId: string): Promise<{ headerImage: string | null; headerText: string | null }> {
-  const r = (await db.query<{ header_text: string | null; has_image: boolean; image_at: Date | null }>('SELECT header_text, header_image IS NOT NULL AS has_image, header_image_updated_at AS image_at FROM online_page WHERE restaurant_id = $1', [restaurantId])).rows[0];
-  return { headerImage: r?.has_image ? `/api/order/header-image?v=${r.image_at ? new Date(r.image_at).getTime() : 0}` : null, headerText: r?.header_text ?? null };
-}
+/**
+ * The notice in the dark box at the top of the menu, until a manager writes their own. The first line
+ * is shown bold; a blank line starts the smaller paragraph under it.
+ */
+export const NOTICE_DEFAULT = [
+  'Every online pizza is partially cooked.',
+  'You finish it in your own oven at home, just before eating, so it tastes the way it does here. True Neapolitan pizza is ruined within minutes in a closed box.',
+  '',
+  'Fully cooked pizzas and gluten-sensitive crust are in person only: come by or call, usually under 8 minutes.',
+].join('\n');
+export const NOTICE_MAX = 600;
 
-export const HEADER_TEXT_MAX = 120;
+/** The order page's own content, as customers get it: the header photo's address (null: none) and the notice. */
+export async function loadOrderPage(db: Db, restaurantId: string): Promise<{ headerImage: string | null; notice: string; noticeChanged: boolean }> {
+  const r = (await db.query<{ notice_text: string | null; has_image: boolean; image_at: Date | null }>('SELECT notice_text, header_image IS NOT NULL AS has_image, header_image_updated_at AS image_at FROM online_page WHERE restaurant_id = $1', [restaurantId])).rows[0];
+  return { headerImage: r?.has_image ? `/api/order/header-image?v=${r.image_at ? new Date(r.image_at).getTime() : 0}` : null, notice: r?.notice_text ?? NOTICE_DEFAULT, noticeChanged: r?.notice_text != null };
+}
 
 export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResponse, path: string, url: URL, who: SignedIn, timezone: string): Promise<boolean> {
   if (!path.startsWith('/api/online/')) return false;
@@ -170,16 +180,16 @@ export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResp
     return send(res, 200, { ok: true }), true;
   }
 
-  // The order page's header: a photo (a JPEG, PNG or WebP under 3 MB; null takes it off) and a line of text over it.
+  // The order page: a header photo (a JPEG, PNG or WebP under 3 MB; null takes it off) and the notice (null or '': back to the usual words).
   if (path === '/api/online/page') {
     if (method === 'POST') {
       const b = await body(req, 5 * 1024 * 1024);
       await db.query('INSERT INTO online_page (restaurant_id, updated_by) VALUES ($1, $2) ON CONFLICT (restaurant_id) DO NOTHING', [who.restaurantId, who.staffId]);
-      if (b.headerText !== undefined) {
-        if (b.headerText !== null && typeof b.headerText !== 'string') throw new HttpError(400, 'The header text is words, or nothing.');
-        const text = typeof b.headerText === 'string' ? b.headerText.replace(/\s+/g, ' ').trim() : '';
-        if (text.length > HEADER_TEXT_MAX) throw new HttpError(400, `Keep the header text under ${HEADER_TEXT_MAX} characters.`);
-        await db.query('UPDATE online_page SET header_text = $2, updated_at = now(), updated_by = $3 WHERE restaurant_id = $1', [who.restaurantId, text || null, who.staffId]);
+      if (b.notice !== undefined) {
+        if (b.notice !== null && typeof b.notice !== 'string') throw new HttpError(400, 'The notice is words, or nothing.');
+        const text = typeof b.notice === 'string' ? b.notice.replace(/\r/g, '').split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim() : '';
+        if (text.length > NOTICE_MAX) throw new HttpError(400, `Keep the notice under ${NOTICE_MAX} characters.`);
+        await db.query('UPDATE online_page SET notice_text = $2, updated_at = now(), updated_by = $3 WHERE restaurant_id = $1', [who.restaurantId, text && text !== NOTICE_DEFAULT ? text : null, who.staffId]);
       }
       if (b.headerImage !== undefined) {
         if (b.headerImage === null) await db.query('UPDATE online_page SET header_image = NULL, header_image_type = NULL, header_image_updated_at = now(), updated_at = now(), updated_by = $2 WHERE restaurant_id = $1', [who.restaurantId, who.staffId]);
