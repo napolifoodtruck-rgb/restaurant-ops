@@ -40,7 +40,7 @@ import { getModel, loadBook, type Model } from './model.ts';
 import { loadAreas } from './areas.ts';
 import { kindOf, linkedItems } from './cards.ts';
 import { allergensOf, allergyLine, cardLines, spokenName, usesRecipe, ALLERGEN_KEYS, type AllergenInfo, type Swap } from '../core/allergens.ts';
-import { forTables, mergeBooks, readOpenTableCsv, whyNotable, REGULAR_VISITS, type Book } from '../core/reservations.ts';
+import { celebrationOf, dietaryOf, forTables, mergeBooks, readOpenTableCsv, whyNotable, REGULAR_VISITS, type Book } from '../core/reservations.ts';
 import { claudeOptions, type ClaudePage } from '../connectors/claude.ts';
 import { readReservations, readWineSheets, suggestIngredients, suggestPairings, type WineSheet } from '../connectors/floorReaders.ts';
 import { normalizeName } from '../core/recipeCards.ts';
@@ -71,7 +71,7 @@ const NEW_DAYS = 21;
 interface DishInfo {
   id: string; name: string; kind: 'dish' | 'drink'; price?: number; lines: string[];
   allergyLine: string; contains: AllergenInfo['contains']; unchecked: string[]; unknown: string[];
-  firstSold?: string; catalogIds: string[]; area: 'kitchen' | 'bar';
+  firstSold?: string; catalogIds: string[]; area: 'kitchen' | 'bar'; image?: string;
   /** Asked for with a swap (the gluten-sensitive crust): what it has then. */
   swaps: { label: string; contains: string[]; allergyLine: string; unchecked: string[] }[];
 }
@@ -114,6 +114,7 @@ async function dishIndex(db: Db, restaurantId: string, model: Model): Promise<{ 
       id: recipe.id, name: c.name, kind: kindOf(c) === 'drink' ? 'drink' : 'dish', ...(prices.length ? { price: Math.max(...prices) } : {}),
       lines: cardLines(recipe, names), allergyLine: allergyLine(info), contains: info.contains, unchecked: info.unchecked, unknown: info.unknown,
       ...(firsts[0] ? { firstSold: firsts[0] } : {}), catalogIds: items.map((i) => i.catalogId),
+      ...(items.map((i) => model.imageOf(i.catalogId)).find(Boolean) ? { image: items.map((i) => model.imageOf(i.catalogId)).find(Boolean)! } : {}),
       area: category && areaOf(category) === 'bar' ? 'bar' : category ? 'kitchen' : kindOf(c) === 'drink' ? 'bar' : 'kitchen',
       swaps: swaps.filter((w) => usesRecipe(recipe.id, w.from, model.book.recipes)).map((w) => {
         const with_ = allergensOf(recipe.id, src, w);
@@ -281,7 +282,10 @@ export async function floorBoard(db: Db, ctx: FloorContext, asked?: string) {
     asOf: tonight.asOf, source: tonight.source, covers: tonight.book.covers ?? all.reduce((a, r) => a + r.partySize, 0), parties: all.length,
     mineCovers: mine.reduce((a, r) => a + r.partySize, 0), mineParties: mine.length,
     ...(busiest ? { busiest: { hour: busiest[0], covers: busiest[1] } } : {}),
-    reservations: mine.map((r) => ({ ...r, why: whyNotable(r), notable: whyNotable(r).length > 0, suggestRegular: !r.vip && (r.visitsLastYear ?? 0) >= REGULAR_VISITS })),
+    reservations: mine.map((r) => {
+      const dietary = dietaryOf(r), celebration = celebrationOf(r);
+      return { ...r, why: whyNotable(r), notable: whyNotable(r).length > 0, suggestRegular: !r.vip && (r.visitsLastYear ?? 0) >= REGULAR_VISITS, ...(dietary ? { dietary } : {}), ...(celebration ? { celebration } : {}) };
+    }),
   } : null;
   return {
     post: { id: post.id, name: post.name, kind: post.kind, ...(post.station_id ? { stationId: post.station_id } : {}) },
@@ -291,8 +295,9 @@ export async function floorBoard(db: Db, ctx: FloorContext, asked?: string) {
     gelato: gelato ? { flavors: js(gelato.flavors), panChanges: gelato.pans_on === today ? js(gelato.pan_changes) : [], setAt: gelato.set_at } : null,
     talk, notes, checklists: { opening: checklist('opening'), closing: checklist('closing'), slow },
     lookup: {
-      dishes: dishes.filter((d) => side === 'both' || post.kind === 'room' || post.kind === 'counter' || d.area === side)
-        .map((d) => ({ id: d.id, name: d.name, kind: d.kind, ...(d.price !== undefined ? { price: d.price } : {}), lines: d.lines, allergyLine: d.allergyLine, contains: d.contains.map((c) => c.key), unchecked: d.unchecked, unknown: d.unknown, swaps: d.swaps, wines: winesFor.get(d.id) ?? [] }))
+      dishes: dishes
+        .map((d) => ({ id: d.id, name: d.name, kind: d.kind, area: d.area, ...(d.price !== undefined ? { price: d.price } : {}), ...(d.image ? { image: d.image } : {}),
+          ...(d.firstSold ? { firstSold: d.firstSold } : {}), isNew: fresh.some((f) => f.id === d.id), lines: d.lines, allergyLine: d.allergyLine, contains: d.contains.map((c) => c.key), unchecked: d.unchecked, unknown: d.unknown, swaps: d.swaps, wines: winesFor.get(d.id) ?? [] }))
         .sort((a, b) => a.name.localeCompare(b.name)),
       wines,
     },

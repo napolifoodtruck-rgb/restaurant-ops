@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { allergensOf, allergyLine, cardLines, spokenName, usesRecipe } from '../src/core/allergens.ts';
 import { wineBase } from '../src/server/floor.ts';
-import { clock, forTables, mergeBooks, notesAndTags, readOpenTableCsv, tablesOf, whyNotable } from '../src/core/reservations.ts';
+import { celebrationOf, clock, dietaryOf, forTables, mergeBooks, notesAndTags, readOpenTableCsv, tablesOf, whyNotable } from '../src/core/reservations.ts';
 import type { Recipe } from '../src/core/recipes.ts';
 
 const recipe = (id: string, lines: [kind: 'product' | 'recipe', id: string][]): Recipe => ({
@@ -101,4 +101,15 @@ test('a later report keeps what the digest knew about each guest', () => {
   // Time and table from the later report, history and notes from the digest.
   assert.deepEqual([lee.time, lee.tables, lee.visitsLastYear, lee.notes, whyNotable(lee)], ['19:00', ['T33'], 12, 'Window table if possible', ['notes', 'often here']]);
   assert.ok(!merged.reservations.some((r) => r.name === 'Cancelled Since'));
+});
+
+test('what to know about a guest: what they can eat, what they celebrate', () => {
+  const r = (x: object) => ({ time: '18:00', partySize: 2, name: 'A Guest', tables: ['T1'], occasions: [], ...x });
+  assert.equal(dietaryOf(r({ notes: 'Lovely couple. Severe tree nut allergy; carries an EpiPen.' })), 'Severe tree nut allergy · carries an EpiPen.');
+  assert.equal(dietaryOf(r({ requests: 'Gluten sensitive' })), 'Gluten sensitive');
+  assert.equal(dietaryOf(r({ requests: 'Window seat please' })), undefined);
+  assert.equal(celebrationOf(r({ occasions: ['Birthday', 'Business Meal'] })), 'Birthday');
+  assert.equal(celebrationOf(r({ requests: 'Proposal: dessert with ring' })), 'Proposal: dessert with ring');
+  assert.equal(celebrationOf(r({ occasions: ['Special Occasion'], requests: 'Proposal: dessert with ring' })), 'Special Occasion · Proposal: dessert with ring');
+  assert.equal(celebrationOf(r({ occasions: ['Business Meal'] })), undefined);
 });

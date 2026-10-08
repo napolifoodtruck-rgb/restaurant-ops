@@ -6279,89 +6279,54 @@ async function floorBoard(ctx = {}) {
     search,
     h('button', { class: 'btn', text: 'Allergies', onclick: () => floorAllergyFinder(b) }),
     b.lookup.wines.length ? h('button', { class: 'btn', text: 'Wines', onclick: () => floorWines(b) }) : null,
+    floorTasksButton(b, reload),
     b.post.stationId ? h('button', { class: 'btn', text: 'Bar prep', onclick: async () => { stopFloorTimers(); const d = await api('GET', '/api/devices/staff'); if (d.ok) pinNames(d.data); } }) : null,
     manager && b.posts?.length > 1 ? h('select', { class: 'tool-select', 'aria-label': 'Post', onchange: (e) => floorBoard({ ...ctx, post: e.target.value }) }, b.posts.map((p) => h('option', { value: p.id, text: p.name, selected: p.id === b.post.id ? true : undefined }))) : null,
     manager ? h('button', { class: 'btn dark', text: 'Manage', onclick: () => floorManage(ctx.me) }) : h('button', { class: 'btn', text: 'Manager', onclick: () => floorManagerSignIn() }),
     manager && !inShell ? h('button', { class: 'btn', text: 'Done', title: 'Sign out: back to the board', onclick: async () => { await api('POST', '/api/logout'); start(); } }) : null);
 
-  // --- tonight's book
-  let onlyNotable = true;
-  const bookBox = h('section', { class: 'card floor-book' });
-  const drawBook = () => {
-    const bk = b.book;
-    if (!bk) return fill(bookBox, h('h2', { text: 'Tonight’s book' }), h('div', { class: 'small muted', text: manager ? 'No OpenTable report yet tonight. Upload the pre-shift digest or an export under Manage.' : 'No OpenTable report yet tonight. A manager uploads it.' }));
-    const list = bk.reservations.filter((x) => !onlyNotable || x.notable || phase === 'service');
-    const upcoming = phase === 'service' ? list.filter((x) => minutesOf(x.time) >= minutes - 20) : list;
-    const shown = phase === 'service' ? upcoming : list;
-    fill(bookBox,
-      h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: phase === 'service' ? 'Arriving next' : 'Tonight’s book' }),
-        h('span', { class: 'tag', text: `OpenTable ${bk.source === 'csv' ? 'export' : 'digest'} · as of ${asOfText(bk.asOf)}` })),
+  // --- tonight to know: what's hard to pick out of OpenTable, by what matters most
+  const bk = b.book;
+  const reasonOf = (x) => x.dietary ?? x.celebration ?? (x.vip ? (x.vipNote ?? 'Regular') : x.suggestRegular ? `Often here: ${x.visitsLastYear} visits last year` : [x.requests, x.notes].filter(Boolean).join(' · ') || `Party of ${x.partySize}`);
+  const groupOf = (x) => x.dietary ? 'diet' : x.celebration ? 'celebrate' : x.vip || x.suggestRegular ? 'regular' : x.requests || x.notes || x.partySize >= 6 ? 'request' : null;
+  const GROUPS = [['diet', 'Allergies & diet'], ['celebrate', 'Celebrating'], ['regular', 'Regulars'], ['request', 'Requests & big parties']];
+  const knowBox = h('section', { class: 'card floor-know' });
+  if (!bk) fill(knowBox, h('h2', { text: 'Tonight to know' }), h('div', { class: 'small muted', text: manager ? 'No OpenTable report yet tonight. Upload the CSV export or the pre-shift digest under Manage.' : 'No OpenTable report yet tonight. A manager uploads it.' }));
+  else {
+    const rows = bk.reservations.map((x) => ({ x, g: groupOf(x) })).filter((r) => r.g);
+    fill(knowBox,
+      h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: 'Tonight to know' }), h('span', { class: 'small muted', text: `OpenTable ${bk.source === 'csv' ? 'export' : 'digest'} · as of ${asOfText(bk.asOf)}` })),
       h('div', { class: 'floor-stats' },
-        h('div', {}, h('b', { text: String(bk.mineCovers) }), h('span', { text: ` covers here · ${bk.mineParties} ${bk.mineParties === 1 ? 'party' : 'parties'}` })),
-        b.post.kind !== 'host' ? h('div', {}, h('b', { text: String(bk.covers) }), h('span', { text: ' tonight in all' })) : null,
-        bk.busiest ? h('div', {}, h('span', { text: 'Busiest ' }), h('b', { text: `${((bk.busiest.hour + 11) % 12) + 1}–${((bk.busiest.hour + 12) % 12) + 1}` }), h('span', { text: ` (${bk.busiest.covers} covers)` })) : null),
-      shown.length ? h('div', { class: 'floor-res' }, shown.map((x) => h('div', { class: `res${x.notable ? ' notable' : ''}${phase === 'service' && minutesOf(x.time) < minutes ? ' past' : ''}` },
-        h('div', { class: 'res-time', text: resTime(x.time) }),
-        h('div', { class: 'res-table', text: `${x.tables.join('+')}${x.combined && x.tables.length === 1 ? '+' : ''}` }),
-        h('div', { class: 'res-size', text: `${x.partySize}` }),
-        h('div', { class: 'res-main' },
-          h('div', { class: 'res-name' }, x.vip ? h('span', { class: 'star', 'aria-label': 'Regular', text: '★ ' }) : null, x.name,
-            x.why.filter((w) => w !== 'regular').map((w) => h('span', { class: `tag${/birthday|anniversary|occasion/.test(w) ? ' blue' : /party/.test(w) ? ' warn' : ''}`, text: w }))),
-          x.vipNote ? h('div', { class: 'small', text: x.vipNote }) : null,
-          x.requests ? h('div', { class: 'small', text: `Asked: ${x.requests}` }) : null,
-          x.notes ? h('div', { class: 'small strong', text: x.notes }) : null,
-          x.visitsLastYear ? h('div', { class: 'small muted', text: `${x.visitsLastYear} visit${x.visitsLastYear === 1 ? '' : 's'} last year${x.lastVisit ? ` · last ${shortDate(x.lastVisit)}` : ''}${x.spendPerCover ? ` · $${Math.round(x.spendPerCover)} a cover` : ''}` }) : null,
-          x.suggestRegular && manager ? h('div', { class: 'small warn-text', text: 'Comes often but isn’t marked a regular in OpenTable.' }) : null))))
-        : h('div', { class: 'small muted', text: onlyNotable ? 'Nothing special to know about tonight’s guests here.' : 'No reservations here tonight.' }),
-      phase !== 'service' && bk.reservations.some((x) => !x.notable) ? h('button', { class: 'link small', text: onlyNotable ? `Show all ${bk.reservations.length}` : 'Only the ones to know about', onclick: () => { onlyNotable = !onlyNotable; drawBook(); } }) : null);
-  };
-  drawBook();
+        h('div', {}, h('b', { text: String(b.post.kind === 'host' ? bk.covers : bk.mineCovers) }), h('span', { text: ` covers${b.post.kind === 'host' ? '' : ' here'} · ${b.post.kind === 'host' ? bk.parties : bk.mineParties} ${(b.post.kind === 'host' ? bk.parties : bk.mineParties) === 1 ? 'party' : 'parties'}` })),
+        bk.busiest ? h('div', {}, h('span', { text: 'Busiest ' }), h('b', { text: `${((bk.busiest.hour + 11) % 12) + 1}–${((bk.busiest.hour + 12) % 12) + 1}` })) : null),
+      rows.length ? GROUPS.filter(([k]) => rows.some((r) => r.g === k)).map(([k, label]) => h('div', { class: `know-group ${k}` },
+        h('div', { class: 'know-label', text: label }),
+        rows.filter((r) => r.g === k).map(({ x }) => h('button', { class: `know-row${phase !== 'pre' && minutesOf(x.time) < minutes - 30 ? ' past' : ''}`, onclick: () => floorGuest(x, manager) },
+          h('span', { class: 'res-time', text: resTime(x.time) }),
+          h('span', { class: 'res-table', text: x.tables.join('+') || '–' }),
+          h('span', { class: 'res-size', text: String(x.partySize) }),
+          h('span', { class: 'know-main' }, h('span', { class: 'strong' }, x.vip ? h('span', { class: 'star', text: '★ ' }) : null, x.name), h('span', { class: 'know-why', text: reasonOf(x) })),
+          h('span', { class: 'chev', text: '›' })))))
+        : h('div', { class: 'small muted', text: 'Nothing special to know about tonight’s guests here.' }));
+  }
 
-  // --- featured: specials and new items, as cards
-  const menuCard = (f) => h('article', { class: `menu-card ${f.kind}` },
-    h('div', { class: 'kicker', text: `${f.kind === 'special' ? 'Special' : 'New'}${f.price ? ` · ${usd(f.price)}` : ''}${f.days?.length && f.days.length < 7 ? ` · ${f.days.map((d) => WEEKDAY_NAMES[d]).join(', ')}` : ''}` }),
-    h('h3', { text: f.name }),
-    f.lines.length ? h('ul', {}, f.lines.map((l) => h('li', { text: upFirst(l) }))) : h('div', { class: 'small muted', text: 'No recipe linked yet.' }),
-    f.allergyLine ? h('div', { class: 'allergy', text: `Allergy: ${f.allergyLine}` }) : null,
-    f.unchecked?.length ? h('div', { class: 'small warn-text', text: `Not checked yet: ${f.unchecked.join(', ')}` }) : null,
-    f.note ? h('div', { class: 'small', text: f.note }) : null,
-    f.id ? h('button', { class: 'link small', text: 'More', onclick: () => floorDish(b, f.id) }) : null);
-  const featured = b.featured.length ? h('section', { class: 'card' }, h('h2', { text: 'New and special' }), h('div', { class: 'menu-cards' }, b.featured.map(menuCard))) : null;
-
-  // --- gelato
-  const gelato = b.gelato ? h('section', { class: 'card floor-gelato' },
-    h('div', { class: 'row' }, h('h2', { class: 'grow', text: 'Gelato flight' }), h('span', { class: 'small muted', text: `set ${when(b.gelato.setAt)}` })),
-    h('ol', {}, b.gelato.flavors.map((f) => h('li', {}, f.name, f.vegan ? h('span', { class: 'tag ok', text: 'v' }) : null))),
-    b.gelato.panChanges.length ? [h('div', { class: 'strong small', text: 'Pans tonight' }), h('ul', { class: 'small' }, b.gelato.panChanges.map((p) => h('li', { text: `${p.size ? `${p.size} ` : ''}${p.from} → ${p.to}` })))] : null) : null;
-
-  // --- right side: notes, talk it up, checklists
+  // --- the narrow column: specials, new, gelato, notes
+  const specials = b.featured.filter((f) => f.kind === 'special');
+  const newOnes = b.lookup.dishes.filter((d) => d.isNew);
+  const special = specials.length || b.talk.length ? sideBox(specials.length ? 'Specials' : 'Talk it up',
+    specials.map((f) => h('button', { class: 'mini-row', onclick: () => f.id && floorDish(b, f.id) },
+      h('span', { class: 'grow' }, h('span', { class: 'strong', text: f.name }), h('span', { class: 'allergy small', text: f.allergyLine })), f.price ? h('span', { text: usd(f.price) }) : null)),
+    specials.length && b.talk.length ? h('div', { class: 'small muted talk-line', text: `Talk up: ${b.talk.map((t) => t.name).join(', ')}` }) : null,
+    !specials.length ? h('div', { class: 'small', text: b.talk.map((t) => t.name).join(', ') }) : null) : null;
+  const newBox = newOnes.length ? h('button', { class: 'card tight new-button', onclick: () => floorNewDishes(b) },
+    h('span', { class: 'grow' }, h('span', { class: 'small muted strong', text: 'New on the menu' }), h('span', { text: newOnes.map((d) => d.name).join(', ') })),
+    h('span', { class: 'tag blue', text: `${newOnes.length} · browse & quiz` })) : h('button', { class: 'card tight new-button', onclick: () => floorQuiz(b, 'all') }, h('span', { class: 'grow small strong', text: 'Quiz me on the menu' }), h('span', { class: 'chev', text: '›' }));
+  const gelato = b.gelato ? sideBox('Gelato flight',
+    h('div', { class: 'gelato-mini' }, b.gelato.flavors.map((f) => h('span', {}, f.name, f.vegan ? h('span', { class: 'v', text: ' (v)' }) : null))),
+    b.gelato.panChanges.map((p) => h('div', { class: 'small strong', text: `${p.size ? `${p.size} ` : ''}${p.from} → ${p.to}` }))) : null;
   const notes = b.notes.length ? sideBox('From the managers', b.notes.map((n) => h('div', { class: 'floor-note' }, h('div', { text: n.body }), n.by ? h('div', { class: 'small muted', text: n.by }) : null))) : null;
-  const talk = b.talk.length ? sideBox('Talk it up', h('div', { class: 'list compact' }, b.talk.map((t) => h('div', {}, h('div', { class: 'strong', text: t.name }), h('div', { class: 'small muted', text: t.why }))))) : null;
-  const tick = (item) => h('button', { class: `check-row${item.done ? ' done' : ''}`, onclick: async () => {
-      const res = await floorWithPin(item.done ? 'Undo' : 'Done', item.name, (who) => api('POST', '/api/floor/check', { checklistId: item.id, staffId: who.staffId, pin: who.pin, ...(item.done ? { undo: true } : {}) }));
-      if (res) reload();
-    } }, h('span', { class: 'box', 'aria-hidden': 'true', text: item.done ? '✓' : '' }), h('span', { class: 'grow', text: item.name }),
-    item.done ? h('span', { class: 'small muted', text: `${item.done.by ?? ''} ${new Date(item.done.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` }) : null,
-    item.last ? h('span', { class: 'small muted', text: `${shortDate(item.last.day)}${item.last.by ? ` · ${item.last.by}` : ''}` }) : null);
-  const list = (title, items) => items.length ? sideBox(title, h('div', { class: 'checks' }, items.map(tick))) : null;
-  const slowDue = b.checklists.slow.filter((s) => s.due);
-  const slow = b.checklists.slow.length ? sideBox('When it’s slow', h('div', { class: 'small muted', text: slowDue.length ? 'Pick one up: whoever does it gets the credit.' : 'All caught up.' }), h('div', { class: 'checks' }, b.checklists.slow.map((s) => tick({ ...s, done: null })))) : null;
-  const handoffText = h('textarea', { rows: 3, placeholder: 'Guest feedback, something broken, what ran low…', 'aria-label': 'Note for the managers' });
-  const handoff = sideBox('Note for the managers', h('div', { class: 'small muted', text: 'They see it in Today.' }), handoffText,
-    h('button', { class: 'btn', text: 'Send', onclick: async () => {
-      if (!handoffText.value.trim()) return;
-      const res = await floorWithPin('Send the note', 'So the managers know who wrote it.', (who) => api('POST', '/api/floor/handoff', { staffId: who.staffId, pin: who.pin, body: handoffText.value }));
-      if (res) { handoffText.value = ''; floorMessage(`Sent. Thanks, ${res.data.by}.`); }
-    } }));
 
-  // Through the night: getting ready, then service (lookup and who's next), then closing.
-  const main = [bookBox, featured, gelato];
-  const side = phase === 'pre'
-    ? [notes, talk, list('Opening', b.checklists.opening), slow, list('Closing', b.checklists.closing)]
-    : phase === 'service'
-      ? [notes, talk, slow, list('Opening', b.checklists.opening.filter((c) => !c.done)), list('Closing', b.checklists.closing)]
-      : [list('Closing', b.checklists.closing), handoff, notes, slow];
-  const body = h('div', { class: 'floor-board' }, h('div', { class: 'floor-main' }, main), h('aside', { class: 'floor-side' }, side));
+  const body = h('div', { class: 'floor-board' }, h('div', { class: 'floor-main' }, knowBox), h('aside', { class: 'floor-side' }, notes, special, newBox, gelato));
   if (inShell) show(shell(ctx.me, 'floor', [head, body]));
   else show(h('div', { class: 'floor' }, head, body));
 
@@ -6373,6 +6338,154 @@ async function floorBoard(ctx = {}) {
   }, 120000); };
   again();
   if (manager && !inShell) floorIdleSignOut();
+}
+
+/** Tasks, behind one button: what's due now shows on it (opening before 5, the slow list in service, closing after). */
+function floorTasksButton(b, reload) {
+  const c = b.checklists;
+  if (!c.opening.length && !c.closing.length && !c.slow.length) return h('button', { class: 'btn', text: 'Tasks', onclick: () => floorTasks(b, reload) });
+  const due = b.phase === 'pre' ? c.opening.filter((x) => !x.done).length : b.phase === 'closing' ? c.closing.filter((x) => !x.done).length : c.slow.filter((x) => x.due).length;
+  return h('button', { class: `btn${due ? ' due' : ''}`, text: due ? `Tasks · ${due}` : 'Tasks ✓', onclick: () => floorTasks(b, reload) });
+}
+
+/** Opening, closing, "when it's slow" (a PIN for the credit), and a note for the managers. */
+function floorTasks(b, reload) {
+  const box = h('div', { class: 'stack' });
+  let board = b;
+  const fresh = async () => { const r = await api('GET', `/api/floor/board?post=${encodeURIComponent(board.post.id)}`); if (r.ok) { board = r.data; draw(); } };
+  const tick = (item, slow) => h('button', { class: `check-row${item.done ? ' done' : ''}`, onclick: async () => {
+      const res = await floorWithPin(item.done ? 'Undo' : 'Done', item.name, (who) => api('POST', '/api/floor/check', { checklistId: item.id, staffId: who.staffId, pin: who.pin, ...(item.done ? { undo: true } : {}) }));
+      if (res) fresh();
+    } }, h('span', { class: 'box', 'aria-hidden': 'true', text: item.done ? '✓' : '' }), h('span', { class: 'grow', text: item.name }),
+    item.done ? h('span', { class: 'small muted', text: `${item.done.by ?? ''} ${new Date(item.done.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` }) : null,
+    slow ? h('span', { class: `small ${item.due ? 'warn-text' : 'muted'}`, text: item.last ? `last ${shortDate(item.last.day)}${item.last.by ? ` · ${item.last.by}` : ''}` : 'not done yet' }) : null);
+  const handoffText = h('textarea', { rows: 3, placeholder: 'Guest feedback, something broken, what ran low…', 'aria-label': 'Note for the managers' });
+  const draw = () => {
+    const c = board.checklists;
+    const order = board.phase === 'closing' ? ['closing', 'slow', 'opening'] : board.phase === 'service' ? ['slow', 'closing', 'opening'] : ['opening', 'slow', 'closing'];
+    const lists = { opening: ['Opening', c.opening, false], closing: ['Closing', c.closing, false], slow: ['When it’s slow', c.slow.map((x) => ({ ...x, done: null })), true] };
+    fill(box, order.map((k) => { const [title, items, slow] = lists[k]; return items.length ? h('section', { class: 'card tight' }, h('h3', { text: title }), slow ? h('div', { class: 'small muted', text: 'Pick one up when it’s quiet: whoever does it gets the credit.' }) : null, h('div', { class: 'checks' }, items.map((x) => tick(x, slow)))) : null; }),
+      !c.opening.length && !c.closing.length && !c.slow.length ? h('div', { class: 'muted', text: 'No tasks set up yet. A manager adds them in Service → Setup.' }) : null,
+      h('section', { class: 'card tight' }, h('h3', { text: 'Note for the managers' }), h('div', { class: 'small muted', text: 'At the end of the night: they see it in Today.' }), handoffText,
+        h('button', { class: 'btn', text: 'Send', onclick: async () => {
+          if (!handoffText.value.trim()) return;
+          const res = await floorWithPin('Send the note', 'So the managers know who wrote it.', (who) => api('POST', '/api/floor/handoff', { staffId: who.staffId, pin: who.pin, body: handoffText.value }));
+          if (res) { handoffText.value = ''; floorMessage(`Sent. Thanks, ${res.data.by}.`); }
+        } })));
+  };
+  draw();
+  const s = floorSheet('Tasks', h('h2', { class: 'sheet-title', text: 'Tasks' }), box);
+  // The board behind catches up when the sheet closes.
+  new MutationObserver((_, o) => { if (!document.body.contains(s.panel)) { o.disconnect(); reload(); } }).observe(document.body, { childList: true });
+}
+
+/** One reservation, all of it: notes, requests, history. */
+function floorGuest(x, manager) {
+  floorSheet(x.name,
+    h('div', { class: 'kicker', text: `${resTime(x.time)} · ${x.tables.join('+') || 'no table yet'} · ${x.partySize} ${x.partySize === 1 ? 'guest' : 'guests'}` }),
+    h('h2', { class: 'sheet-title' }, x.vip ? h('span', { class: 'star', text: '★ ' }) : null, x.name),
+    x.dietary ? h('div', { class: 'note warn-note', text: x.dietary }) : null,
+    x.occasions?.length ? h('div', {}, x.occasions.map((o) => h('span', { class: 'tag blue', text: o }))) : null,
+    [['Regular', x.vipNote], ['Asked for', x.requests], ['Notes', x.notes]].filter(([, v]) => v).map(([k, v]) => h('section', { class: 'card tight' }, h('div', { class: 'small muted strong', text: k }), h('div', { text: v }))),
+    x.visitsLastYear || x.lastVisit || x.spendPerCover ? h('div', { class: 'small muted', text: [x.visitsLastYear ? `${x.visitsLastYear} visit${x.visitsLastYear === 1 ? '' : 's'} last year` : '', x.lastVisit ? `last here ${shortDate(x.lastVisit)}` : '', x.spendPerCover ? `about $${Math.round(x.spendPerCover)} a guest` : ''].filter(Boolean).join(' · ') }) : null,
+    x.suggestRegular && manager ? h('div', { class: 'small warn-text', text: 'Comes often but isn’t marked a regular in OpenTable.' }) : null,
+    h('div', { class: 'small muted', text: 'Everything else (phone, past visits, the floor plan) is in OpenTable.' }));
+}
+
+/** What's new on the menu, one card at a time, and a quiz on it. */
+function floorNewDishes(b) {
+  const dishes = b.lookup.dishes.filter((d) => d.isNew);
+  const special = new Map(b.featured.filter((f) => f.kind === 'special' && f.id).map((f) => [f.id, f]));
+  floorSheet('New on the menu',
+    h('div', { class: 'row' }, h('h2', { class: 'sheet-title grow', text: 'New on the menu' }), h('button', { class: 'btn dark', text: 'Quiz me', onclick: () => floorQuiz(b, 'new') })),
+    dishes.map((d) => h('article', { class: 'card new-card' },
+      d.image ? h('img', { class: 'new-photo', src: d.image, alt: '', loading: 'lazy' }) : null,
+      h('div', { class: 'kicker', text: `${d.firstSold ? `Since ${shortDate(d.firstSold)}` : 'New'}${d.price ? ` · ${usd(d.price)}` : ''}${special.has(d.id) ? ' · special' : ''}` }),
+      h('h3', { text: d.name }),
+      d.lines.length ? h('ul', {}, d.lines.map((l) => h('li', { text: upFirst(l) }))) : null,
+      h('div', { class: 'allergy', text: `Allergy: ${d.allergyLine}` }),
+      (d.swaps ?? []).filter((w) => w.allergyLine !== d.allergyLine).map((w) => h('div', { class: 'small', text: `With the ${w.label}: ${w.allergyLine}` })),
+      d.wines.length ? h('div', { class: 'small', text: `Pairs with ${d.wines.join(', ')}` }) : null)),
+    h('button', { class: 'btn', text: 'Quiz me on the whole menu', onclick: () => floorQuiz(b, 'all') }));
+}
+
+const qShuffle = (a) => { const x = [...a]; for (let i = x.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [x[i], x[j]] = [x[j], x[i]]; } return x; };
+const qPick = (a) => a[Math.floor(Math.random() * a.length)];
+const qSame = (a, b) => a.toLowerCase() === b.toLowerCase();
+
+/** Questions from the recipes: what's on it, which dish has these, can someone avoiding X have it, what wine. */
+function quizQuestions(b, scope) {
+  const all = b.lookup.dishes.filter((d) => d.kind === 'dish' && d.lines.length);
+  const pool = scope === 'new' ? all.filter((d) => d.isNew) : all;
+  const lines = [...new Set(all.flatMap((d) => d.lines.map(upFirst)))];
+  // Every question each dish allows, then a mix: no more than three about one dish.
+  const asked = [];
+  for (const d of pool) {
+    for (const kind of ['on', 'which', 'allergen', 'wine']) {
+      if (kind === 'on') {
+        const right = upFirst(qPick(d.lines));
+        const wrong = qShuffle(lines.filter((l) => !d.lines.some((x) => qSame(x, l)))).slice(0, 3);
+        if (wrong.length < 3) continue;
+        asked.push({ d, q: `Which of these is on the ${d.name}?`, options: qShuffle([right, ...wrong]), answer: right, why: `${d.name}: ${d.lines.map(upFirst).join(', ')}.` });
+      } else if (kind === 'which') {
+        const two = qShuffle(d.lines).slice(0, 2);
+        if (two.length < 2) continue;
+        const has = (x) => two.every((l) => x.lines.some((y) => qSame(y, l)));
+        const wrong = qShuffle(all.filter((x) => x.id !== d.id && !has(x))).slice(0, 3).map((x) => x.name);
+        if (wrong.length < 3 || all.some((x) => x.id !== d.id && has(x))) continue;
+        asked.push({ d, q: `Which dish has ${upFirst(two[0])} and ${two[1].toLowerCase()}?`, options: qShuffle([d.name, ...wrong]), answer: d.name, why: `${d.name}: ${d.lines.map(upFirst).join(', ')}.` });
+      } else if (kind === 'allergen') {
+        if (d.unchecked.length || d.unknown.length) continue;
+        const keys = Object.keys(FLOOR_ALLERGENS);
+        for (const key of qShuffle([...(d.contains.length ? [qPick(d.contains)] : []), qPick(keys.filter((k) => !d.contains.includes(k)))].filter(Boolean))) {
+          const label = FLOOR_ALLERGENS[key].toLowerCase();
+          const swap = (d.swaps ?? []).find((w) => !w.contains.includes(key));
+          const answer = !d.contains.includes(key) ? 'Yes' : swap ? `With the ${swap.label}` : 'No';
+          asked.push({ d, q: `Can a guest avoiding ${label} have the ${d.name}?`, options: ['Yes', 'No', ...(d.swaps ?? []).map((w) => `With the ${w.label}`)], answer, why: `${d.name}: ${d.allergyLine}.${swap && answer !== 'Yes' ? ` With the ${swap.label}: ${swap.allergyLine}.` : ''}${b.allergyNote && /gluten/.test(label) ? ` ${b.allergyNote}` : ''}` });
+        }
+      } else if (kind === 'wine') {
+        if (!d.wines.length || b.lookup.wines.length < 3) continue;
+        const right = d.wines[0];
+        const wrong = qShuffle(b.lookup.wines.map((w) => w.name).filter((n) => !d.wines.includes(n))).slice(0, 3);
+        if (wrong.length < 2) continue;
+        const w = b.lookup.wines.find((x) => x.name === right);
+        asked.push({ d, q: `Which wine would you suggest with the ${d.name}?`, options: qShuffle([right, ...wrong]), answer: right, why: w?.pairings.find((p) => p.recipeId === d.id)?.why ?? `It pairs with the ${d.name}.` });
+      }
+    }
+  }
+  const per = new Map(), out = [];
+  for (const q of qShuffle(asked)) {
+    if ((per.get(q.d.id) ?? 0) >= 3) continue;
+    per.set(q.d.id, (per.get(q.d.id) ?? 0) + 1);
+    out.push(q);
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+/** A quiz, ten seconds a question, nothing kept. */
+function floorQuiz(b, scope) {
+  const qs = quizQuestions(b, scope);
+  const box = h('div', { class: 'stack quiz' });
+  let n = 0, right = 0;
+  const draw = () => {
+    if (!qs.length) return fill(box, h('div', { class: 'muted', text: scope === 'new' ? 'Not enough on the new dishes for a quiz yet (their recipes and allergens fill it).' : 'Not enough recipes for a quiz yet.' }));
+    if (n >= qs.length) return fill(box, h('h2', { text: `${right} of ${qs.length}` }), h('div', { text: right === qs.length ? 'Every one. Nice.' : right >= qs.length * 0.7 ? 'Good. Run it again to get the rest.' : 'Look over the dishes and try again.' }),
+      h('div', { class: 'row' }, h('button', { class: 'btn dark', text: 'Another round', onclick: () => floorQuiz(b, scope) }), scope === 'new' ? h('button', { class: 'btn', text: 'The new dishes', onclick: () => floorNewDishes(b) }) : null));
+    const q = qs[n];
+    const why = h('div', { class: 'small' });
+    const next = h('button', { class: 'btn dark', text: n + 1 < qs.length ? 'Next' : 'See how you did', hidden: true, onclick: () => { n++; draw(); } });
+    const buttons = q.options.map((o) => h('button', { class: 'quiz-option', text: o, onclick: () => {
+      if (!next.hidden) return;
+      if (o === q.answer) right++;
+      buttons.forEach((x) => { x.classList.toggle('right', x.textContent === q.answer); x.classList.toggle('wrong', x.textContent === o && o !== q.answer); });
+      why.textContent = `${o === q.answer ? 'Right. ' : `It’s ${q.answer}. `}${q.why}`;
+      next.hidden = false;
+    } }));
+    fill(box, h('div', { class: 'kicker', text: `${n + 1} of ${qs.length}` }), h('h2', { text: q.q }), h('div', { class: 'quiz-options' }, buttons), why, next);
+  };
+  draw();
+  floorSheet('Quiz', h('h2', { class: 'sheet-title', text: scope === 'new' ? 'Quiz: what’s new' : 'Quiz: the menu' }), box);
 }
 
 /** A manager signed in on a POS iPad is signed out after 10 minutes untouched, back to the board. */
@@ -6430,7 +6543,7 @@ function floorDish(b, id) {
       h('div', { class: 'allergy-chips' }, Object.entries(FLOOR_ALLERGENS).map(([key, label]) => h('span', { class: `tag${d.contains.includes(key) ? ' bad' : ''}`, text: d.contains.includes(key) ? label : `no ${label.toLowerCase()}` }))),
       d.unchecked.length ? h('div', { class: 'warn-text small', text: `Not checked yet, so not sure: ${d.unchecked.join(', ')}. Ask the kitchen.` }) : null,
       d.unknown.length ? h('div', { class: 'warn-text small', text: `On the recipe but not matched: ${d.unknown.join(', ')}. Ask the kitchen.` }) : null,
-      (d.swaps ?? []).map((w) => h('div', { class: 'small' }, h('b', { text: `With the ${w.label}: ` }), w.allergyLine)),
+      (d.swaps ?? []).filter((w) => w.allergyLine !== d.allergyLine).map((w) => h('div', { class: 'small' }, h('b', { text: `With the ${w.label}: ` }), w.allergyLine)),
       b.allergyNote ? h('div', { class: 'small', text: b.allergyNote }) : null),
     d.wines.length ? h('section', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Pairs with' }), d.wines.map((name) => { const w = b.lookup.wines.find((x) => x.name === name); return h('button', { class: 'linkish', text: name, onclick: () => w && floorWine(b, w.id) }); })) : null);
 }
@@ -6600,31 +6713,52 @@ function floorTonightTab(d, reload) {
       h('button', { class: 'link', text: 'Remove', onclick: () => pageAction(async () => { await api('POST', '/api/floor/notes', { id: n.id, remove: true }); reload(); }) })))) : h('div', { class: 'small muted', text: 'No notes for tonight.' }),
     noteText, h('div', { class: 'row wrap' }, noteFor, noteWhen, h('button', { class: 'btn', text: 'Add note', onclick: addNote })));
 
-  // Specials and new items.
-  const dishOptions = (sel) => [h('option', { value: '', text: 'Pick the recipe…' }), d.dishes.map((x) => h('option', { value: x.id, text: x.name, selected: x.id === sel ? true : undefined }))];
-  const spRecipe = h('select', { 'aria-label': 'Recipe' }, dishOptions());
+  // Specials and new items: find the dish, then make it tonight's special, or say whether it counts as new.
+  const specials = d.features.filter((f) => f.kind === 'special');
+  const pinned = d.features.filter((f) => f.kind === 'new');
+  const hidden = d.features.filter((f) => f.kind === 'hidden');
+  const isNew = (x) => x.firstSold && x.firstSold >= addDaysISO(d.today, -21);
+  let chosen = null;
+  const find = h('input', { type: 'search', placeholder: 'Find a dish to feature…', 'aria-label': 'Find a dish' });
+  const results = h('div', { class: 'list compact' });
   const spPrice = h('input', { type: 'text', inputmode: 'decimal', class: 'short', placeholder: '$', 'aria-label': 'Price' });
   const spEnds = h('input', { type: 'date', 'aria-label': 'Last day', value: '' });
   const spDays = WEEKDAY_NAMES.map((n, i) => h('label', { class: 'inline small' }, h('input', { type: 'checkbox', value: String(i) }), n));
-  const specials = d.features.filter((f) => f.kind === 'special');
-  const hidden = new Set(d.features.filter((f) => f.kind === 'hidden').map((f) => f.recipeId));
-  const newOnes = d.dishes.filter((x) => x.firstSold && x.firstSold >= addDaysISO(d.today, -21));
-  const featured = h('section', { class: 'card' }, h('h2', { text: 'New and special' }),
-    h('div', { class: 'small muted', text: 'Cards are made from the recipe: ingredients by the names servers say, and the allergy line. New items show for 3 weeks after they first sell.' }),
-    specials.length ? h('div', { class: 'list' }, specials.map((f) => h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'strong', text: `${f.name}${f.price ? ` · $${f.price}` : ''}` }), h('div', { class: 'small muted', text: `${f.weekdays?.length ? f.weekdays.map((w) => WEEKDAY_NAMES[w]).join(', ') : 'Every night'}${f.endsOn ? ` until ${shortDate(f.endsOn)}` : ''}` })),
-      h('button', { class: 'link', text: 'Remove', onclick: () => pageAction(async () => { await api('POST', '/api/floor/features', { id: f.id, remove: true }); reload(); }) })))) : null,
-    h('div', { class: 'stack' }, h('div', { class: 'row wrap' }, spRecipe, spPrice, h('span', { class: 'small', text: 'until' }), spEnds), h('div', { class: 'row wrap' }, h('span', { class: 'small muted', text: 'Only on' }), spDays),
-      h('button', { class: 'btn', text: 'Add special', onclick: () => pageAction(async () => {
-        const recipe = d.dishes.find((x) => x.id === spRecipe.value);
-        if (!recipe) return (err.textContent = 'Pick the recipe for the special.');
+  const form = h('div', { class: 'stack special-form', hidden: true });
+  const drawForm = () => {
+    form.hidden = !chosen;
+    if (!chosen) return;
+    fill(form, h('div', { class: 'strong', text: `${chosen.name} as a special` }),
+      h('div', { class: 'row wrap' }, spPrice, h('span', { class: 'small', text: 'until' }), spEnds, h('span', { class: 'small muted', text: '(blank: until you take it off)' })),
+      h('div', { class: 'row wrap' }, h('span', { class: 'small muted', text: 'Only on' }), spDays),
+      h('div', { class: 'row' }, h('button', { class: 'btn dark', text: 'Add special', onclick: () => pageAction(async () => {
         const days = spDays.map((l) => l.querySelector('input')).filter((c) => c.checked).map((c) => Number(c.value));
-        const res = await api('POST', '/api/floor/features', { kind: 'special', recipeId: recipe.id, name: recipe.name, price: spPrice.value.replace('$', '') || null, startsOn: d.today, endsOn: spEnds.value || null, weekdays: days });
+        const res = await api('POST', '/api/floor/features', { kind: 'special', recipeId: chosen.id, name: chosen.name, price: spPrice.value.replace('$', '') || null, startsOn: d.today, endsOn: spEnds.value || null, weekdays: days });
         if (!res.ok) return (err.textContent = res.data.error);
         reload();
-      }) })),
-    newOnes.length ? [h('h3', { text: 'New on the menu' }), h('div', { class: 'list compact' }, newOnes.map((x) => h('div', { class: 'row' }, h('span', { class: 'grow', text: `${x.name} · first sold ${shortDate(x.firstSold)}` }),
-      hidden.has(x.id) ? h('button', { class: 'link', text: 'Show again', onclick: () => pageAction(async () => { const f = d.features.find((y) => y.kind === 'hidden' && y.recipeId === x.id); await api('POST', '/api/floor/features', { id: f.id, remove: true }); reload(); }) })
-        : h('button', { class: 'link', text: 'Don’t feature', onclick: () => pageAction(async () => { await api('POST', '/api/floor/features', { kind: 'hidden', recipeId: x.id, name: x.name, startsOn: d.today }); reload(); }) }))))] : null,
+      }) }), h('button', { class: 'link', text: 'Cancel', onclick: () => { chosen = null; drawForm(); } })));
+  };
+  const feature = (body) => pageAction(async () => { const res = await api('POST', '/api/floor/features', body); if (!res.ok) return (err.textContent = res.data.error); reload(); });
+  const drawResults = () => {
+    const q = find.value.trim().toLowerCase();
+    if (!q) return fill(results);
+    const hits = d.dishes.filter((x) => x.name.toLowerCase().includes(q)).slice(0, 8);
+    fill(results, hits.length ? hits.map((x) => {
+      const hid = hidden.find((f) => f.recipeId === x.id), pin = pinned.find((f) => f.recipeId === x.id);
+      return h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { text: x.name }), h('div', { class: 'small muted', text: [x.price ? usd(x.price) : '', x.firstSold ? `first sold ${shortDate(x.firstSold)}` : 'not sold yet', isNew(x) && !hid ? 'showing as new' : ''].filter(Boolean).join(' · ') })),
+        h('button', { class: 'link', text: 'Special', onclick: () => { chosen = x; drawForm(); } }),
+        hid ? h('button', { class: 'link', text: 'Show as new', onclick: () => feature({ id: hid.id, remove: true }) })
+          : isNew(x) ? h('button', { class: 'link', text: 'Not new', onclick: () => feature({ kind: 'hidden', recipeId: x.id, name: x.name, startsOn: d.today }) })
+          : pin ? h('button', { class: 'link', text: 'Unpin', onclick: () => feature({ id: pin.id, remove: true }) })
+          : h('button', { class: 'link', text: 'Show as new', title: 'On the New on the menu list for 3 weeks', onclick: () => feature({ kind: 'new', recipeId: x.id, name: x.name, startsOn: d.today, endsOn: addDaysISO(d.today, 21) }) }));
+    }) : h('div', { class: 'small muted', text: 'No dish by that name. Write its recipe first (Recipes).' }));
+  };
+  find.addEventListener('input', drawResults);
+  const featured = h('section', { class: 'card' }, h('h2', { text: 'Specials and new dishes' }),
+    h('div', { class: 'small muted', text: 'Cards come from the recipe: what’s in it by the names servers say, and the allergy line. A dish counts as new for 3 weeks after it first sells.' }),
+    specials.length ? h('div', { class: 'list' }, specials.map((f) => h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'strong', text: `${f.name}${f.price ? ` · ${usd(f.price)}` : ''}` }), h('div', { class: 'small muted', text: `Special · ${f.weekdays?.length ? f.weekdays.map((w) => WEEKDAY_NAMES[w]).join(', ') : 'every night'}${f.endsOn ? ` until ${shortDate(f.endsOn)}` : ''}` })),
+      h('button', { class: 'link', text: 'Take off', onclick: () => feature({ id: f.id, remove: true }) })))) : null,
+    find, results, form,
     h('button', { class: 'btn', text: 'Print cards', onclick: async () => { const b = await api('GET', '/api/floor/board'); if (b.ok) floorPrintCards(b.data.featured, b.data.gelato); } }));
 
   // Talk it up.

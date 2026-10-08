@@ -133,6 +133,25 @@ export function mergeBooks(earlier: Book | undefined, later: Book): Book {
   };
 }
 
+const DIETARY = /allerg|anaphyla|epi.?pen|celiac|coeliac|gluten|wheat|dairy|lactose|\bmilk|nut\b|nuts\b|peanut|tree.?nut|shellfish|seafood|fish\b|\begg|soy\b|sesame|vegan|vegetarian|plant.?based|pescatarian|kosher|halal|garlic|onion|allium|dietary|intoleran|sensitiv|pregnan|no pork|no meat|keto/i;
+const CELEBRATION = /birthday|bday|b-day|anniversary|engage|proposal|propos|celebrat|graduat|retire|promotion|baby shower|bachelor|honeymoon|wedding|date night|special occasion/i;
+
+/** The sentences in a guest's notes and requests that are about what they can eat ("Severe tree nut allergy"). */
+export function dietaryOf(r: Reservation): string | undefined {
+  const texts = [r.notes, r.requests, r.vipNote].filter((t): t is string => Boolean(t));
+  const hits = texts.flatMap((t) => t.split(/(?<=[.;!])\s+|\s*[\n|]\s*/)).map((x) => x.trim().replace(/[;,]$/, '')).filter((x) => x && DIETARY.test(x));
+  return hits.length ? [...new Set(hits)].join(' · ') : undefined;
+}
+
+/** What they're celebrating: OpenTable's occasions, or a request that says so. */
+export function celebrationOf(r: Reservation): string | undefined {
+  const tagged = r.occasions.filter((o) => CELEBRATION.test(o));
+  const asked = [r.requests, r.notes].filter((t): t is string => Boolean(t) && CELEBRATION.test(t!));
+  // The tag says what kind ("Special Occasion"); the request says what it is ("Proposal: dessert with ring").
+  const all = [...tagged, ...asked];
+  return all.length ? all.join(' · ') : undefined;
+}
+
 /** Seen often enough to count as a regular, without being marked one. */
 export const REGULAR_VISITS = 6;
 
