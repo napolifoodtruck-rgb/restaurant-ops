@@ -2045,7 +2045,7 @@ async function menuScreen(me) {
   const valid = (k) => k === 'needs' ? needCount > 0 : k === 'coming' ? canPlan : k === 'online' || k === 'windows' ? canOnline : sections.includes(k);
   let chip = recall(chipKey);
   if (!valid(chip)) chip = needCount ? 'needs' : sections[0] ?? (canPlan ? 'coming' : 'needs');
-  let coming = null, online = null, windows = null;
+  let coming = null, online = null, windows = null, orderPage = null;
   const pickChip = (k) => { chip = k; remember(chipKey, k); draw(); };
 
   // The side: what's on, what came off (each can be put back), adding a dish back, buttons kept apart, answers.
@@ -2071,8 +2071,8 @@ async function menuScreen(me) {
         sec, h('span', { class: 'chip-count', text: String(m.current.filter((x) => baseOf(x.section) === sec).length) }))),
       needCount ? h('button', { class: `chip needs${chip === 'needs' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'needs'), onclick: () => pickChip('needs') }, 'Needs you', h('span', { class: 'chip-count', text: String(needCount) })) : null,
       canPlan ? h('button', { class: `chip${chip === 'coming' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'coming'), onclick: () => pickChip('coming') }, 'Coming up') : null,
-      canOnline ? h('button', { class: `chip${chip === 'online' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'online'), onclick: () => pickChip('online') }, 'Online') : null,
-      canOnline ? h('button', { class: `chip${chip === 'windows' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'windows'), onclick: () => pickChip('windows') }, 'Pickup windows') : null);
+      // Online's settings (the order page, pickup windows) open from a button on it, under the same chip.
+      canOnline ? h('button', { class: `chip${chip === 'online' || chip === 'windows' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'online' || chip === 'windows'), onclick: () => pickChip('online') }, 'Online') : null);
     let main;
     if (chip === 'needs') {
       main = [quietCard, questionRows.length ? h('section', { class: 'card', id: 'menu-questions' },
@@ -2080,11 +2080,12 @@ async function menuScreen(me) {
         h('div', { class: 'asks' }, questionRows)) : null];
       if (!quietCard && !questionRows.length) main = [h('section', { class: 'card small muted', text: 'Nothing needs you.' })];
     } else if (chip === 'online') {
-      online ??= await onlineMenuCard(me);
+      online ??= await onlineMenuCard(me, () => pickChip('windows'));
       main = [online];
     } else if (chip === 'windows') {
       windows ??= await pickupWindowsCard(me);
-      main = [windows];
+      orderPage ??= await orderPageCard();
+      main = [h('div', { class: 'row online-settings-head' }, h('button', { class: 'btn small-btn', text: '← Items sold online', onclick: () => pickChip('online') }), h('h2', { class: 'grow', text: 'Online settings' })), orderPage, windows];
     } else if (chip === 'coming') {
       coming ??= await comingUpCard(me);
       main = [coming ?? h('section', { class: 'card small muted', text: 'Couldn’t load what’s coming up.' })];
@@ -2282,7 +2283,7 @@ const MODE_LABELS = { shown: 'Shown', hidden: 'Hidden online', always: 'Always o
  * drag into the order customers see, with how many of each sold lately. Options are shared across items in Square, so a change
  * to one changes it everywhere it's used.
  */
-async function onlineMenuCard(me) {
+async function onlineMenuCard(me, openSettings) {
   const box = h('section', { class: 'card', 'aria-label': 'Sold online' });
   const open = new Set();
   let items = [];
@@ -2419,9 +2420,59 @@ async function onlineMenuCard(me) {
     h('div', { class: 'small muted', text: 'Names, prices and options come from Square. Under Options, set “Partially cooked” to Always on and hide fully cooked and gluten-sensitive crust: an option changes everywhere it’s used.' }),
     h('div', { class: 'small' }, h('b', { text: 'Pause online tonight' }), ' only takes an item off the online order page. To 86 it everywhere, mark it sold out in Square.'),
     h('div', { class: 'tag warn sync-warn', text: 'No Square menu yet: run the Square sync under Settings.', hidden: true }),
-    h('div', { class: 'row tight online-find' }, search, browse, arrange),
+    h('div', { class: 'row tight online-find' }, search, browse, arrange, h('button', { class: 'btn small-btn', text: 'Settings', onclick: openSettings })),
     results, err, list);
   await load();
+  return box;
+}
+
+/**
+ * The order page's own content: a header photo across the top of the menu and a line of text over
+ * it. Either can be left off. The photo is made small enough to send here (long edge 2000 px, JPEG).
+ */
+async function orderPageCard() {
+  const box = h('section', { class: 'card', 'aria-label': 'Order page' });
+  const err = h('div', { class: 'error small' });
+  let page = { headerImage: null, headerText: null };
+  const post = (b) => pageAction(async () => {
+    err.textContent = '';
+    const res = await api('POST', '/api/online/page', b);
+    if (!res.ok) { err.textContent = res.data.error ?? 'Not saved.'; return; }
+    page = res.data;
+    draw();
+  });
+  function draw() {
+    const file = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp', 'aria-label': 'Header photo file' });
+    file.addEventListener('change', async () => {
+      const f = file.files?.[0];
+      if (!f) return;
+      let photo;
+      try { photo = await shrinkPhoto(f); } catch { err.textContent = 'That file isn’t a photo.'; return; }
+      if (!photo.preview) { err.textContent = 'Use a JPEG, PNG or WebP photo.'; return; }
+      await post({ headerImage: photo.preview });
+    });
+    const text = h('input', { type: 'text', maxlength: '120', value: page.headerText ?? '', placeholder: 'e.g. Neapolitan pizza, ready to finish at home', 'aria-label': 'Header text' });
+    const saveText = h('button', { class: 'btn small-btn dark', text: 'Save text', onclick: () => post({ headerText: text.value }) });
+    text.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveText.click(); });
+    fill(box,
+      h('h2', { text: 'Order page' }),
+      h('div', { class: 'small muted', text: 'Shown across the top of the online menu. A wide landscape photo works best; the text sits over its bottom edge.' }),
+      h('div', { class: 'page-preview' },
+        page.headerImage ? h('img', { src: page.headerImage, alt: 'Header photo' }) : h('div', { class: 'page-empty small muted', text: 'No header photo' }),
+        page.headerText ? h('div', { class: 'page-words', text: page.headerText }) : null),
+      h('div', { class: 'stack' },
+        h('label', { class: 'small strong', text: page.headerImage ? 'Replace the header photo' : 'Header photo' }),
+        h('div', { class: 'row tight wrap' }, file,
+          page.headerImage ? h('button', { class: 'link', text: 'Remove photo', onclick: () => post({ headerImage: null }) }) : null)),
+      h('div', { class: 'stack' },
+        h('label', { class: 'small strong', text: 'Header text' }),
+        h('div', { class: 'row tight online-find' }, text, saveText,
+          page.headerText ? h('button', { class: 'link', text: 'Remove text', onclick: () => post({ headerText: null }) }) : null)),
+      err);
+  }
+  const r = await api('GET', '/api/online/page');
+  if (r.ok) page = r.data; else err.textContent = r.data.error ?? 'Couldn’t load.';
+  draw();
   return box;
 }
 

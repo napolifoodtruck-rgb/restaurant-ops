@@ -90,6 +90,14 @@ export async function loadPause(db: Db, restaurantId: string, timezone: string):
   return { until: until.toISOString(), untilTime: end.time, tonight: end.date !== now.date || end.time >= LAST_WINDOW_ENDS };
 }
 
+/** The order page's own content, as customers get it: the header photo's address (null: none) and its line of text. */
+export async function loadOrderPage(db: Db, restaurantId: string): Promise<{ headerImage: string | null; headerText: string | null }> {
+  const r = (await db.query<{ header_text: string | null; has_image: boolean; image_at: Date | null }>('SELECT header_text, header_image IS NOT NULL AS has_image, header_image_updated_at AS image_at FROM online_page WHERE restaurant_id = $1', [restaurantId])).rows[0];
+  return { headerImage: r?.has_image ? `/api/order/header-image?v=${r.image_at ? new Date(r.image_at).getTime() : 0}` : null, headerText: r?.header_text ?? null };
+}
+
+export const HEADER_TEXT_MAX = 120;
+
 export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResponse, path: string, url: URL, who: SignedIn, timezone: string): Promise<boolean> {
   if (!path.startsWith('/api/online/')) return false;
   const method = req.method ?? 'GET';
@@ -157,6 +165,30 @@ export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResp
     if (!known.rows.length) throw new HttpError(404, 'That modifier isn’t in the Square menu.');
     await db.query('INSERT INTO online_modifiers (restaurant_id, modifier_id, mode, updated_by) VALUES ($1, $2, $3, $4) ON CONFLICT (restaurant_id, modifier_id) DO UPDATE SET mode = EXCLUDED.mode, updated_at = now(), updated_by = EXCLUDED.updated_by', [who.restaurantId, m[1], b.mode, who.staffId]);
     return send(res, 200, { ok: true }), true;
+  }
+
+  // The order page's header: a photo (a JPEG, PNG or WebP under 3 MB; null takes it off) and a line of text over it.
+  if (path === '/api/online/page') {
+    if (method === 'POST') {
+      const b = await body(req, 5 * 1024 * 1024);
+      await db.query('INSERT INTO online_page (restaurant_id, updated_by) VALUES ($1, $2) ON CONFLICT (restaurant_id) DO NOTHING', [who.restaurantId, who.staffId]);
+      if (b.headerText !== undefined) {
+        if (b.headerText !== null && typeof b.headerText !== 'string') throw new HttpError(400, 'The header text is words, or nothing.');
+        const text = typeof b.headerText === 'string' ? b.headerText.replace(/\s+/g, ' ').trim() : '';
+        if (text.length > HEADER_TEXT_MAX) throw new HttpError(400, `Keep the header text under ${HEADER_TEXT_MAX} characters.`);
+        await db.query('UPDATE online_page SET header_text = $2, updated_at = now(), updated_by = $3 WHERE restaurant_id = $1', [who.restaurantId, text || null, who.staffId]);
+      }
+      if (b.headerImage !== undefined) {
+        if (b.headerImage === null) await db.query('UPDATE online_page SET header_image = NULL, header_image_type = NULL, header_image_updated_at = now(), updated_at = now(), updated_by = $2 WHERE restaurant_id = $1', [who.restaurantId, who.staffId]);
+        else {
+          const m = typeof b.headerImage === 'string' ? b.headerImage.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/) : null;
+          if (!m) throw new HttpError(400, 'Use a JPEG, PNG or WebP photo.');
+          if (m[2]!.length > 4_000_000) throw new HttpError(400, 'Use a photo under 3 MB.');
+          await db.query('UPDATE online_page SET header_image = decode($2, \'base64\'), header_image_type = $3, header_image_updated_at = now(), updated_at = now(), updated_by = $4 WHERE restaurant_id = $1', [who.restaurantId, m[2], m[1], who.staffId]);
+        }
+      }
+    } else if (method !== 'GET') throw new HttpError(404, 'Not found.');
+    return send(res, 200, await loadOrderPage(db, who.restaurantId)), true;
   }
 
   if (method === 'GET' && path === '/api/online/windows') {

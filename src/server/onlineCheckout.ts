@@ -38,7 +38,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createHash } from 'node:crypto';
 import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
-import { loadOnlineMenu, loadPause, loadWindows, localNow } from './online.ts';
+import { loadOnlineMenu, loadOrderPage, loadPause, loadWindows, localNow } from './online.ts';
 import type { CatalogObject } from '../core/onlineMenu.ts';
 import { CartError, priceCart, publicMenu, stockProblem, tipProblem, type CartLine, type CartLineIn } from '../core/onlineCart.ts';
 import { fitOrder, fittingWindows, isWindowStart } from '../core/pickupWindows.ts';
@@ -227,10 +227,21 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
         // Paused for a busy spell: back at that time, or not again tonight.
         paused: pause ? { until: pause.tonight ? null : { starts: pause.untilTime, label: clock(pause.untilTime) } } : null,
         items: publicMenu(menu),
+        // The page's header photo and its line of text, as set on the Online screen.
+        page: await loadOrderPage(db, r.id),
         // How much room each window has left, so the cart can show the earliest pickup as it fills.
         windows: windows.map((w) => ({ starts: w.starts, ends: w.ends, label: clock(w.starts), left: w.left, open: fittingWindows([w], 0, now.time).length > 0 })),
         payments: ready ? { applicationId: ready.applicationId, locationId: ready.locationId, environment: ready.square.environment } : null,
       }), true;
+    }
+
+    if (method === 'GET' && path === '/api/order/header-image') {
+      const r = await restaurant();
+      const img = (await db.query<{ data: string | null; type: string | null }>('SELECT encode(header_image, \'base64\') AS data, header_image_type AS type FROM online_page WHERE restaurant_id = $1', [r.id])).rows[0];
+      if (!img?.data || !img.type) throw new HttpError(404, 'No header photo.');
+      res.writeHead(200, { 'content-type': img.type, 'cache-control': 'public, max-age=86400', 'x-content-type-options': 'nosniff' });
+      res.end(Buffer.from(img.data, 'base64'));
+      return true;
     }
 
     if (method === 'POST' && path === '/api/order/checkout') {
