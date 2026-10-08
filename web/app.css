@@ -831,6 +831,8 @@ button.donut-row { display: flex; min-width: 0; }
 .wgrid th, .wgrid td { padding: 4px 6px; text-align: center; }
 .wgrid tbody th { text-align: right; white-space: nowrap; }
 .wgrid tr.all td, .wgrid tr.all th { border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.wgrid input.amount.dirty { border-color: var(--orange); background: #FFF6EA; font-weight: 600; }
+.plan-save { position: sticky; bottom: 0; background: var(--card); padding: 10px 0; border-top: 1px solid var(--line); z-index: 1; }
 
 /* A recipe line with a problem: red where it is, the reason under it. */
 .irow-msg:empty { display: none; }
