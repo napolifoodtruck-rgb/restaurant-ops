@@ -461,7 +461,10 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     // (Not one taken off a recipe by hand: that button isn't that recipe, whatever its name.)
     // By its name, or one a letter or two off (the button misspelled at first: Khatadin for Katahdin), when only one fits.
     const dishes = a.note === 'unlinked in the app' ? [] : recipes.filter((x) => x.kind === 'dish');
-    const alike = dishes.filter((x) => sameDishName(x.name, a.itemName));
+    const roughIds = new Set(cards.filter((c) => c.status === 'rough').map(cardId));
+    const alikeAll = dishes.filter((x) => sameDishName(x.name, a.itemName));
+    // A draft made from the button doesn't count against the real recipe.
+    const alike = alikeAll.filter((x) => !roughIds.has(x.id)).length ? alikeAll.filter((x) => !roughIds.has(x.id)) : alikeAll;
     const named = dishes.find((x) => nameKey(x.name) === nameKey(posName(a))) ?? (alike.length === 1 ? alike[0] : undefined);
     state = named ? confirmLink(state, a, named.id, undefined, a.from) : markNewDish(state, a, a.from);
   }
