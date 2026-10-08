@@ -72,6 +72,8 @@ h2 { font-size: 22px; font-weight: 600; letter-spacing: -.01em; margin: 24px 0 1
 .pickup { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 16px; background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 8px; }
 .pickup.closed { color: var(--accent); }
 .pickup.choose { display: block; }
+.pickup .elsewhere { flex: none; padding: 10px 16px; border-radius: 999px; background: var(--ink); color: #fff; text-decoration: none; font-weight: 500; }
+@media (max-width: 560px) { .pickup.closed { flex-wrap: wrap; } }
 .card .pickup.choose { box-shadow: none; padding: 0; margin: 0 0 4px; }
 .pickup .when { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 4px; margin-top: 10px; padding: 4px; background: var(--soft); border-radius: 14px; }
 .pickup .when button { min-height: 52px; border: 0; border-radius: 11px; background: transparent; color: var(--ink); cursor: pointer; line-height: 1.25; transition: background .15s, box-shadow .15s; }
