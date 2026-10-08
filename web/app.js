@@ -2434,7 +2434,7 @@ async function onlineMenuCard(me, openSettings) {
 async function orderPageCard() {
   const box = h('section', { class: 'card', 'aria-label': 'Order page' });
   const err = h('div', { class: 'error small' });
-  let page = { headerImage: null, notice: '', noticeChanged: false, whyPartial: '', whyPartialChanged: false, glutenFree: '', glutenFreeChanged: false };
+  let page = { headerImage: null, notice: '', noticeChanged: false, whyPartial: '', whyPartialChanged: false, glutenFree: '', glutenFreeChanged: false, defaultTip: 0 };
   const post = (b) => pageAction(async () => {
     err.textContent = '';
     const res = await api('POST', '/api/online/page', b);
@@ -2476,6 +2476,11 @@ async function orderPageCard() {
       words('Notice', 'The dark box above the menu and on the thank-you page. The first line is bold; leave a blank line before the smaller part underneath.', 'notice', 6, 600),
       words('Why partially cooked?', 'Opens from the “Why partially cooked?” button beside the menu sections. Leave a blank line between paragraphs; the finishing-at-home steps show under it.', 'whyPartial', 9, 2000),
       words('Do you have gluten-free?', 'Opens from the “Do you have gluten-free?” button beside the menu sections. Leave a blank line between paragraphs.', 'glutenFree', 6, 2000),
+      h('div', { class: 'stack' },
+        h('label', { class: 'small strong', text: 'Default tip' }),
+        h('div', { class: 'small muted', text: 'Already picked when a customer reaches checkout. They can still change it.' }),
+        h('div', { class: 'row tight wrap', role: 'group', 'aria-label': 'Default tip' }, [0, 10, 15, 20].map((p) =>
+          h('button', { class: `btn small-btn${p === page.defaultTip ? ' dark' : ''}`, 'aria-pressed': String(p === page.defaultTip), text: p ? `${p}%` : 'No tip', onclick: () => p !== page.defaultTip && post({ defaultTip: p }) })))),
       err);
   }
   const r = await api('GET', '/api/online/page');

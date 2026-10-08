@@ -138,7 +138,7 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.deepEqual((await customer('GET', '/api/order/menu')).json.page, page);
   const photo = await fetch(base + page.headerImage);
   assert.deepEqual([photo.status, photo.headers.get('content-type'), Buffer.from(await photo.arrayBuffer()).toString('base64')], [200, 'image/png', png]);
-  assert.deepEqual((await call('POST', '/api/online/page', { headerImage: null, notice: '' })).json, { headerImage: null, notice: usual, noticeChanged: false, whyPartial: usualWhy, whyPartialChanged: false, glutenFree: usualGf, glutenFreeChanged: false });
+  assert.deepEqual((await call('POST', '/api/online/page', { headerImage: null, notice: '' })).json, { headerImage: null, notice: usual, noticeChanged: false, whyPartial: usualWhy, whyPartialChanged: false, glutenFree: usualGf, glutenFreeChanged: false, defaultTip: 0 });
   assert.equal((await call('POST', '/api/online/page', { whyPartial: 'x'.repeat(2001) })).status, 400);
   const why = (await call('POST', '/api/online/page', { whyPartial: ' It steams in the box. \n\n\n Finish it at home. ' })).json;
   assert.deepEqual([why.whyPartial, why.whyPartialChanged, why.notice], ['It steams in the box.\n\nFinish it at home.', true, usual]);
@@ -149,6 +149,10 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.equal((await customer('GET', '/api/order/menu')).json.page.glutenFree, gf.glutenFree);
   assert.equal((await call('POST', '/api/online/page', { glutenFree: 'x'.repeat(2001) })).status, 400);
   assert.equal((await call('POST', '/api/online/page', { glutenFree: '' })).json.glutenFreeChanged, false);
+  assert.equal(menu.page.defaultTip, 0);
+  assert.equal((await call('POST', '/api/online/page', { defaultTip: 12 })).status, 400);
+  assert.equal((await call('POST', '/api/online/page', { defaultTip: 15 })).json.defaultTip, 15);
+  assert.equal((await customer('GET', '/api/order/menu')).json.page.defaultTip, 15);
   assert.equal((await fetch(base + '/api/order/header-image')).status, 404);
 
   menu = (await customer('GET', '/api/order/menu')).json;
