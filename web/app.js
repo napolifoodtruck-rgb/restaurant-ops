@@ -2406,7 +2406,7 @@ function costChart(points, label) {
   // The readout: a line and a dot at the nearest week, with its date and cost.
   const hover = el('g', { class: 'hover', visibility: 'hidden' });
   const vline = el('line', { y1: T, y2: H - B, class: 'hover-line' }), hdot = el('circle', { r: 4, class: 'cost-dot' });
-  const box = el('rect', { width: 128, height: 36, rx: 6, class: 'hover-box' }), t1 = el('text', { class: 'hover-date' }), t2 = el('text', { class: 'hover-cost' });
+  const box = el('rect', { width: 128, height: 36, rx: 3, class: 'hover-box' }), t1 = el('text', { class: 'hover-date' }), t2 = el('text', { class: 'hover-cost' });
   hover.append(vline, hdot, box, t1, t2);
   svg.append(hover, el('rect', { x: L, y: T, width: W - L - R, height: H - T - B, fill: 'transparent', class: 'hit' }));
   const at = (e) => {

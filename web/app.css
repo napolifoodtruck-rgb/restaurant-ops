@@ -1017,3 +1017,7 @@ button.donut-row { display: flex; min-width: 0; }
 .tap.full { border-color: var(--green); color: var(--green); font-weight: 700; padding-left: 14px; padding-right: 14px; }
 .tap.full.on { background: var(--green); color: #fff; }
 .count-end { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); align-items: center; }
+
+/* The newer pieces use the theme's corners: boxes like cards, markers like tags. */
+.attn-tile, .search-big, .search-pop, .src, .isrc, .rcheck-likely, .rcheck-pick .pick-in, .base-pick, .search-wrap input { border-radius: var(--radius); }
+.mk { border-radius: 2px; }
