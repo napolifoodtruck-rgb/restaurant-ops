@@ -298,25 +298,36 @@ async function readTables(db: Db, restaurantId: string): Promise<Partial<Kitchen
 }
 
 /**
- * The recipe cards as they read on a day: each recipe's latest version saved by then (one
- * that didn't exist yet: its first version; one taken out by then: left out). Undefined when
- * nothing has changed since that day, so the caller uses today's.
+ * The recipe cards as they read on a day. Only a real change (a version saved as changing the
+ * recipe from that day on) splits time: before it, the recipe reads as it did just before the
+ * change, fixes made until then included. Fixes on their own apply to every period. Undefined
+ * when no real change has been saved since that day, so the caller uses today's recipes.
  */
 export async function recipeCardsOn(db: Db, restaurantId: string, day: string): Promise<RecipeCard[] | undefined> {
   if (!(await inTables(db, restaurantId))) return undefined;
-  const after = (await db.query("SELECT 1 FROM recipe_versions WHERE restaurant_id = $1 AND saved_at >= ($2::date + 1) AND change <> 'imported' LIMIT 1", [restaurantId, day])).rows.length;
-  if (!after) return undefined;
-  const rows = (await db.query<{ recipe_id: string; change: string; card: unknown; on_day: boolean; position: number }>(
-    `SELECT DISTINCT ON (v.recipe_id) v.recipe_id, v.change, v.card, v.saved_at < ($2::date + 1) AS on_day, r.position
-       FROM recipe_versions v JOIN recipes r ON r.id = v.recipe_id
-      WHERE v.restaurant_id = $1
-      ORDER BY v.recipe_id, (v.saved_at < ($2::date + 1)) DESC, CASE WHEN v.saved_at < ($2::date + 1) THEN -extract(epoch FROM v.saved_at) ELSE extract(epoch FROM v.saved_at) END, v.id DESC`,
-    [restaurantId, day])).rows;
-  const kept = rows.filter((r) => r.change !== 'removed').sort((a, b) => a.position - b.position);
-  const snapshots = kept.map((r) => ({ ...js<RecipeCard>(r.card), id: r.recipe_id }));
-  const n = namesFor(snapshots.map((c) => ({ id: c.id!, name: c.name })), await productNames(db, restaurantId), await aliasMap(db, restaurantId));
+  // Each recipe's first real change after the day, and how the recipe read just before it.
+  const rows = (await db.query<{ recipe_id: string; card: unknown; change: string | null }>(
+    `WITH next AS (
+       SELECT recipe_id, min(saved_at) AS at FROM recipe_versions WHERE restaurant_id = $1 AND dated AND saved_at >= ($2::date + 1) GROUP BY recipe_id
+     )
+     SELECT n.recipe_id, v.card, v.change
+       FROM next n LEFT JOIN LATERAL (
+         SELECT card, change FROM recipe_versions WHERE recipe_id = n.recipe_id AND saved_at < n.at ORDER BY saved_at DESC, id DESC LIMIT 1
+       ) v ON true`, [restaurantId, day])).rows;
+  if (!rows.length) return undefined;
+  const then = new Map(rows.map((r) => [r.recipe_id, r]));
+  const today = (await loadBook(db, restaurantId)).recipeCards ?? [];
+  const cards: RecipeCard[] = [];
+  for (const c of today) {
+    const r = then.get(c.id!);
+    if (!r) { cards.push(c); continue; }
+    // Not in the book yet before its change (nothing earlier saved), or taken out then: as today.
+    if (!r.card || r.change === 'removed') { cards.push(c); continue; }
+    cards.push({ ...js<RecipeCard>(r.card), id: c.id! });
+  }
+  const n = namesFor(cards.map((c) => ({ id: c.id!, name: c.name })), await productNames(db, restaurantId), await aliasMap(db, restaurantId));
   // Each line read with the names of that day.
-  return snapshots.map((c) => ({ ...c, ingredients: c.ingredients.map((i) => ({ ...i, name: displayName(n, i.name, i.recipeId, i.productId) })) }));
+  return cards.map((c) => ({ ...c, ingredients: c.ingredients.map((i) => ({ ...i, name: displayName(n, i.name, i.recipeId, i.productId) })) }));
 }
 
 // ---------------------------------------------------------------- writing
@@ -336,7 +347,7 @@ const touch = (restaurantId: string, part: string, staffId?: string | null) =>
      ON CONFLICT (restaurant_id, part) DO UPDATE SET updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by;`;
 
 type Change = 'created' | 'edited' | 'renamed' | 'removed' | 'restored' | 'imported';
-interface SaveOptions { change?: Change; at?: string }
+interface SaveOptions { change?: Change; at?: string; /** Recipes (by id or name) changing from today on, not fixed: past periods keep the old version. */ dated?: Set<string> }
 
 /** What a card says, apart from when and by whom: two cards that say the same thing aren't a new version. */
 const contentOf = (c: RecipeCard) => JSON.stringify([c.name, c.category ?? null, c.recipeType ?? null, (c.yields ?? []).map((y) => [Number(y.amount), y.unit]), c.shelfLifeDays ?? null, c.menuPrice ?? null, c.cardTotal ?? null, c.method ?? null, c.unreadLines, c.layout, c.status ?? null,
@@ -409,7 +420,7 @@ export async function saveRecipeCards(db: Db, restaurantId: string, incoming: Re
     if (before?.removed_at) restored.add(id);
     if (changed || before?.removed_at) {
       const change: Change = options.change ?? (!before ? 'created' : before.removed_at ? 'restored' : was && contentOf({ ...was, name: stored.name }) === contentOf(stored) ? 'renamed' : 'edited');
-      versionRows.push({ recipe_id: id, saved_at: at, saved_by: staffId ?? null, saved_by_name: staffName ?? c.updatedBy ?? null, change, card: stored });
+      versionRows.push({ recipe_id: id, saved_at: at, saved_by: staffId ?? null, saved_by_name: staffName ?? c.updatedBy ?? null, change, card: stored, dated: Boolean(before && !before.removed_at && (options.dated?.has(id) || options.dated?.has(stored.name))) });
     }
   });
   const gone = active.filter((r) => !ids.includes(r.id));
@@ -431,9 +442,9 @@ export async function saveRecipeCards(db: Db, restaurantId: string, incoming: Re
     lineRows.length ? `INSERT INTO recipe_lines (recipe_id, line_number, name, amount, unit, yield_percent, card_cost, type, note, sub_recipe_id, ingredient_id)
       SELECT x.recipe_id, x.line_number, x.name, x.amount, x.unit, x.yield_percent, x.card_cost, x.type, x.note, x.sub_recipe_id, x.ingredient_id
         FROM jsonb_to_recordset(${lit(lineRows)}) AS x(recipe_id uuid, line_number int, name text, amount numeric, unit text, yield_percent numeric, card_cost numeric, type text, note text, sub_recipe_id uuid, ingredient_id text);` : '',
-    versionRows.length ? `INSERT INTO recipe_versions (restaurant_id, recipe_id, saved_at, saved_by, saved_by_name, change, card)
-      SELECT ${rid}, x.recipe_id, x.saved_at, x.saved_by, x.saved_by_name, x.change, x.card
-        FROM jsonb_to_recordset(${lit(versionRows)}) AS x(recipe_id uuid, saved_at timestamptz, saved_by uuid, saved_by_name text, change text, card jsonb);` : '',
+    versionRows.length ? `INSERT INTO recipe_versions (restaurant_id, recipe_id, saved_at, saved_by, saved_by_name, change, card, dated)
+      SELECT ${rid}, x.recipe_id, x.saved_at, x.saved_by, x.saved_by_name, x.change, x.card, coalesce(x.dated, false)
+        FROM jsonb_to_recordset(${lit(versionRows)}) AS x(recipe_id uuid, saved_at timestamptz, saved_by uuid, saved_by_name text, change text, card jsonb, dated boolean);` : '',
     // Prep items and plans named for a recipe that's only now in the book find it.
     `UPDATE station_items SET recipe_id = NULL WHERE restaurant_id = ${rid} AND recipe_id IS NULL AND recipe_name IS NOT NULL;`,
     `UPDATE menu_plans SET recipe_id = NULL WHERE restaurant_id = ${rid} AND recipe_id IS NULL AND recipe_name IS NOT NULL;`,
@@ -575,13 +586,13 @@ export async function saveModifierAnswers(db: Db, restaurantId: string, value: M
 
 // ---------------------------------------------------------------- history
 
-export interface RecipeVersion { id: string; at: string; by?: string; change: Change; name: string; lines: number }
+export interface RecipeVersion { id: string; at: string; by?: string; change: Change; name: string; lines: number; dated?: true }
 
 export async function recipeVersions(db: Db, restaurantId: string, recipeId: string): Promise<RecipeVersion[]> {
-  const rows = (await db.query<{ id: string; at: string; by: string | null; change: Change; card: unknown }>(
-    `SELECT v.id::text AS id, ${iso('v.saved_at')} AS at, coalesce(s.display_name, v.saved_by_name) AS by, v.change, v.card
+  const rows = (await db.query<{ id: string; at: string; by: string | null; change: Change; card: unknown; dated: boolean }>(
+    `SELECT v.id::text AS id, ${iso('v.saved_at')} AS at, coalesce(s.display_name, v.saved_by_name) AS by, v.change, v.card, v.dated
        FROM recipe_versions v LEFT JOIN staff s ON s.id = v.saved_by WHERE v.restaurant_id = $1 AND v.recipe_id = $2 ORDER BY v.saved_at DESC, v.id DESC`, [restaurantId, recipeId])).rows;
-  return rows.map((r) => { const c = js<RecipeCard>(r.card); return { id: r.id, at: r.at, ...(r.by ? { by: r.by } : {}), change: r.change, name: c?.name ?? '', lines: c?.ingredients?.length ?? 0 }; });
+  return rows.map((r) => { const c = js<RecipeCard>(r.card); return { id: r.id, at: r.at, ...(r.by ? { by: r.by } : {}), change: r.change, name: c?.name ?? '', lines: c?.ingredients?.length ?? 0, ...(r.dated ? { dated: true as const } : {}) }; });
 }
 
 export async function recipeVersion(db: Db, restaurantId: string, versionId: string): Promise<{ recipeId: string; card: RecipeCard; at: string } | undefined> {

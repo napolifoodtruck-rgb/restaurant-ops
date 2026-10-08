@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { migrate } from '../src/server/db.ts';
-import { canonical, loadBook, recipeCardsOn, recipeVersions, saveBook } from '../src/server/book.ts';
+import { canonical, loadBook, recipeCardsOn, recipeVersions, saveBook, saveRecipeCards } from '../src/server/book.ts';
 import { buildRecipes, type RecipeCard } from '../src/core/recipeCards.ts';
 import { startTestDb } from './support/psqlDb.ts';
 
@@ -117,19 +117,26 @@ test('the kitchen book moves into its tables: same recipes, ids instead of names
   assert.equal(again.importAnswers!.portions![0]!.recipeId, id['Margherita']);
   assert.equal(again.modifierAnswers!.adds['crust|extra dough']![0]!.item.id, id['Pizza Dough']);
 
-  // A past day reads the recipes as they were then.
-  const sept10 = (await recipeCardsOn(db!, rid, '2026-09-10'))!;
-  assert.deepEqual(sept10.find((c) => c.name === 'Margherita')!.ingredients.map((i) => [i.name, i.amount]), [['Pizza Dough', 1], ['Cheese, Mozzarella', 4], ['spice, sea salt', 1]]);
-  const sept20 = (await recipeCardsOn(db!, rid, '2026-09-20'))!;
-  assert.deepEqual(sept20.map((c) => c.name).sort(), ['Margherita', 'Mystery Sauce', 'Pizza Dough']);
-  assert.equal(sept20.find((c) => c.name === 'Margherita')!.ingredients[1]!.amount, 3);
-  // Nothing changed since today: today's recipes are used as they are.
+  // Fixes (everything saved so far) apply to every period: a past day reads today's recipes.
+  assert.equal(await recipeCardsOn(db!, rid, '2026-09-10'), undefined);
+  // A real change from today on: days before it keep the recipe as it read just before.
+  const current = (await loadBook(db!, rid)).recipeCards!;
+  await saveRecipeCards(db!, rid, current.map((c) => (c.name === 'Margherita' ? { ...c, ingredients: c.ingredients.map((i, k) => (k === 1 ? { ...i, amount: 2.75 } : i)) } : c)), staffId, { dated: new Set([id['Margherita']!]) });
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const thenCards = (await recipeCardsOn(db!, rid, yesterday))!;
+  assert.deepEqual(thenCards.find((c) => c.name === 'Margherita')!.ingredients.map((i) => [i.name, i.amount]), [['Neapolitan Dough', 1], ['Cheese, Mozzarella', 3], ['spice, sea salt', 1]]);
+  assert.equal(thenCards.find((c) => c.id === id['Pizza Dough'])!.name, 'Neapolitan Dough'); // the rename was a fix: it reads the new name then too
+  assert.equal((await loadBook(db!, rid)).recipeCards!.find((c) => c.name === 'Margherita')!.ingredients[1]!.amount, 2.75);
+  assert.equal((await recipeVersions(db!, rid, id['Margherita']!))[0]!.dated, true);
+  // Nothing changed after today: today's recipes are used as they are.
   assert.equal(await recipeCardsOn(db!, rid, new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)), undefined);
 
   // A card from a file (no id) lands on the recipe of its name; one left out is taken out, kept with its history.
   await saveBook(db!, rid, 'recipeCards', [margherita(3.5)], staffId);
   const fromFile = (await loadBook(db!, rid)).recipeCards!;
   assert.deepEqual(fromFile.map((c) => [c.id, c.ingredients[1]!.amount]), [[id['Margherita'], 3.5]]);
+  // Before the real change, the Margherita still reads as it did (its dough line read with the name it has now, as written then).
+  assert.equal((await recipeCardsOn(db!, rid, yesterday))!.find((c) => c.name === 'Margherita')!.ingredients[1]!.amount, 3);
   assert.equal((await recipeVersions(db!, rid, id['Mystery Sauce']!))[0]!.change, 'removed');
   // Its old line to the dough (gone now) reads as written and matches nothing.
   assert.equal(fromFile[0]!.ingredients[0]!.recipeId, undefined);
