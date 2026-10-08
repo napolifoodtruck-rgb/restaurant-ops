@@ -41,11 +41,8 @@ nav.site a:hover { opacity: 1; border-bottom-color: currentColor; }
 .bag .count { position: absolute; top: 2px; right: 0; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 999px; background: #fff; color: #000; font-size: 12px; font-weight: 600; line-height: 20px; text-align: center; animation: pop .25s ease-out; }
 @keyframes pop { from { transform: scale(.4); } }
 .banner { max-width: 980px; margin: 16px auto 0; padding: 0 16px; }
-.banner { position: relative; }
 .banner img { width: 100%; aspect-ratio: 3 / 1; object-fit: cover; border-radius: var(--radius); display: block; }
-.banner h1 { position: absolute; left: 16px; right: 16px; bottom: 0; margin: 0; padding: 48px 24px 20px; border-radius: 0 0 var(--radius) var(--radius); background: linear-gradient(transparent, rgba(0, 0, 0, .6)); color: #fff; font-size: clamp(20px, 3.4vw, 34px); font-weight: 600; line-height: 1.15; letter-spacing: .01em; }
-.banner.words h1 { position: static; padding: 4px 0 0; background: none; color: var(--ink); }
-@media (max-width: 560px) { .banner img { aspect-ratio: 2 / 1; } .banner h1 { padding: 32px 16px 14px; } }
+@media (max-width: 560px) { .banner img { aspect-ratio: 2 / 1; } }
 @media (min-width: 760px) {
   :root { --head: 84px; }
   .brand img { max-height: 60px; max-width: 240px; }
