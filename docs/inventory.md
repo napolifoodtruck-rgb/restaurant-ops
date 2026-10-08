@@ -57,6 +57,25 @@ Every gap is matched against patterns, and the app says which one fits and why.
 
 Each cause is repeated or ruled out over time. A cause that keeps showing up becomes an Ideas card, in dollars a month.
 
+## Napoli's storage, in counting order (from the owner, Oct 8)
+
+The count sheet follows this order, top to bottom, shelf by shelf.
+
+| Area | Shelf | What's there |
+|---|---|---|
+| Walk-in | Top | Vegetables |
+| Walk-in | Second | Dairy, prepped items |
+| Walk-in | Bottom | Meats |
+| Walk-in | Floor | Kegs; bulk dough and balled dough |
+| Walk-in freezer | | Gelato pans, gelato pints, frozen purées, frozen ground pork / ground beef / pork sausage, frozen prep (meatballs, lamb sausage) |
+| Dry storage (prep area) | Bottom | Flour, sugar and dextrose bags; tomato can cases |
+| Dry storage (prep area) | Second | Bulk bins: dextrose, nonfat milk, sugar, maltodextrin |
+| Dry storage (prep area) | Third | Unrefrigerated veg: basil, cherry tomatoes, shallots |
+| Dry storage (prep area) | Top | Pizza boxes |
+| Kitchen shelf | | Oils, apricot purée, vinegars, spices |
+
+Not mapped yet: the bar (bottles, fridges), and where paper and cleaning supplies live.
+
 ## Open question
 
 - Count paper and cleaning supplies too, or only food and bar?
