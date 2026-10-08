@@ -35,11 +35,13 @@ export function publicMenu(menu: readonly OnlineMenuItem[]): PublicItem[] {
     // Sizes sold out in Square drop off; with all of them out, the item shows sold out.
     const inStock = sizes.filter((v) => !v.soldOut);
     const notes = x.modifierLists.flatMap((l) => l.modifiers.filter((m) => m.mode === 'always').map((m) => m.name));
-    const optionLists = x.modifierLists
+    const choices = x.modifierLists
       // A list with something always on is decided already (partially cooked); its other choices aren't offered.
       .filter((l) => !l.modifiers.some((m) => m.mode === 'always'))
-      .map((l) => ({ id: l.id, name: l.name, single: l.single || l.max === 1, min: l.min ?? 0, ...(l.max !== undefined ? { max: l.max } : {}), options: l.modifiers.filter((m) => m.mode === 'shown').map((m) => ({ id: m.id, name: m.name, price: cents(m.price) })) }))
-      .filter((l) => l.options.length);
+      // Options marked unavailable in Square drop off; a list left with too few to choose makes the item sold out.
+      .map((l) => ({ id: l.id, name: l.name, single: l.single || l.max === 1, min: l.min ?? 0, ...(l.max !== undefined ? { max: l.max } : {}), options: l.modifiers.filter((m) => m.mode === 'shown' && !m.soldOut).map((m) => ({ id: m.id, name: m.name, price: cents(m.price) })) }));
+    const optionsOut = choices.some((l) => l.min > l.options.length);
+    const optionLists = choices.filter((l) => l.options.length);
     return {
       itemId: x.itemId,
       name: x.name,
@@ -48,7 +50,7 @@ export function publicMenu(menu: readonly OnlineMenuItem[]): PublicItem[] {
       ...(x.image ? { image: x.image } : {}),
       variations: (inStock.length ? inStock : sizes).map((v) => ({ id: v.id, name: v.name, price: cents(v.price!) })),
       isPizza: x.countsAsPizza,
-      soldOut: x.soldOutToday || !inStock.length,
+      soldOut: x.soldOutToday || !inStock.length || optionsOut,
       notes,
       optionLists,
     };
@@ -100,6 +102,8 @@ export function priceCart(menu: readonly OnlineMenuItem[], lines: readonly CartL
         continue;
       }
       if (picked.some((m) => m.mode !== 'shown')) throw new CartError(`${item.name}: that option isn’t available online.`);
+      const gone = picked.find((m) => m.soldOut);
+      if (gone) throw new CartError(`Sorry, ${gone.name} is sold out tonight. Change ${item.name} to carry on.`);
       const max = list.single ? 1 : list.max;
       if (max !== undefined && picked.length > max) throw new CartError(`${item.name}: pick at most ${max} for ${list.name}.`);
       if ((list.min ?? 0) > picked.length) throw new CartError(`${item.name}: pick ${list.min} for ${list.name}.`);
@@ -119,11 +123,11 @@ export function tipProblem(tip: unknown, subtotal: number): string | undefined {
 
 /**
  * Whether the cart can still be had, by Square's word right before payment: nothing in it switched
- * off on the POS, and enough left of anything Square keeps a count of. `counts` is what Square has in
- * stock at the location, by size; a size with no count isn't held back. A customer-facing reason, or
+ * off on the POS (sizes and chosen options), and enough left of anything Square keeps a count of.
+ * `counts` is what Square has in stock at the location, by size; a size with no count isn't held back. A customer-facing reason, or
  * nothing when it's all there.
  */
-export function stockProblem(menu: readonly OnlineMenuItem[], lines: readonly Pick<CartLine, 'variationId' | 'quantity' | 'name' | 'variationName'>[], counts: ReadonlyMap<string, number>): string | undefined {
+export function stockProblem(menu: readonly OnlineMenuItem[], lines: readonly (Pick<CartLine, 'variationId' | 'quantity' | 'name' | 'variationName'> & { modifiers?: CartLine['modifiers'] })[], counts: ReadonlyMap<string, number>): string | undefined {
   const wanted = new Map<string, number>();
   for (const l of lines) wanted.set(l.variationId, (wanted.get(l.variationId) ?? 0) + l.quantity);
   for (const l of lines) {
@@ -132,6 +136,10 @@ export function stockProblem(menu: readonly OnlineMenuItem[], lines: readonly Pi
     const left = variation?.counted ? counts.get(l.variationId) : undefined;
     if (!variation || variation.soldOut || (left !== undefined && left < 1)) return `Sorry, ${what} just sold out.`;
     if (left !== undefined && left < wanted.get(l.variationId)!) return `Sorry, we only have ${Math.floor(left)} ${what} left. Change your order to carry on.`;
+    // An option marked unavailable since it was picked (an always-on one is how it's made, so it stays).
+    const options = menu.find((x) => x.variations.includes(variation))?.modifierLists.flatMap((ml) => ml.modifiers) ?? [];
+    const gone = (l.modifiers ?? []).map((m) => options.find((o) => o.id === m.id)).find((o) => o?.soldOut && o.mode !== 'always');
+    if (gone) return `Sorry, ${gone.name} just sold out. Change ${what} to carry on.`;
   }
   return undefined;
 }

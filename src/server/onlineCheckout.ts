@@ -147,14 +147,14 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
     }
   }
 
-  // The published items as they are in Square now, so a price change or a "sold out" shows within a minute.
+  // The published items and their options as they are in Square now, so a price change or a "sold out" shows within a minute.
   let fresh: { at: number; objects: CatalogObject[] } | undefined;
   async function menuNow(restaurantId: string, today: string, now = false) {
     if (ready && (now || !fresh || Date.now() - fresh.at >= (settings.catalogCheckMs ?? CATALOG_CHECK_MS))) {
       let objects = fresh?.objects ?? [];
       try {
         const ids = (await db.query<{ item_id: string }>('SELECT item_id FROM online_items WHERE restaurant_id = $1 AND published', [restaurantId])).rows.map((r) => r.item_id);
-        objects = ids.length ? await ready.square.catalogObjects(ids) : [];
+        objects = ids.length ? await ready.square.catalogObjects(ids, true) : [];
       } catch (err) {
         console.error(`online menu: couldn’t read items from Square: ${(err as Error).message}`);
       }

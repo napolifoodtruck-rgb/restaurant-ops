@@ -123,3 +123,27 @@ test('right before payment: switched off on the POS, or not enough left', () => 
   const off = onlineMenu(counted.map((o) => (o.id !== 'item-marg' ? o : { ...o, item_data: { ...o.item_data, variations: [{ id: 'var-marg', item_variation_data: { name: 'Regular', price_money: { amount: 1500 }, location_overrides: [{ location_id: 'loc-1', sold_out: true }] } }] } })), [{ itemId: 'item-marg', published: true }], {}, '2026-10-10', 'loc-1');
   assert.match(stockProblem(off, [line], new Map())!, /just sold out/);
 });
+
+test('options marked unavailable in Square aren’t sold online', () => {
+  const out = (ids: string[], at = 'loc-1') => ({ location_overrides: ids.length ? [{ location_id: at, sold_out: true }] : [] });
+  const withOut = (soldOut: string[], required = false): CatalogObject[] => catalog.map((o) => {
+    if (o.modifier_list_data) return { ...o, modifier_list_data: { ...o.modifier_list_data, modifiers: o.modifier_list_data.modifiers!.map((m) => ({ ...m, modifier_data: { ...m.modifier_data, ...out(soldOut.includes(m.id) ? [m.id] : []) } })) } };
+    if (o.id === 'item-marg' && required) return { ...o, item_data: { ...o.item_data, modifier_list_info: o.item_data!.modifier_list_info!.map((i) => (i.modifier_list_id === 'ml-veg' ? { ...i, min_selected_modifiers: 1 } : i)) } };
+    return o;
+  });
+  const items = [{ itemId: 'item-marg', published: true }];
+  const menu = onlineMenu(withOut(['m-arugula', 'm-part']), items, modes, today, 'loc-1');
+  const marg = publicMenu(menu)[0]!;
+  // Arugula drops off; partially cooked is how it's made, so it stays on.
+  assert.deepEqual([marg.soldOut, marg.notes, marg.optionLists.map((l) => l.options.map((o) => o.name))], [false, ['Partially cooked'], [['Basil']]]);
+  assert.throws(() => priceCart(menu, [{ variationId: 'var-marg', quantity: 1, optionIds: ['m-arugula'] }]), /Arugula is sold out tonight/);
+  assert.deepEqual(priceCart(menu, [{ variationId: 'var-marg', quantity: 1, optionIds: ['m-basil'] }]).lines[0]!.modifiers.map((m) => m.name), ['Partially cooked', 'Basil']);
+  // Unavailable somewhere else: still sold here.
+  assert.deepEqual(publicMenu(onlineMenu(withOut(['m-arugula']), items, modes, today, 'loc-2'))[0]!.optionLists[0]!.options.length, 2);
+  // A choice it needs, with every option out: the item is sold out.
+  assert.equal(publicMenu(onlineMenu(withOut(['m-arugula', 'm-basil'], true), items, modes, today, 'loc-1'))[0]!.soldOut, true);
+  // Picked before it went: caught right before payment.
+  const line = priceCart(onlineMenu(withOut([]), items, modes, today, 'loc-1'), [{ variationId: 'var-marg', quantity: 1, optionIds: ['m-arugula'] }]).lines;
+  assert.match(stockProblem(menu, line, new Map()) ?? '', /Arugula just sold out/);
+  assert.equal(stockProblem(menu, priceCart(menu, [{ variationId: 'var-marg', quantity: 1 }]).lines, new Map()), undefined);
+});

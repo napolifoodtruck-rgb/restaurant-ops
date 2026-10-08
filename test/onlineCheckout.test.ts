@@ -41,7 +41,11 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
     }
     const body = JSON.parse(init.body ?? '{}');
     if (path === '/v2/inventory/counts/batch-retrieve') return reply(200, { counts: body.catalog_object_ids.filter((id: string) => stock.has(id)).map((id: string) => ({ catalog_object_id: id, state: 'IN_STOCK', quantity: String(stock.get(id)) })) });
-    if (path === '/v2/catalog/batch-retrieve') return reply(200, { objects: body.object_ids.map((id: string) => live.get(id)).filter(Boolean) });
+    if (path === '/v2/catalog/batch-retrieve') {
+      // With related objects: the modifier lists of the items asked for, as set in `live`.
+      const listIds = body.include_related_objects ? body.object_ids.flatMap((id: string) => ((live.get(id) ?? objects.find((o) => o.id === id))?.item_data?.modifier_list_info ?? []).map((i: any) => i.modifier_list_id)) : [];
+      return reply(200, { objects: body.object_ids.map((id: string) => live.get(id)).filter(Boolean), related_objects: [...new Set<string>(listIds)].map((id) => live.get(id)).filter(Boolean) });
+    }
     square.push({ path, body });
     if (path === '/v2/orders') {
       const subtotal = body.order.line_items.reduce((s: number, l: any) => s + Number(l.quantity) * (l.base_price_money.amount + l.modifiers.reduce((m: number, x: any) => m + x.base_price_money.amount, 0)), 0);
@@ -239,6 +243,28 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.equal((await customer('GET', `/api/order/${lastOne.json.id}`)).json.status, 'failed');
   live.clear();
   stock.clear();
+
+  // An option marked unavailable in Square at this location drops off the menu within a minute, and can't be bought.
+  const veg = objects.find((o) => o.id === 'ml-veg')!;
+  const arugula = (override: object) => ({ ...veg, modifier_list_data: { ...veg.modifier_list_data, modifiers: [{ id: 'm-arugula', modifier_data: { name: 'Arugula', price_money: { amount: 200 }, ...override } }] } });
+  const optionsNow = async () => (await customer('GET', '/api/order/menu')).json.items.find((x: any) => x.itemId === 'item-marg').optionLists.flatMap((l: any) => l.options.map((o: any) => o.name));
+  assert.deepEqual(await optionsNow(), ['Arugula']);
+  live.set('ml-veg', arugula({ location_overrides: [{ location_id: 'loc-2', sold_out: true }] }));
+  assert.deepEqual(await optionsNow(), ['Arugula']);
+  live.set('ml-veg', arugula({ location_overrides: [{ location_id: 'loc-1', sold_out: true }] }));
+  assert.deepEqual(await optionsNow(), []);
+  const noArugula = await customer('POST', '/api/order/checkout', { ...order, window: '19:00', lines: [{ variationId: 'var-marg', quantity: 1, optionIds: ['m-arugula'] }], tip: 0 });
+  assert.deepEqual([noArugula.status, /Arugula is sold out/.test(noArugula.json.error)], [400, true]);
+  // Marked unavailable between checkout and paying: not charged.
+  live.delete('ml-veg');
+  const withArugula = await customer('POST', '/api/order/checkout', { ...order, window: '19:00', lines: [{ variationId: 'var-marg', quantity: 1, optionIds: ['m-arugula'] }], tip: 0 });
+  assert.equal(withArugula.status, 201);
+  live.set('ml-veg', arugula({ location_overrides: [{ location_id: 'loc-1', sold_out: true }] }));
+  const paymentsThen = square.filter((x) => x.path === '/v2/payments').length;
+  const arugulaGone = await customer('POST', `/api/order/${withArugula.json.id}/pay`, { sourceId: 'cnon:card-ok-4' });
+  assert.deepEqual([arugulaGone.status, arugulaGone.json.backToOrder, /Arugula just sold out/.test(arugulaGone.json.error)], [409, true, true]);
+  assert.equal(square.filter((x) => x.path === '/v2/payments').length, paymentsThen);
+  live.clear();
 
   // Going back to change the order gives up the first hold: the pizzas aren't held twice.
   const left20 = async () => (await customer('GET', '/api/order/menu')).json.windows.find((w: any) => w.starts === '18:20').left;

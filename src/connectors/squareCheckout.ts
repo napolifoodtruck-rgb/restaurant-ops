@@ -68,12 +68,13 @@ export class SquareCheckout {
     throw err;
   }
 
-  /** These catalog objects as they are in Square right now. Ids Square doesn't have are left out. */
-  async catalogObjects(ids: readonly string[]): Promise<CatalogObject[]> {
+  /** These catalog objects as they are in Square right now (with `related`, also their modifier lists,
+   *  categories and images). Ids Square doesn't have are left out. */
+  async catalogObjects(ids: readonly string[], related = false): Promise<CatalogObject[]> {
     const out: CatalogObject[] = [];
     for (let i = 0; i < ids.length; i += 1000) {
-      const data = await this.#post('/v2/catalog/batch-retrieve', { object_ids: ids.slice(i, i + 1000), include_related_objects: false });
-      out.push(...(data.objects ?? []));
+      const data = await this.#post('/v2/catalog/batch-retrieve', { object_ids: ids.slice(i, i + 1000), include_related_objects: related });
+      out.push(...(data.objects ?? []), ...(related ? data.related_objects ?? [] : []));
     }
     return out;
   }

@@ -12,8 +12,8 @@
  * One named "… (ONLY OPTION ONLINE)" starts always on, and gluten-sensitive options start hidden.
  *
  * A size marked sold out in Square at the restaurant's location isn't sold online either, and an
- * item with every size sold out shows as sold out. A price set for the location wins, as it does at
- * the register. Sizes whose stock Square counts at the location are marked, so checkout can check
+ * item with every size sold out shows as sold out; nor is an option marked unavailable there. A price
+ * set for the location wins, as it does at the register. Sizes whose stock Square counts at the location are marked, so checkout can check
  * the count (see stockProblem in onlineCart.ts).
  */
 
@@ -42,7 +42,7 @@ export interface CatalogObject {
   modifier_list_data?: {
     name?: string;
     selection_type?: 'SINGLE' | 'MULTIPLE';
-    modifiers?: { id: string; is_deleted?: boolean; modifier_data?: { name?: string; price_money?: { amount?: number | string }; hidden_online?: boolean; ordinal?: number } }[];
+    modifiers?: { id: string; is_deleted?: boolean; modifier_data?: { name?: string; price_money?: { amount?: number | string }; hidden_online?: boolean; ordinal?: number; location_overrides?: { location_id?: string; sold_out?: boolean; price_money?: { amount?: number | string } }[] } }[];
   };
 }
 
@@ -58,7 +58,7 @@ export interface OnlineItemSetting {
   position?: number;
 }
 
-export interface OnlineModifier { id: string; name: string; price: number; mode: ModifierMode; squareHidesOnline: boolean; /** Its Square name says it's never online. */ locked?: true }
+export interface OnlineModifier { id: string; name: string; price: number; mode: ModifierMode; squareHidesOnline: boolean; /** Its Square name says it's never online. */ locked?: true; /** Marked unavailable in Square at the location. */ soldOut?: true }
 
 const NEVER_ONLINE = /not available online/i;
 const ONLY_ONLINE = /only option online/i;
@@ -138,7 +138,10 @@ export function onlineMenu(objects: readonly CatalogObject[], items: readonly On
           .map((m) => {
             const squareHidesOnline = Boolean(m.modifier_data?.hidden_online || info.hidden_from_customer);
             const name = m.modifier_data?.name ?? '';
-            return { id: m.id, name, price: dollars(m.modifier_data?.price_money?.amount) ?? 0, ...modeOf(name, modifierModes[m.id], squareHidesOnline), squareHidesOnline };
+            const overrides = m.modifier_data?.location_overrides ?? [];
+            const here = locationId ? overrides.find((l) => l.location_id === locationId) : undefined;
+            const soldOut = overrides.some((l) => l.sold_out && (!locationId || l.location_id === locationId));
+            return { id: m.id, name, price: dollars(here?.price_money?.amount ?? m.modifier_data?.price_money?.amount) ?? 0, ...modeOf(name, modifierModes[m.id], squareHidesOnline), squareHidesOnline, ...(soldOut ? { soldOut: true as const } : {}) };
           });
         const min = info.min_selected_modifiers !== undefined && info.min_selected_modifiers >= 0 ? info.min_selected_modifiers : undefined;
         const max = info.max_selected_modifiers !== undefined && info.max_selected_modifiers >= 0 ? info.max_selected_modifiers : undefined;
