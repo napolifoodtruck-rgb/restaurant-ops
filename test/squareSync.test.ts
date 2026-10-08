@@ -91,7 +91,8 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
   await db!.query("INSERT INTO job_title_permissions (restaurant_id, job_title, role_level) VALUES ($1, 'Owner', 'owner')", [restaurantId]);
   await db!.query("INSERT INTO staff (restaurant_id, display_name, job_title, email) VALUES ($1, 'Owner', 'Owner', 'owner@napoli.example')", [restaurantId]);
 
-  const row = (day: string, id: string, name: string, q: number, s: number) => ({ 'ItemSales.reporting_day.day': `${day}T00:00:00.000`, 'ItemSales.item_variation_id': id, 'ItemSales.item_name': name, 'ItemSales.item_variation_name': 'Regular', 'ItemSales.category_name': 'Pizza', 'ItemSales.items_sold_count': q, 'ItemSales.item_net_sales': s });
+  // Square's "items sold" counts each share of a split check as a whole item; net_quantity is the real amount.
+  const row = (day: string, id: string, name: string, q: number, s: number, counted = q) => ({ 'ItemSales.reporting_day.day': `${day}T00:00:00.000`, 'ItemSales.item_variation_id': id, 'ItemSales.item_name': name, 'ItemSales.item_variation_name': 'Regular', 'ItemSales.category_name': 'Pizza', 'ItemSales.items_sold_count': counted, 'ItemSales.net_quantity': q, 'ItemSales.item_net_sales': s });
   const state = {
     team: [
       { id: 'T-OWNER', given_name: 'Pat', family_name: 'Owner', email_address: 'OWNER@napoli.example', is_owner: true },
@@ -99,7 +100,7 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
       { id: 'T-JESS', given_name: 'Jess', family_name: 'Lee', jobs: ['Sous Chef', 'Line Cook'] },
       { id: 'T-NEW', given_name: 'Sam' }, // no wage setting yet
     ],
-    items: [row('2026-10-03', 'V1', 'Margherita', 20, 300), row('2026-10-03', 'V1', 'Margherita', 2, 30), row('2026-10-04', 'V1', 'Margherita', 25, 375)],
+    items: [row('2026-10-03', 'V1', 'Margherita', 20, 300), row('2026-10-03', 'V1', 'Margherita', 2, 30), row('2026-10-04', 'V1', 'Margherita', 25, 375, 31)],
     modifiers: [{ 'ItemSales.reporting_day.day': '2026-10-04T00:00:00.000', 'ItemSales.item_variation_id': 'V1', 'ItemSales.item_name': 'Margherita', 'ItemSales.item_variation_name': 'Regular', 'ItemSales.modifier_list_name': 'Extras', 'ItemSales.modifier_name': '++ Extra Mozzarella', 'ItemSales.modifier_net_quantity': 4.0000001, 'ItemSales.gross_sales': 12 }],
     // Orders: a table of four (split across two rows by Square), and an online order last year.
     orders: [
@@ -109,7 +110,7 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
     ],
     timecards: [{ 'Labor.team_member_id': 'T-MARCO', 'Labor.job_title': 'Pizza Maker', 'Labor.clockin_timestamp': '2026-10-04T15:00:00.000', 'Labor.clockout_timestamp': '2026-10-04T22:30:00.000', 'Labor.hourly_wage': 12, 'Labor.total_hours_worked': 7.5, 'Labor.total_labor_cost': 90 }],
     hourly: [{ 'Orders.reporting_day.day': '2026-10-04T00:00:00.000', 'Orders.local_hour': 18, 'Orders.count': 9, 'Orders.cover_count': 20, 'Orders.net_sales_minus_auto_gratuity': 700 }],
-    orderLines: [{ 'ItemSales.reporting_day.day': '2026-10-04T00:00:00.000', 'ItemSales.order_id': 'O1', 'ItemSales.item_variation_id': 'V1', 'ItemSales.item_name': 'Margherita', 'ItemSales.item_variation_name': 'Regular', 'ItemSales.category_name': 'Pizza', 'ItemSales.items_sold_count': 2, 'ItemSales.item_net_sales': 30 }],
+    orderLines: [{ 'ItemSales.reporting_day.day': '2026-10-04T00:00:00.000', 'ItemSales.order_id': 'O1', 'ItemSales.item_variation_id': 'V1', 'ItemSales.item_name': 'Margherita', 'ItemSales.item_variation_name': 'Regular', 'ItemSales.category_name': 'Pizza', 'ItemSales.items_sold_count': 2, 'ItemSales.net_quantity': 1.5000001, 'ItemSales.item_net_sales': 30 }],
   };
   const square = fakeSquare(state);
   const api = new SquareApi('token', { fetch: square.fetch, sleep: noSleep });
@@ -124,7 +125,7 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
   assert.deepEqual([first.orders, first.ordersFrom], [2, '2025-09-01']);
   const stored = (await db!.query<{ order_id: string; table_name: string | null; covers: number; net_sales: string; tips: string }>('SELECT order_id, table_name, covers, net_sales, tips FROM pos_orders WHERE restaurant_id = $1 ORDER BY day', [restaurantId])).rows;
   assert.deepEqual(stored.map((o) => [o.order_id, o.table_name, o.covers, Number(o.net_sales), Number(o.tips)]), [['O0', null, 0, 30, 3], ['O1', 'T6', 4, 90, 18]]);
-  assert.equal((await db!.query('SELECT 1 FROM pos_order_lines WHERE restaurant_id = $1', [restaurantId])).rows.length, 1);
+  assert.deepEqual((await db!.query<{ quantity: string }>('SELECT quantity FROM pos_order_lines WHERE restaurant_id = $1', [restaurantId])).rows.map((x) => Number(x.quantity)), [1.5]); // a pizza split between checks
   // Timecards in local clock time, and sales by hour.
   const card = (await db!.query<{ day: string; clock_in: string; hours: string; labor_cost: string }>("SELECT day::text AS day, to_char(clock_in, 'YYYY-MM-DD HH24:MI') AS clock_in, hours, labor_cost FROM pos_timecards WHERE restaurant_id = $1", [restaurantId])).rows;
   assert.deepEqual(card.map((c) => [c.day, c.clock_in, Number(c.hours), Number(c.labor_cost)]), [['2026-10-04', '2026-10-04 15:00', 7.5, 90]]);
@@ -154,11 +155,18 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
   const after = squareItemSales(await storedItemSales(db!, restaurantId, '2026-10-01', '2026-10-05'));
   assert.deepEqual(after.map((l) => [l.date, l.quantity]), [['2026-10-03', 22], ['2026-10-04', 26], ['2026-10-05', 18]]);
 
+  // Rows saved with the old split-check count are pulled again, from the first of them.
+  await db!.query("INSERT INTO pos_item_sales_daily (restaurant_id, day, catalog_id, item_name, variation_name, category, quantity, net_sales) VALUES ($1, '2026-09-01', 'V1', 'Margherita', 'Regular', 'Pizza', 8, 30)", [restaurantId]);
+  await db!.query("INSERT INTO pos_order_lines (restaurant_id, order_id, day, catalog_id, item_name, quantity, net_sales) VALUES ($1, 'O0', '2025-10-10', 'V1', 'Margherita', 8, 30)", [restaurantId]);
+  const third = await runSquareSync(db!, api, restaurantId, { today: '2026-10-05' });
+  assert.deepEqual([third.from, third.ordersFrom], ['2026-09-01', '2025-10-10']);
+  assert.equal((await db!.query('SELECT 1 FROM pos_item_sales_daily WHERE restaurant_id = $1 AND NOT true_quantity UNION ALL SELECT 1 FROM pos_order_lines WHERE restaurant_id = $1 AND NOT true_quantity', [restaurantId])).rows.length, 0);
+
   // Nothing but reads went to Square.
   assert.ok(square.calls.every((c) => c.method === 'GET' || c.path === '/reporting/v1/load' || c.path === '/v2/team-members/search'));
 
   // The scheduler: due after 4 am local when today's sync hasn't run; quiet otherwise.
   const runs = (await db!.query<{ status: string }>("SELECT status FROM sync_runs WHERE source = 'square'")).rows;
-  assert.deepEqual(runs.map((x) => x.status), ['ok', 'ok']);
+  assert.deepEqual(runs.map((x) => x.status), ['ok', 'ok', 'ok']);
   assert.equal(await syncDue(db!, { square: { token: 'later' }, marginedge: {} }, new Date('2026-10-06T09:00:00Z')), 0); // not connected
 });

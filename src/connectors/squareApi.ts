@@ -132,10 +132,13 @@ export class SquareApi {
     }
   }
 
-  /** Item sales by day: what squareItemSales() reads. */
+  /**
+   * Item sales by day: what squareItemSales() reads. Quantity is net_quantity, the real amount:
+   * items_sold_count counts each share of a split check as a whole item.
+   */
   itemSalesByDay(locationId: string, from: string, to: string): Promise<SquareItemSalesRow[]> {
     return this.report({
-      measures: ['ItemSales.items_sold_count', 'ItemSales.item_net_sales'],
+      measures: ['ItemSales.net_quantity', 'ItemSales.item_net_sales'],
       dimensions: ['ItemSales.item_variation_id', 'ItemSales.item_name', 'ItemSales.item_variation_name', 'ItemSales.category_name'],
       timeDimensions: [{ dimension: 'ItemSales.reporting_day', dateRange: [from, to], granularity: 'day' }],
       filters: [{ member: 'ItemSales.location_id', operator: 'equals', values: [locationId] }],
@@ -182,7 +185,7 @@ export class SquareApi {
   /** What was on each order: item, variation, category, quantity and net sales. */
   orderLinesByDay(locationId: string, from: string, to: string): Promise<SquareItemSalesRow[]> {
     return this.report({
-      measures: ['ItemSales.items_sold_count', 'ItemSales.item_net_sales'],
+      measures: ['ItemSales.net_quantity', 'ItemSales.item_net_sales'],
       dimensions: ['ItemSales.order_id', 'ItemSales.item_variation_id', 'ItemSales.item_name', 'ItemSales.item_variation_name', 'ItemSales.category_name'],
       timeDimensions: [{ dimension: 'ItemSales.reporting_day', dateRange: [from, to], granularity: 'day' }],
       filters: [{ member: 'ItemSales.location_id', operator: 'equals', values: [locationId] }],

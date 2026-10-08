@@ -136,13 +136,16 @@ async function sync(db: Db, api: SquareApi, restaurantId: string, options: Squar
   // Sales by day: the first sync goes back further; later syncs redo the last few days.
   const today = options.today ?? dayOf(new Date());
   const last = (await db.query<{ day: string | null }>('SELECT max(day)::text AS day FROM pos_item_sales_daily WHERE restaurant_id = $1', [restaurantId])).rows[0]?.day;
-  const from = last ? minusDays(last < today ? last : today, (options.refreshDays ?? 4) - 1) : minusDays(today, (options.firstDays ?? 120) - 1);
+  // Days saved with the old split-check count are pulled again, all of them.
+  const stale = (await db.query<{ day: string | null }>('SELECT min(day)::text AS day FROM pos_item_sales_daily WHERE restaurant_id = $1 AND NOT true_quantity', [restaurantId])).rows[0]?.day;
+  const recent = last ? minusDays(last < today ? last : today, (options.refreshDays ?? 4) - 1) : minusDays(today, (options.firstDays ?? 120) - 1);
+  const from = stale && stale < recent ? stale : recent;
   const to = today;
 
   const items = merge(
     (await api.itemSalesByDay(location.id, from, to)).filter(rowDay).map((r) => {
       const cols = [restaurantId, rowDay(r), text(r['ItemSales.item_variation_id']), text(r['ItemSales.item_name']), text(r['ItemSales.item_variation_name']), text(r['ItemSales.category_name'])];
-      return { key: cols.join('\u0000'), cols, values: { quantity: number(r['ItemSales.items_sold_count']), sales: number(r['ItemSales.item_net_sales']) } };
+      return { key: cols.join('\u0000'), cols, values: { quantity: quantityOf(r), sales: number(r['ItemSales.item_net_sales']) } };
     }),
   );
   const modifiers = merge(
@@ -153,7 +156,7 @@ async function sync(db: Db, api: SquareApi, restaurantId: string, options: Squar
   );
   await db.query('DELETE FROM pos_item_sales_daily WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3', [restaurantId, from, to]);
   await db.query('DELETE FROM pos_modifier_sales_daily WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3', [restaurantId, from, to]);
-  await insertMany(db, 'pos_item_sales_daily', ['restaurant_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'category', 'quantity', 'net_sales'], items.map((r) => [...r.cols, r.values.quantity, Math.round(r.values.sales * 100) / 100]));
+  await insertMany(db, 'pos_item_sales_daily', ['restaurant_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'category', 'quantity', 'net_sales', 'true_quantity'], items.map((r) => [...r.cols, Math.round(r.values.quantity * 1000) / 1000, Math.round(r.values.sales * 100) / 100, true]));
   await insertMany(db, 'pos_modifier_sales_daily', ['restaurant_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'modifier_list', 'modifier_name', 'quantity', 'gross_sales'], modifiers.map((r) => [...r.cols, r.values.quantity, Math.round(r.values.sales * 100) / 100]));
 
   const tz = location.timezone ?? (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.timezone ?? 'America/New_York';
@@ -172,6 +175,9 @@ async function sync(db: Db, api: SquareApi, restaurantId: string, options: Squar
   };
 }
 
+/** How many sold: Square's real quantity (a bottle split four ways is four quarters, one bottle). */
+const quantityOf = (r: SquareItemSalesRow) => number(r['ItemSales.net_quantity'] ?? r['ItemSales.items_sold_count']);
+
 const orderDay = (r: SquareItemSalesRow, cube: string) => text(r[`${cube}.reporting_day.day`] ?? r[`${cube}.reporting_day`]).slice(0, 10);
 
 /**
@@ -184,7 +190,10 @@ async function syncOrders(db: Db, api: SquareApi, restaurantId: string, location
     const last = (await db.query<{ day: string | null }>(`SELECT max(day)::text AS day FROM ${table} WHERE restaurant_id = $1`, [restaurantId])).rows[0]?.day;
     return last ? minusDays(last < today ? last : today, (options.refreshDays ?? 4) - 1) : minusDays(today, (options.orderDays ?? 400) - 1);
   };
-  const start = await startFor('pos_orders');
+  // Order lines saved with the old split-check count are pulled again, from the first of them.
+  const staleLines = (await db.query<{ day: string | null }>('SELECT min(day)::text AS day FROM pos_order_lines WHERE restaurant_id = $1 AND NOT true_quantity', [restaurantId])).rows[0]?.day;
+  const recentOrders = await startFor('pos_orders');
+  const start = staleLines && staleLines < recentOrders ? staleLines : recentOrders;
   const laborStart = await startFor('pos_sales_hourly');
   let count = 0;
   for (let from = start < laborStart ? start : laborStart; from <= today; from = minusDays(from, -31)) {
@@ -208,9 +217,9 @@ async function syncOrders(db: Db, api: SquareApi, restaurantId: string, location
       }
       await insertMany(db, 'pos_orders', ['restaurant_id', 'order_id', 'day', 'table_name', 'fulfillment', 'source', 'server_id', 'server_name', 'covers', 'net_sales', 'tips', 'auto_gratuity'],
         [...byId.values()].map((o) => [restaurantId, ...o.cols, Math.round(o.covers), cents(o.sales), cents(o.tips), cents(o.grat)]));
-      await insertMany(db, 'pos_order_lines', ['restaurant_id', 'order_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'category', 'quantity', 'net_sales'],
+      await insertMany(db, 'pos_order_lines', ['restaurant_id', 'order_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'category', 'quantity', 'net_sales', 'true_quantity'],
         lines.map((r) => [restaurantId, text(r['ItemSales.order_id']), orderDay(r, 'ItemSales'), text(r['ItemSales.item_variation_id']) || null, text(r['ItemSales.item_name']), text(r['ItemSales.item_variation_name']) || null,
-          text(r['ItemSales.category_name']) || null, number(r['ItemSales.items_sold_count']), Math.round(number(r['ItemSales.item_net_sales']) * 100) / 100]));
+          text(r['ItemSales.category_name']) || null, Math.round(quantityOf(r) * 1000) / 1000, Math.round(number(r['ItemSales.item_net_sales']) * 100) / 100, true]));
       count += byId.size;
     }
 
