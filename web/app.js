@@ -763,7 +763,7 @@ function renderMargins(me, state, m) {
     // Every plate's bar is the same length, split at its food-cost share, so the column reads straight down.
     const foodShare = d.averagePrice > 0 ? Math.min(1, d.plateCost / d.averagePrice) : 0;
     const plate = h('div', { class: 'pricebar', title: `${pct(foodShare)} of the price is food` }, h('div', { class: 'food' }), h('div', { class: 'left' }));
-    plate.style.width = 'calc(100% - 56px)';
+    plate.style.width = 'calc(100% - 92px)';
     plate.firstChild.style.width = `${(foodShare * 100).toFixed(2)}%`;
     const [roleText, roleCls] = ROLE[d.role] ?? ['', ''];
     const value = perDay ? d.leftPerDay ?? 0 : d.leftTotal;
@@ -774,7 +774,11 @@ function renderMargins(me, state, m) {
     const role = d.offSince ? null : perDay ? (partOfPeriod(d) ? h('span', { class: 'tag blue', text: 'New' }) : null) : roleText ? h('span', { class: `tag ${roleCls}`, text: roleText }) : null;
     const row = h('div', { class: `mrow${d.offSince ? ' off' : ''}` },
       h('div', { class: 'name-cell' }, h('button', { class: 'name linkish', 'aria-expanded': opened ? 'true' : 'false', title: 'Show the plate, ingredient by ingredient', onclick: () => again({ open: opened ? state.open.filter((n) => n !== d.name) : [...(state.open ?? []), d.name] }) }, d.name, h('span', { class: 'muted', text: opened ? ' ▾' : ' ▸' })), note ? h('div', { class: 'small muted', text: note }) : null, role),
-      h('div', { class: 'plate-cell' }, h('div', { class: 'row tight' }, plate, h('span', { class: 'small muted', text: `${dollars(d.averagePrice, { cents: true })}` })),
+      h('div', { class: 'plate-cell' }, h('div', { class: 'row tight' }, plate,
+        // What guests paid on average, beside the menu price when they differ, so the number isn't a mystery.
+        h('span', { class: 'price-pair', title: 'What guests paid on average in this period, after specials, discounts and comps. The menu price is today’s price in Square.' },
+          h('span', { class: 'small', text: `${dollars(d.averagePrice, { cents: true })} avg` }),
+          d.listPrice && m.price !== 'special' && Math.abs(d.listPrice - d.averagePrice) >= 0.05 ? h('span', { class: 'small muted', text: `${dollars(d.listPrice, { cents: true })} menu` }) : null)),
         h('div', { class: 'small', text: `${dollars(d.plateCost, { cents: true })}${d.estimated ? '*' : ''} food (${Math.round(foodShare * 100)}%) · ${dollars(d.leftPerPlate, { cents: true })} profit` })),
       h('div', { class: 'num' }, h('div', { text: d.sold.toLocaleString() }), d.soldPerDay !== undefined ? h('div', { class: 'small muted', text: `${d.soldPerDay}/day` }) : null),
       h('div', {}, h('div', { class: 'row tight' }, (() => { const t = h('div', { class: 'total' }); t.style.width = `calc((100% - 64px) * ${(Math.max(0, value) / maxValue).toFixed(4)})`; return t; })(), h('b', { text: dollars(value) })), other ? h('div', { class: 'small muted', text: other }) : null),
@@ -821,7 +825,7 @@ function renderMargins(me, state, m) {
       seg('Estimated gross profit', [['All of it', !perDay, () => again({ view: 'total' })], ['Per day on the menu', perDay, () => again({ view: 'day' })]])),
     h('div', { class: 'mrow head', role: 'row' }, MARGIN_COLUMNS.map(headCell)),
     rows,
-    h('div', { class: 'small muted', text: 'Price is what guests paid on average, after discounts. * part of the recipe still uses an estimated price. Top earners together bring in 80% of the money in the period. Trend: plates per open day, week by week; weeks off the menu are left out.' }),
+    h('div', { class: 'small muted', text: 'Avg is what guests paid on average, after specials, discounts and comps; menu is today’s price in Square. * part of the recipe still uses an estimated price. Top earners together bring in 80% of the money in the period. Trend: plates per open day, week by week; weeks off the menu are left out.' }),
   );
   show(shell(me, 'margins', [header, toolbar, page([early, missingNote(m.missing), table], side)]));
 }
