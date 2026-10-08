@@ -1111,6 +1111,85 @@ function legend(items, onToggle) {
   }));
 }
 
+/**
+ * Each dish as a dot: how often it sells (plates per open day it was on the menu) against what
+ * one plate earns after food. The lines are the category's averages, splitting it four ways:
+ * popular and earning, earning but quiet, popular but earning less, and neither. (Menu
+ * engineering, Kasavana and Smith, 1982; the words here are the app's own.)
+ */
+function menuMatrix(cat, m) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs, text) => { const e = document.createElementNS(ns, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text !== undefined) e.textContent = text; return e; };
+  const dishes = cat.dishes.filter((d) => !d.offSince && d.sold > 0).map((d) => ({ ...d, x: d.soldPerDay ?? d.sold / Math.max(1, m.openDays), y: d.leftPerPlate }));
+  if (dishes.length < 3) return null;
+  const W = 720, H = 380, L = 56, R = 24, T = 20, B = 40;
+  // Profit per plate isn't a total, so the scale fits the dishes rather than starting at zero.
+  const ys = dishes.map((d) => d.y), spread = Math.max(1, Math.max(...ys) - Math.min(...ys));
+  const step = spread > 12 ? 5 : spread > 5 ? 2 : 1;
+  const yLo = Math.floor((Math.min(...ys) - spread * 0.15) / step) * step, yHi = Math.ceil((Math.max(...ys) + spread * 0.15) / step) * step;
+  const xMax = Math.max(...dishes.map((d) => d.x)) * 1.08;
+  const x = (v) => L + (v / xMax) * (W - L - R), y = (v) => T + (1 - (v - yLo) / (yHi - yLo)) * (H - T - B);
+  const xAvg = dishes.reduce((a, d) => a + d.x, 0) / dishes.length;
+  const yAvg = dishes.reduce((a, d) => a + d.leftTotal, 0) / Math.max(1, dishes.reduce((a, d) => a + d.sold, 0));
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', class: 'matrix-chart', 'aria-label': `${cat.name}: plates a day against profit per plate. ${dishes.map((d) => `${d.name} ${d.x.toFixed(1)} a day, ${dollars(d.y, { cents: true })} a plate`).join('; ')}` });
+  // Quadrant names, in the corners, quiet.
+  const corner = (text, cx, cy, anchor) => svg.append(el('text', { x: cx, y: cy, 'text-anchor': anchor, class: 'mx-quad' }, text));
+  corner('Earns well, sells less: feature it', L + 8, T + 14, 'start');
+  corner('Sells and earns: keep it up', W - R - 8, T + 14, 'end');
+  corner('Sells less, earns less: rethink', L + 8, H - B - 8, 'start');
+  corner('Sells, earns less: check price or cost', W - R - 8, H - B - 8, 'end');
+  // Axes and the two average lines.
+  for (let v = yLo; v <= yHi + 1e-9; v += step) {
+    svg.append(el('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: 'grid' }), el('text', { x: L - 8, y: y(v) + 4, 'text-anchor': 'end', class: 'tick' }, `$${v}`));
+  }
+  const xStep = xMax > 40 ? 10 : xMax > 16 ? 5 : xMax > 6 ? 2 : xMax > 3 ? 1 : 0.5;
+  for (let v = 0; v <= xMax; v += xStep) svg.append(el('text', { x: x(v), y: H - B + 18, 'text-anchor': 'middle', class: 'tick' }, String(v)));
+  svg.append(el('text', { x: (L + W - R) / 2, y: H - 4, 'text-anchor': 'middle', class: 'mx-axis' }, 'Plates a day it was on the menu →'));
+  svg.append(el('text', { x: 14, y: (T + H - B) / 2, 'text-anchor': 'middle', class: 'mx-axis', transform: `rotate(-90 14 ${(T + H - B) / 2})` }, 'Profit per plate →'));
+  svg.append(el('line', { x1: x(xAvg), x2: x(xAvg), y1: T, y2: H - B, class: 'mx-avg' }), el('line', { x1: L, x2: W - R, y1: y(yAvg), y2: y(yAvg), class: 'mx-avg' }));
+  // The dishes, each named beside its dot.
+  const tip = el('g', { class: 'hover', visibility: 'hidden' }), box = el('rect', { width: 190, height: 52, rx: 3, class: 'hover-box' }), t1 = el('text', { class: 'hover-cost' }), t2 = el('text', { class: 'hover-date' }), t3 = el('text', { class: 'hover-date' });
+  tip.append(box, t1, t2, t3);
+  // Names placed so they don't sit on each other or on a dot: right of the dot, else left, else nudged up or down.
+  const taken = dishes.map((d) => ({ x0: x(d.x) - 7, x1: x(d.x) + 7, y0: y(d.y) - 7, y1: y(d.y) + 7 }));
+  const hits = (b) => taken.some((t) => b.x0 < t.x1 && b.x1 > t.x0 && b.y0 < t.y1 && b.y1 > t.y0);
+  const place = (cx, cy, text) => {
+    const w = text.length * 7 + 4;
+    for (const dy of [0, -14, 14, -28, 28, -42, 42]) {
+      for (const side of [1, -1]) {
+        const lx = side > 0 ? cx + 10 : cx - 10 - w;
+        const box = { x0: lx, x1: lx + w, y0: cy + dy - 9, y1: cy + dy + 5 };
+        if (lx < L || lx + w > W - R || hits(box)) continue;
+        taken.push(box);
+        return { x: side > 0 ? cx + 10 : cx - 10, y: cy + dy + 4, anchor: side > 0 ? 'start' : 'end', moved: dy !== 0 };
+      }
+    }
+    return { x: cx + 10, y: cy + 4, anchor: 'start', moved: false };
+  };
+  for (const d of [...dishes].sort((a, b) => b.leftTotal - a.leftTotal)) {
+    const cx = x(d.x), cy = y(d.y), at = place(cx, cy, d.name);
+    const g = el('g', { class: 'mx-dish', tabindex: '0' });
+    if (at.moved) g.append(el('line', { x1: cx, y1: cy, x2: at.anchor === 'start' ? at.x - 2 : at.x + 2, y2: at.y - 4, class: 'mx-leader' }));
+    g.append(el('circle', { cx, cy, r: 6, class: 'mx-dot' }), el('text', { x: at.x, y: at.y, 'text-anchor': at.anchor, class: 'mx-label' }, d.name));
+    const show = () => {
+      tip.setAttribute('visibility', 'visible');
+      const bx = Math.min(cx + 12, W - R - 192), by = Math.max(T, cy - 60);
+      box.setAttribute('x', bx); box.setAttribute('y', by);
+      t1.setAttribute('x', bx + 10); t1.setAttribute('y', by + 17); t1.textContent = d.name;
+      t2.setAttribute('x', bx + 10); t2.setAttribute('y', by + 32); t2.textContent = `${d.x.toFixed(1)} plates a day · ${dollars(d.y, { cents: true })} a plate`;
+      t3.setAttribute('x', bx + 10); t3.setAttribute('y', by + 46); t3.textContent = `${dollars(d.leftTotal)} gross profit in the period`;
+    };
+    g.addEventListener('pointerenter', show); g.addEventListener('focus', show);
+    g.addEventListener('pointerleave', () => tip.setAttribute('visibility', 'hidden')); g.addEventListener('blur', () => tip.setAttribute('visibility', 'hidden'));
+    svg.append(g);
+  }
+  svg.append(tip);
+  return h('section', { class: 'card' },
+    h('h2', { text: `${cat.name}: what sells against what it earns` }),
+    h('div', { class: 'small muted', text: `Each dot is a ${m.area === 'bar' ? 'drink' : 'dish'}: ${m.area === 'bar' ? 'sold' : 'plates'} a day across, profit per ${m.area === 'bar' ? 'drink after pour cost' : 'plate after food'} up. The dashed lines are ${cat.name.toLowerCase()}’s averages (${xAvg.toFixed(1)} a day, ${dollars(yAvg, { cents: true })} a plate). Hover a dot for its numbers.` }),
+    h('div', { class: 'chart-wrap' }, svg));
+}
+
 function chartsView(state, cat, m, again) {
   // Which dishes are charted: the top four by money unless chosen; colors stick to a dish once given.
   const live = cat.dishes;
@@ -1142,7 +1221,7 @@ function chartsView(state, cat, m, again) {
     stackedBars({ weeks: m.weeks, series: stack, format: money }));
 
   // Food cost week by week is in the side column, with Expand for a large view.
-  return [plates, leftBars];
+  return [menuMatrix(cat, m), plates, leftBars];
 }
 
 // ------------------------------------------------------------------ prep lists
