@@ -3208,6 +3208,7 @@ function recipeView(me, r, opts) {
   const y = r.yields[0];
   const prep = r.kind === 'prep' || r.kind === 'barPrep';
   const page = Boolean(opts.page);
+  let history = null;
   const body = h('div', { class: 'recipe' });
   const side = page ? h('div', { class: 'page-side-boxes' }) : null;
   const makesText = () => (prep ? `Makes ${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}${r.yields.length > 1 ? ` (${r.yields.slice(1).map((x) => `${nice(x.amount * scale)} ${UNIT_LABEL(x.unit)}`).join(', ')})` : ''}${r.batchGrams && dimensionName(y.unit) !== 'mass' ? `, about ${weightText(r.batchGrams * scale)}` : ''}` : r.kind === 'drink' ? 'One drink' : 'One plate');
@@ -3248,7 +3249,8 @@ function recipeView(me, r, opts) {
         prep ? sideBox('How much', h('div', { class: 'big', text: `${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}` }), scaler, h('div', { class: 'small muted', text: 'Batches: every amount scales with it.' })) : null,
         r.usedBy.length ? sideBox('Used in', h('div', { class: 'small' }, usedIn())) : null,
         r.linked ? soldAsBox(r, opts.reload) : null,
-        cost ? sideBox('Cost · managers only', h('div', { class: 'big', text: money2(r.cost * scale) }), h('div', { class: 'small muted', text: `${prep ? `for ${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}` : r.kind === 'drink' ? 'a drink' : 'a plate'}${r.complete ? '' : ' · some lines have no price yet'}` })) : null);
+        cost ? sideBox('Cost · managers only', h('div', { class: 'big', text: money2(r.cost * scale) }), h('div', { class: 'small muted', text: `${prep ? `for ${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}` : r.kind === 'drink' ? 'a drink' : 'a plate'}${r.complete ? '' : ' · some lines have no price yet'}` })) : null,
+        r.canEdit && r.id ? (history ??= recipeHistoryBox(me, r, opts)) : null);
       return;
     }
     fill(body,
@@ -3263,6 +3265,53 @@ function recipeView(me, r, opts) {
   };
   draw();
   return page ? { head, body, side: [...side.children].length ? side : null } : body;
+}
+
+const VERSION_CHANGE = { created: 'Written', edited: 'Changed', renamed: 'Renamed', removed: 'Taken out', restored: 'Put back', imported: 'Brought into the app' };
+
+/** Every saved version of a recipe (managers): who changed it and when; an earlier one can be seen and put back. */
+function recipeHistoryBox(me, r, opts) {
+  const list = h('div', { class: 'history' }, h('div', { class: 'small muted', text: 'Loading…' }));
+  const box = sideBox('History', list);
+  (async () => {
+    const res = await api('GET', `/api/cards/history?id=${encodeURIComponent(r.id)}`);
+    if (!res.ok) return fill(list, h('div', { class: 'small muted', text: 'Couldn’t load the history.' }));
+    const versions = res.data.versions ?? [];
+    let all = false;
+    const draw = () => fill(list,
+      versions.length ? null : h('div', { class: 'small muted', text: 'No changes saved yet.' }),
+      (all ? versions : versions.slice(0, 6)).map((v, i) => {
+        const detail = h('div', { class: 'history-detail' });
+        const open = i > 0 && v.change !== 'removed' ? h('button', { class: 'link small', text: 'See this version', onclick: async () => {
+          if (detail.childElementCount) { fill(detail); open.textContent = 'See this version'; return; }
+          open.textContent = 'Hide';
+          const one = await api('GET', `/api/cards/version?id=${encodeURIComponent(v.id)}`);
+          if (!one.ok) return fill(detail, h('div', { class: 'error', text: one.data.error ?? 'Couldn’t load it.' }));
+          const c = one.data.card;
+          const err = h('div', { class: 'error' });
+          let sure = false;
+          const back = h('button', { class: 'btn small-btn', text: 'Put this version back', onclick: async () => {
+            if (!sure) { sure = true; back.textContent = 'Yes, put it back'; return; }
+            back.disabled = true;
+            const done = await api('POST', '/api/cards/restore', { version: v.id });
+            if (!done.ok) { back.disabled = false; return (err.textContent = done.data.error ?? 'Couldn’t put it back.'); }
+            recipePage(me, done.data.name ?? r.name, opts);
+          } });
+          fill(detail,
+            c.name !== r.name ? h('div', { class: 'small strong', text: `Called ${c.name} then` }) : null,
+            h('ul', { class: 'small history-lines' }, c.ingredients.map((x) => h('li', { text: `${x.amount > 0 ? `${nice(x.amount)} ${UNIT_LABEL(x.unit)} ` : ''}${x.name}${x.yieldPercent ? ` (${x.yieldPercent}% usable)` : ''}` }))),
+            c.method ? h('div', { class: 'small muted', text: `${c.method.split(/\n+/).filter((p) => p.trim()).length} steps` }) : null,
+            h('div', { class: 'small muted', text: 'Putting it back saves it as the recipe today; the current one stays in this history.' }),
+            back, err);
+        } }) : null;
+        return h('div', { class: 'history-row' },
+          h('div', { class: 'row tight' }, h('span', { class: 'grow small', text: `${i === 0 ? 'Now: ' : ''}${VERSION_CHANGE[v.change] ?? v.change}${v.by ? ` by ${v.by}` : ''}${v.name && v.name !== r.name ? ` (as ${v.name})` : ''}` }), h('span', { class: 'small muted', text: when(v.at) })),
+          open, detail);
+      }),
+      versions.length > 6 && !all ? h('button', { class: 'link small', text: `All ${versions.length} versions`, onclick: () => { all = true; draw(); } }) : null);
+    draw();
+  })();
+  return box;
 }
 
 /** The Square buttons that sell this recipe (managers): each can be taken off, back to "selling without a recipe". */

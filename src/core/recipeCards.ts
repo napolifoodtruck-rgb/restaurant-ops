@@ -22,9 +22,14 @@ export interface CardIngredient {
   /** Food, Prep, Alcohol, add on... */
   type?: string;
   note?: string;
+  /** What the line was last matched to (another recipe, or an ingredient), kept so a rename follows. */
+  recipeId?: string;
+  productId?: string;
 }
 
 export interface RecipeCard {
+  /** Its permanent id. Cards from a file have none until they're saved. */
+  id?: string;
   name: string;
   /** "Menu items" on recipe cards; costing cards have only a type. */
   category?: string;
@@ -59,9 +64,13 @@ export type RecipeImportIssue =
 
 export const normalizeName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
+/** The id a card had before recipes had ids of their own (made from its name); still used for a card from a file. */
 export function recipeId(name: string): string {
   return `me-${normalizeName(name).replace(/ /g, '-')}`;
 }
+
+/** A card's id: its own, or (a card from a file, not saved yet) the one made from its name. */
+export const cardId = (card: Pick<RecipeCard, 'id' | 'name'>): string => card.id ?? recipeId(card.name);
 
 /** Ingredients that cost nothing and aren't bought. */
 export const FREE_PRODUCTS: PurchasedProduct[] = [
@@ -155,7 +164,7 @@ export function buildRecipes(cards: RecipeCard[], products: PurchasedProduct[], 
       if (told.has(key)) {
         ingredients.push({ item: { kind: 'product', id: told.get(key)! }, quantity });
       } else if (byName.has(key)) {
-        ingredients.push({ item: { kind: 'recipe', id: recipeId(ingredient.name) }, quantity });
+        ingredients.push({ item: { kind: 'recipe', id: cardId(byName.get(key)!) }, quantity });
       } else if (productsByName.has(key)) {
         ingredients.push({ item: { kind: 'product', id: productsByName.get(key)!.externalId }, quantity });
       } else {
@@ -170,7 +179,7 @@ export function buildRecipes(cards: RecipeCard[], products: PurchasedProduct[], 
     const isPrep = /^prep/i.test(card.recipeType ?? '') || (!!card.category && !/menu/i.test(card.category));
     const isDish = !isPrep;
     recipes.push({
-      id: recipeId(card.name),
+      id: cardId(card),
       name: card.name,
       kind: isDish ? 'dish' : 'prep',
       // Dishes are costed per portion.

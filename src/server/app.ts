@@ -57,6 +57,7 @@ import {
 import { localDateHour, marginEdgeApiFrom, runSync, squareApiFrom, type SyncSettings } from './scheduler.ts';
 import { posName } from '../core/menuLinks.ts';
 import { BOOK_KEYS, PRODUCT_ANSWERS, answerProblem, bookProblem, getModel, loadBook, saveBook, withAnswer, withoutAnswer, recentAnswers, withProductAnswer, type Answer } from './model.ts';
+import { bookParts } from './book.ts';
 import { marginsView, menuView, posItemOf } from './views.ts';
 import { prepRoutes } from './prep.ts';
 import { planRoutes } from './plans.ts';
@@ -508,8 +509,7 @@ export function createApp(config: AppConfig) {
       }
 
       if (method === 'GET' && path === '/api/book') {
-        const { rows } = await db.query<{ key: string; updated_at: string; size: string }>('SELECT key, updated_at, length(value::text) AS size FROM kitchen_book WHERE restaurant_id = $1', [who.restaurantId]);
-        return send(res, 200, { parts: rows });
+        return send(res, 200, { parts: await bookParts(db, who.restaurantId) });
       }
 
       if (method === 'POST' && path === '/api/book/import') {

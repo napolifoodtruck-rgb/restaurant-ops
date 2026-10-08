@@ -357,15 +357,28 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.deepEqual(cards.find((c: any) => c.name === 'House Soda').ingredients.map((i: any) => i.name), ['Simple Syrup 1:1', 'Water']);
   assert.equal(cards.find((c: any) => c.name === 'Simple Syrup 1:1').area, 'bar');
   assert.equal((await call('POST', '/api/cards/delete', { body: { name: 'Simple Syrup 1:1' }, cookies: ownerSession })).status, 409);
-  const book = (await db!.query<{ value: any }>("SELECT value FROM kitchen_book WHERE key = 'linkAnswers'")).rows[0]!.value;
-  assert.deepEqual((typeof book === 'string' ? JSON.parse(book) : book).confirm.filter((c: any) => c.catalogId === 'V-SODA').map((c: any) => c.recipe), ['House Soda']);
+  // The button is linked to the recipe itself (its id), not its name.
+  const linkedTo = (await db!.query<{ name: string }>("SELECT r.name FROM dish_links d JOIN recipes r ON r.id = d.recipe_id WHERE d.catalog_id = 'V-SODA'")).rows.map((r) => r.name);
+  assert.deepEqual(linkedTo, ['House Soda']);
+  // Every save is a version: written, then renamed; an earlier one can be put back.
+  const syrupCardId = cards.find((c: any) => c.name === 'Simple Syrup 1:1').id;
+  const history = (await call('GET', `/api/cards/history?id=${syrupCardId}`, { cookies: ownerSession })).json.versions;
+  assert.deepEqual(history.map((v: any) => [v.change, v.name, v.by]), [['renamed', 'Simple Syrup 1:1', 'Owner'], ['created', 'Simple Syrup', 'Owner']]);
+  assert.equal((await call('GET', `/api/cards/history?id=${syrupCardId}`, { cookies: marcoOnExpo })).status, 403);
+  const first = await call('GET', `/api/cards/version?id=${history[1].id}`, { cookies: ownerSession });
+  assert.deepEqual([first.json.card.name, first.json.card.ingredients.map((i: any) => i.name)], ['Simple Syrup', ['Water']]);
+  assert.deepEqual((await call('POST', '/api/cards/restore', { body: { version: history[1].id }, cookies: ownerSession })).json, { ok: true, name: 'Simple Syrup' });
+  const afterRestore = (await call('GET', '/api/cards', { cookies: ownerSession })).json.cards;
+  // Back to its old name, still the same recipe: the soda's line follows it.
+  assert.deepEqual([afterRestore.find((c: any) => c.id === syrupCardId)?.name, afterRestore.find((c: any) => c.name === 'House Soda').ingredients[0].name], ['Simple Syrup', 'Simple Syrup']);
+  assert.equal((await call('GET', `/api/cards/history?id=${syrupCardId}`, { cookies: ownerSession })).json.versions[0].change, 'restored');
+  assert.equal((await call('POST', '/api/cards', { body: { card: { ...syrup, name: 'Simple Syrup 1:1' }, previousName: 'Simple Syrup' }, cookies: ownerSession })).status, 200);
   assert.equal((await call('POST', '/api/prep/stations', { body: { name: 'Bar' }, cookies: ownerSession })).status, 201);
 
   // Several dishes taken off a moment apart (the saves overlap): every one of them sticks.
   const offs = ['pos:RACE1', 'pos:RACE2', 'pos:RACE3', 'pos:RACE4', 'pos:RACE5'];
   await Promise.all(offs.map((menuKey) => call('POST', '/api/menu/status', { body: { menuKey, status: 'off', name: menuKey, date: '2026-07-01' }, cookies: ownerSession })));
-  const statusBook = (await db!.query<{ value: any }>("SELECT value FROM kitchen_book WHERE key = 'linkAnswers'")).rows[0]!.value;
-  const statusNow = (typeof statusBook === 'string' ? JSON.parse(statusBook) : statusBook).menuStatus.map((m: any) => m.recipeId);
+  const statusNow = (await db!.query<{ subject: string }>('SELECT subject FROM menu_status')).rows.map((m) => m.subject);
   for (const k of offs) assert.ok(statusNow.includes(k), k);
 
   // Rough recipes: saved half-written (lines not matched yet, no amount), for managers only until ready.
@@ -400,17 +413,18 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.deepEqual((await call('POST', '/api/cards/tidy', { body: { renames: tidy }, cookies: ownerSession })).json, { renamed: 2, removed: 0 });
   const lemonade = (await call('GET', '/api/recipes/Lemonade', { cookies: ownerSession })).json;
   assert.deepEqual([lemonade.name, lemonade.ingredients[0].card], ['Lemonade', 'Lemon Juice']);
-  const tidied = (await db!.query<{ value: any }>("SELECT value FROM kitchen_book WHERE key = 'linkAnswers'")).rows[0]!.value;
-  assert.deepEqual((typeof tidied === 'string' ? JSON.parse(tidied) : tidied).confirm.filter((c: any) => c.catalogId === 'V-LEM').map((c: any) => c.recipe), ['Lemonade']);
+  const tidied = (await db!.query<{ name: string }>("SELECT r.name FROM dish_links d JOIN recipes r ON r.id = d.recipe_id WHERE d.catalog_id = 'V-LEM'")).rows.map((r) => r.name);
+  assert.deepEqual(tidied, ['Lemonade']);
 
   // Recipes home (managers): only what needs a look, with counts for the tiles; the tree's pages carry markers.
   assert.equal((await call('GET', '/api/costs/home?area=kitchen', { cookies: marcoOnExpo })).status, 403);
   const home = (await call('GET', '/api/costs/home?area=bar', { cookies: ownerSession })).json;
   assert.ok(home.counts && Array.isArray(home.dishes) && Array.isArray(home.others) && Array.isArray(home.recent));
   assert.ok(home.recent.some((x: any) => x.name === 'Lemonade' && x.by === 'Owner')); // saved in the app: who and when
-  const sodaNode = (await call('GET', `/api/costs/recipe/${encodeURIComponent('me-house-soda')}`, { cookies: ownerSession })).json;
+  const sodaId = (await call('GET', '/api/cards', { cookies: ownerSession })).json.cards.find((c: any) => c.name === 'House Soda').id;
+  const sodaNode = (await call('GET', `/api/costs/recipe/${encodeURIComponent(sodaId)}`, { cookies: ownerSession })).json;
   assert.ok(sodaNode.markers && sodaNode.lines.every((l: any) => l.markers));
-  assert.equal((await call('GET', `/api/costs/history/${encodeURIComponent('me-house-soda')}`, { cookies: ownerSession })).status, 200);
+  assert.equal((await call('GET', `/api/costs/history/${encodeURIComponent(sodaId)}`, { cookies: ownerSession })).status, 200);
 
   // Orders: managers only; never marked sent before a manager approves; no vendors without invoices.
   assert.equal((await call('GET', '/api/orders', { cookies: marcoOnExpo })).status, 403);

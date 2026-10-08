@@ -20,7 +20,7 @@ import { getModel, loadBook, type Model } from './model.ts';
 import { hasMarkers, treeAlerts, type Markers } from './treeAlerts.ts';
 import { recipeChecks } from './recipeChecks.ts';
 import { kindOf } from './cards.ts';
-import { recipeId as idOfName } from '../core/recipeCards.ts';
+import { cardId } from '../core/recipeCards.ts';
 import { priceHistory, purchaseKind } from '../core/costReports.ts';
 import { squareModifierSales } from '../connectors/square.ts';
 import { storedModifierSales } from './squareSync.ts';
@@ -183,15 +183,15 @@ export async function costRoutes(db: Db, res: ServerResponse, url: URL, who: Sig
     const walk = (id: string) => { if (reach.has(id)) return; reach.add(id); for (const i of model.book.recipes.get(id)?.ingredients ?? []) if (i.item.kind === 'recipe') walk(i.item.id); };
     for (const d of model.margins.dishes) if (d.quantity > 0) walk(d.recipeId);
     const sideOfCard = (k: string) => (k === 'drink' || k === 'barPrep' ? 'bar' : 'kitchen');
-    const others = (book2.recipeCards ?? []).filter((c) => sideOfCard(kindOf(c)) === area && !reach.has(idOfName(c.name)))
-      .map((c) => ({ id: idOfName(c.name), name: c.name, kind: kindOf(c), markers: alerts.recipes.get(idOfName(c.name)) ?? {} }))
+    const others = (book2.recipeCards ?? []).filter((c) => sideOfCard(kindOf(c)) === area && !reach.has(cardId(c)))
+      .map((c) => ({ id: cardId(c), name: c.name, kind: kindOf(c), markers: alerts.recipes.get(cardId(c)) ?? {} }))
       .filter((x) => hasMarkers(x.markers));
     const flagged = [...dishes.filter((d) => hasMarkers(d.markers)), ...others];
     const count = (k: keyof Markers) => flagged.filter((x) => x.markers[k]?.length).length;
     const checks = recipeChecks(model, today, gone);
     const unlinked = model.margins.unlinked.filter((u) => u.catalogId && u.netSales > 0 && areaOf(u.category) === area);
     const recent = (book2.recipeCards ?? []).filter((c) => c.updatedAt && sideOfCard(kindOf(c)) === area).sort((a, b) => b.updatedAt!.localeCompare(a.updatedAt!)).slice(0, 6)
-      .map((c) => ({ id: idOfName(c.name), name: c.name, at: c.updatedAt, by: c.updatedBy }));
+      .map((c) => ({ id: cardId(c), name: c.name, at: c.updatedAt, by: c.updatedBy }));
     return send(res, 200, {
       area, dishes: dishes.filter((d) => hasMarkers(d.markers)), allDishes: dishes.length, others,
       counts: { notBought: count('notBought'), noCost: count('noCost'), red: count('red'), yellow: count('yellow'), rough: count('rough'),

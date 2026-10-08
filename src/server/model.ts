@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import type { Db } from './db.ts';
 import type { ImportAnswers } from '../connectors/marginedge.ts';
 import { blendedPrices, packBaseOf, type PurchasedProduct, type Purchasing } from '../core/purchasing.ts';
-import { buildRecipes, FREE_PRODUCTS, recipeId, type RecipeCard } from '../core/recipeCards.ts';
+import { buildRecipes, cardId, FREE_PRODUCTS, type RecipeCard } from '../core/recipeCards.ts';
 import { packSize, withPackSize } from '../core/packSizes.ts';
 import { squareItemSales, squareMenuItems, squareModifierSales, type SquareCatalogObject } from '../connectors/square.ts';
 import { applyLinks, confirmLink, emptyLinkState, linkLookup, markNewDish, matchMenu, posName, type LinkQuestion, type PosMenuItem, type SoldItem } from '../core/menuLinks.ts';
@@ -26,6 +26,9 @@ import { storedItemSales, storedModifierSales } from './squareSync.ts';
 import { ingredientsStamp, loadIngredients } from './ingredients.ts';
 import { loadStore, storeStamp, type InvoiceSource } from './invoiceStore.ts';
 import { ensureMarginEdgeImported } from './meImport.ts';
+import { bookStamp, loadBook, onBookChange, recipeCardsOn, saveBook } from './book.ts';
+
+export { loadBook, saveBook };
 
 // ---------------------------------------------------------------- the kitchen book
 
@@ -36,7 +39,7 @@ export interface PilotImportAnswers extends ImportAnswers {
   /** Card ingredient name → product id, when the name alone would match the wrong product. */
   ingredientProducts?: Record<string, string>;
   /** Confirmed real portions, by recipe and ingredient name. */
-  portions?: { recipe: string; ingredient: string; amount: number; unit: string; source?: string }[];
+  portions?: { recipe: string; ingredient: string; amount: number; unit: string; source?: string; recipeId?: string; productId?: string }[];
   /** Products that go into only one dish, by name. */
   exclusive?: string[];
   partlyGrown?: { product: string; note?: string }[];
@@ -45,7 +48,7 @@ export interface PilotImportAnswers extends ImportAnswers {
 /** When an answer was given in the app, and by whom (answers loaded from a file have neither). */
 export interface Stamp { at?: string; by?: string }
 export interface LinkAnswers {
-  confirm: (PosMenuItem & Stamp & { recipe: string; portion?: Quantity; from?: string; note?: string })[];
+  confirm: (PosMenuItem & Stamp & { recipe: string; recipeId?: string; portion?: Quantity; from?: string; note?: string })[];
   newDish: (PosMenuItem & Stamp & { from?: string; note?: string })[];
   /** POS items confirmed as having no food cost to track (gift cards, fees, merchandise). */
   notFood?: (PosMenuItem & Stamp & { note?: string })[];
@@ -174,24 +177,6 @@ export function bookProblem(key: BookKey, value: unknown): string | undefined {
   return undefined;
 }
 
-export async function loadBook(db: Db, restaurantId: string): Promise<Partial<KitchenBook>> {
-  const { rows } = await db.query<{ key: BookKey; value: any }>('SELECT key, value FROM kitchen_book WHERE restaurant_id = $1', [restaurantId]);
-  const out: Partial<KitchenBook> = {};
-  for (const r of rows) (out as any)[r.key] = typeof r.value === 'string' ? JSON.parse(r.value) : r.value;
-  return out;
-}
-
-export async function saveBook(db: Db, restaurantId: string, key: BookKey, value: unknown, staffId?: string): Promise<void> {
-  const json = JSON.stringify(value);
-  await db.query('INSERT INTO kitchen_book_history (restaurant_id, key, value, saved_by) VALUES ($1, $2, $3, $4)', [restaurantId, key, json, staffId ?? null]);
-  await db.query(
-    `INSERT INTO kitchen_book (restaurant_id, key, value, updated_at, updated_by) VALUES ($1, $2, $3, now(), $4)
-     ON CONFLICT (restaurant_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = now(), updated_by = EXCLUDED.updated_by`,
-    [restaurantId, key, json, staffId ?? null],
-  );
-  invalidate(restaurantId);
-}
-
 // ---------------------------------------------------------------- the model
 
 /** Where a product's price came from: the latest invoice (and how many recent ones are averaged), a price set in the app, or MarginEdge's last price. */
@@ -243,6 +228,7 @@ const cache = new Map<string, { stamp: string; model: Promise<Model> }>();
 export function invalidate(restaurantId: string): void {
   for (const key of cache.keys()) if (key.startsWith(`${restaurantId}|`)) cache.delete(key);
 }
+onBookChange(invalidate);
 
 function minusDays(day: string, n: number): string {
   const d = new Date(`${day}T12:00:00Z`);
@@ -259,18 +245,15 @@ export async function getModel(db: Db, restaurantId: string, today: string, rang
   const to = range?.to ?? today;
   const from = range?.from ?? minusDays(today, 89);
   const key = `${restaurantId}|${from}|${to}`;
-  const stamp = (await db.query<{ stamp: string }>(
-    `SELECT concat_ws('|',
-       (SELECT max(finished_at)::text FROM sync_runs WHERE restaurant_id = $1 AND status = 'ok'),
-       (SELECT max(updated_at)::text FROM kitchen_book WHERE restaurant_id = $1)) AS stamp`,
-    [restaurantId],
-  )).rows[0]!.stamp;
+  const synced = (await db.query<{ stamp: string | null }>("SELECT max(finished_at)::text AS stamp FROM sync_runs WHERE restaurant_id = $1 AND status = 'ok'", [restaurantId])).rows[0]?.stamp ?? '';
+  const stamp = `${synced}|${await bookStamp(db, restaurantId)}`;
   const hit = cache.get(key);
   if (hit && hit.stamp === stamp) return hit.model;
   // A handful of periods per restaurant is plenty; drop the oldest beyond that.
   const mine = [...cache.keys()].filter((k) => k.startsWith(`${restaurantId}|`));
   if (mine.length >= 8) cache.delete(mine[0]!);
-  const model = buildModel(db, restaurantId, from, to);
+  // A period that ended before today is costed with the recipes as they were on its last day.
+  const model = buildModel(db, restaurantId, from, to, to < today);
   cache.set(key, { stamp, model });
   model.catch(() => cache.delete(key));
   return model;
@@ -341,24 +324,25 @@ async function buildBase(db: Db, restaurantId: string, from: string, today: stri
   return { purchasing, garden: store.garden, sources: store.sources, menuItems, images, rawRows, modRows, ...(dataFrom ? { dataFrom } : {}) };
 }
 
-async function buildModel(db: Db, restaurantId: string, from: string, today: string): Promise<Model> {
+async function buildModel(db: Db, restaurantId: string, from: string, today: string, past = false): Promise<Model> {
   const missing: string[] = [];
   const bookData = await loadBook(db, restaurantId);
+  const cards = (past ? await recipeCardsOn(db, restaurantId, today) : undefined) ?? bookData.recipeCards ?? [];
   const answers: PilotImportAnswers = bookData.importAnswers ?? {};
   const base = await getBase(db, restaurantId, from, today, answers);
   const { purchasing, menuItems, images, rawRows, modRows, dataFrom } = base;
   // No ingredients yet: nothing to cost with (named for the source most restaurants start from).
   if (!purchasing.products.length) missing.push('marginedge');
-  if (!bookData.recipeCards?.length) missing.push('recipeCards');
+  if (!cards.length) missing.push('recipeCards');
 
   // Products and recipes.
   // Ingredients from an earlier answer are on the list now; kept here too in case one isn't yet.
   const listed = new Set(purchasing.products.map((p) => p.externalId));
   const allProducts = [...purchasing.products, ...(answers.offInvoiceProducts ?? []).filter((p) => !listed.has(p.externalId))];
-  let recipes = buildRecipes(bookData.recipeCards ?? [], allProducts, { ingredientProducts: answers.ingredientProducts ?? {} }).recipes;
+  let recipes = buildRecipes(cards, allProducts, { ingredientProducts: answers.ingredientProducts ?? {} }).recipes;
   for (const p of answers.portions ?? []) {
-    const recipe = recipes.find((r) => r.name === p.recipe);
-    const product = allProducts.find((x) => x.name === p.ingredient);
+    const recipe = (p.recipeId ? recipes.find((r) => r.id === p.recipeId) : undefined) ?? recipes.find((r) => r.name === p.recipe);
+    const product = (p.productId ? allProducts.find((x) => x.externalId === p.productId) : undefined) ?? allProducts.find((x) => x.name === p.ingredient);
     if (recipe && product) recipes = withIngredientAmount(recipes, recipe.id, { kind: 'product', id: product.externalId }, { amount: p.amount, unit: p.unit });
   }
   const blended = blendedPrices(purchasing.prices, today);
@@ -442,7 +426,7 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
   const linkAnswers = bookData.linkAnswers ?? { confirm: [], newDish: [] };
   let state = emptyLinkState();
   for (const a of linkAnswers.confirm) {
-    const recipe = recipes.find((x) => x.name === a.recipe);
+    const recipe = (a.recipeId ? recipes.find((x) => x.id === a.recipeId) : undefined) ?? recipes.find((x) => x.name === a.recipe);
     if (recipe) state = confirmLink(state, a, recipe.id, a.portion, a.from);
   }
   state = applyLinks(state, matchMenu(soldItems, recipes, state).newLinks);
@@ -494,5 +478,5 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     // A dish change already answered: a version on that button starts within a week of the suggested day.
     .filter((c) => !(c.kind === 'dishChanged' && c.catalogId && c.suggestedDate && [...linkAnswers.confirm, ...linkAnswers.newDish].some((v) => v.catalogId === c.catalogId && v.from && Math.abs(Date.parse(v.from) - Date.parse(c.suggestedDate!)) <= 7 * 86_400_000)));
 
-  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, purchasing, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded, menuStatus: linkAnswers.menuStatus ?? [], rough: new Set((bookData.recipeCards ?? []).filter((c) => c.status === 'rough').map((c) => recipeId(c.name))), priceSource, gardenVendors: base.garden, invoiceSources: base.sources };
+  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, purchasing, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded, menuStatus: linkAnswers.menuStatus ?? [], rough: new Set(cards.filter((c) => c.status === 'rough').map(cardId)), priceSource, gardenVendors: base.garden, invoiceSources: base.sources };
 }

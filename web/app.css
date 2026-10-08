@@ -1131,3 +1131,11 @@ button.donut-row { display: flex; min-width: 0; }
 
 .pass-form { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
 .pass-form input { width: 100%; }
+
+/* A recipe's history: one row per saved version, an earlier one opened to read or put back. */
+.history { display: flex; flex-direction: column; gap: 10px; }
+.history-row { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--line); padding-top: 8px; }
+.history-row:first-child { border-top: 0; padding-top: 0; }
+.history-detail:empty { display: none; }
+.history-detail { display: flex; flex-direction: column; gap: 6px; padding: 8px 0 4px; }
+.history-lines { margin: 0; padding-left: 18px; }

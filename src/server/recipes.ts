@@ -21,7 +21,7 @@ import { loadAreas } from './areas.ts';
 import { coverageOf } from './views.ts';
 import { cardView, kindOf, lineState, linkedItems, yieldConversions } from './cards.ts';
 import { tryConvert } from '../core/units.ts';
-import { normalizeName as cardKey, recipeId as recipeIdOf } from '../core/recipeCards.ts';
+import { cardId, normalizeName as cardKey } from '../core/recipeCards.ts';
 
 const PREP_SECTION = { kitchen: 'Prepared Items', bar: 'Prepared Items' };
 
@@ -66,7 +66,7 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
       const top = c.view.linked.sort((a, b) => b.sold - a.sold)[0];
       const sellsAs = top?.itemName;
       const image = c.view.linked.map((l) => model.imageOf(l.catalogId)).find(Boolean);
-      list.push({ name: c.card.name, id: recipeIdOf(c.card.name), kind: c.view.kind, ...(c.card.status === 'rough' ? { rough: true } : {}), ...(sellsAs && cardKey(sellsAs) !== cardKey(c.card.name) ? { sellsAs } : {}), ...(image ? { image } : {}) });
+      list.push({ name: c.card.name, id: cardId(c.card), kind: c.view.kind, ...(c.card.status === 'rough' ? { rough: true } : {}), ...(sellsAs && cardKey(sellsAs) !== cardKey(c.card.name) ? { sellsAs } : {}), ...(image ? { image } : {}) });
       sides[side].set(section, list);
     }
     // Sections that sell most first, preps last.
@@ -110,7 +110,7 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
     }
     const manager = atLeast(who.roleLevel, 'manager');
     return send(res, 200, {
-      name: c.card.name, kind, side: sideOf(c), section: sectionOf(c),
+      id: cardId(c.card), name: c.card.name, kind, side: sideOf(c), section: sectionOf(c),
       yields, scale, ...(scaledTo ? { scaledTo } : {}), ...(batchGrams ? { batchGrams: Math.round(batchGrams), weightStated: weight!.stated } : {}), ...(prep && amount > 0 && unit ? { asked: { amount, unit } } : {}),
       ingredients: c.card.ingredients.map((i) => ({ amount: i.amount, unit: i.unit, name: i.name, ...(byName.has(cardKey(i.name)) ? { card: byName.get(cardKey(i.name))!.card.name } : {}), ...(i.yieldPercent && i.yieldPercent !== 100 ? { yieldPercent: i.yieldPercent } : {}), ...(i.note ? { note: i.note } : {}) })),
       ...(c.card.method ? { method: c.card.method } : {}),

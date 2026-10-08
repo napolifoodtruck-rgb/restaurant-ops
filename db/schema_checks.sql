@@ -116,9 +116,37 @@ DO $$ BEGIN
   RAISE NOTICE 'ok: deleting an invoice takes its lines and comparisons';
 END $$;
 
+-- Recipes: one of a name at a time, lines point at what they are, prep items and plans follow by id.
+INSERT INTO recipes (restaurant_id, id, name, yields) VALUES
+  ('00000000-0000-0000-0000-00000000000a', '40000000-0000-0000-0000-000000000001', 'Pizza Dough', '[{"amount": 30, "unit": "each"}]'),
+  ('00000000-0000-0000-0000-00000000000a', '40000000-0000-0000-0000-000000000002', 'Margherita', '[{"amount": 1, "unit": "each"}]');
+INSERT INTO recipe_lines (recipe_id, line_number, name, amount, unit, sub_recipe_id) VALUES
+  ('40000000-0000-0000-0000-000000000002', 1, 'Pizza Dough', 1, 'each', '40000000-0000-0000-0000-000000000001');
+INSERT INTO station_items (restaurant_id, station_id, name, kind, recipe_name) VALUES
+  ('00000000-0000-0000-0000-00000000000a', '60000000-0000-0000-0000-000000000001', 'Dough balls', 'count', 'pizza dough');
+
+SELECT pg_temp.must_fail('one recipe of a name at a time',
+  $$INSERT INTO recipes (restaurant_id, name) VALUES ('00000000-0000-0000-0000-00000000000a', ' pizza dough')$$);
+SELECT pg_temp.must_fail('a line is a recipe or an ingredient, not both',
+  $$INSERT INTO recipe_lines (recipe_id, line_number, name, sub_recipe_id, ingredient_id) VALUES ('40000000-0000-0000-0000-000000000002', 2, 'X', '40000000-0000-0000-0000-000000000001', '501')$$);
+SELECT pg_temp.must_fail('a dish link is for a recipe of our own',
+  $$INSERT INTO dish_links (restaurant_id, kind, catalog_id, item_name, recipe_id) VALUES ('00000000-0000-0000-0000-00000000000b', 'recipe', 'SQ-1', 'Margherita', '40000000-0000-0000-0000-000000000002')$$);
+SELECT pg_temp.must_fail('only a recipe link names a recipe',
+  $$INSERT INTO dish_links (restaurant_id, kind, catalog_id, item_name, recipe_id) VALUES ('00000000-0000-0000-0000-00000000000a', 'notFood', 'SQ-1', 'Gift card', '40000000-0000-0000-0000-000000000002')$$);
+
+UPDATE recipes SET name = 'Neapolitan Dough' WHERE id = '40000000-0000-0000-0000-000000000001';
+-- Taken out, its name is free again.
+UPDATE recipes SET removed_at = now() WHERE id = '40000000-0000-0000-0000-000000000002';
+INSERT INTO recipes (restaurant_id, name) VALUES ('00000000-0000-0000-0000-00000000000a', 'Margherita');
+DO $$ BEGIN
+  IF (SELECT recipe_id FROM station_items WHERE name = 'Dough balls') IS DISTINCT FROM '40000000-0000-0000-0000-000000000001' THEN RAISE EXCEPTION 'check failed: a prep item didn''t find its recipe by name'; END IF;
+  IF (SELECT recipe_name FROM station_items WHERE name = 'Dough balls') <> 'Neapolitan Dough' THEN RAISE EXCEPTION 'check failed: a prep item kept the old recipe name'; END IF;
+  RAISE NOTICE 'ok: prep items find their recipe, and follow a rename';
+END $$;
+
 -- The first sketch's tables are gone.
 DO $$ BEGIN
-  IF to_regclass('public.products') IS NOT NULL OR to_regclass('public.recipes') IS NOT NULL OR to_regclass('public.invoices') IS NOT NULL
+  IF to_regclass('public.products') IS NOT NULL OR to_regclass('public.recipe_ingredients') IS NOT NULL OR to_regclass('public.invoices') IS NOT NULL
      OR to_regclass('public.todo_items') IS NOT NULL OR to_regclass('public.menu_links') IS NOT NULL THEN
     RAISE EXCEPTION 'check failed: unused first-sketch tables are still there';
   END IF;

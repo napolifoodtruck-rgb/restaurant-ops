@@ -10,8 +10,11 @@
  *   POST /api/cards/delete                  { name }
  *   POST /api/cards/no-card                 { items: [posItem] }: a fee or not a drink (corkage)
  *   GET  /api/cards/drafts?winePour=&draftPour=   bar drafts for drinks with no card yet
+ *   GET  /api/cards/history?id=             a recipe's versions, newest first (who, when, what changed)
+ *   GET  /api/cards/version?id=             one version as it read
+ *   POST /api/cards/restore                 { version }: put that version back (a new version itself)
  *
- * Cards live in the kitchen book (every save is kept in its history). Managers and up.
+ * Cards live in the recipe tables (book.ts); every save is kept as a dated version. Managers and up.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -21,11 +24,12 @@ import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, loadBook, saveBook, withAnswer, type LinkAnswers, type Model, type PilotImportAnswers } from './model.ts';
 import { loadAreas, type AreaOf } from './areas.ts';
 import { posItemOf } from './views.ts';
-import { normalizeName as cardKey, recipeId, yieldsToConversions, type RecipeCard } from '../core/recipeCards.ts';
+import { cardId, normalizeName as cardKey, yieldsToConversions, type RecipeCard } from '../core/recipeCards.ts';
 import { tryConvert } from '../core/units.ts';
 import { posName, type PosMenuItem } from '../core/menuLinks.ts';
 import { draftDrinkCards, type BarItem } from '../core/drinkCards.ts';
 import { recipeChecks } from './recipeChecks.ts';
+import { recipeVersion, recipeVersions, restoreRecipeVersion } from './book.ts';
 
 export type CardKind = 'dish' | 'drink' | 'prep' | 'barPrep';
 export interface CardInput {
@@ -99,6 +103,7 @@ function toStored(c: CardInput, before?: RecipeCard, ready?: boolean, by?: strin
   const prep = c.kind === 'prep' || c.kind === 'barPrep';
   const yields = prep ? (c.yields ?? []).filter((y) => y.amount > 0 && y.unit) : [{ amount: 1, unit: 'each' }];
   return {
+    ...(before?.id ? { id: before.id } : {}),
     name: c.name.trim(),
     category: prep ? 'Prep' : 'Menu items',
     // A dish keeps the type it had (Pizza, Appetizers); the others are named for what they are.
@@ -197,7 +202,7 @@ function modelIndex(model: Model) {
 }
 
 export function cardView(model: Model, card: RecipeCard, linked: ReturnType<typeof linkedItems>, areaOf: AreaOf, cards: RecipeCard[] = []) {
-  const id = recipeId(card.name);
+  const id = cardId(card);
   const recipe = model.book.recipes.get(id);
   const kind = kindOf(card);
   const cost = recipe ? model.book.costOf({ kind: 'recipe', id }, recipe.yield) : undefined;
@@ -208,7 +213,7 @@ export function cardView(model: Model, card: RecipeCard, linked: ReturnType<type
   const area = categories.size ? ([...categories].some((c) => areaOf(c) === 'bar') ? 'bar' : 'kitchen') : kind === 'drink' || kind === 'barPrep' ? 'bar' : 'kitchen';
   const usedBy = usedByOf.get(id) ?? [];
   return {
-    name: card.name, kind, area,
+    id, name: card.name, kind, area,
     yields: card.yields,
     status: card.status === 'rough' ? 'rough' : 'ready',
     ingredients: card.ingredients.map((i) => {
@@ -324,7 +329,7 @@ function tidyProposals(model: Model, cards: RecipeCard[], links: LinkAnswers) {
     const kind = kindOf(c);
     let to = titleCase(c.name), why = 'Capitalized like the rest of the book.';
     if (kind === 'dish' || kind === 'drink') {
-      const id = recipeId(c.name);
+      const id = cardId(c);
       const sold = (linked.get(id) ?? []).sort((a, b) => b.sold - a.sold);
       const answered = links.confirm.filter((l) => cardKey(l.recipe) === cardKey(c.name));
       const button = sold.find((b) => !b.variationName || !PRICE_VARIATION.test(b.variationName)) ?? sold[0] ?? answered[0];
@@ -370,7 +375,7 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     const notFood = new Set((book.linkAnswers?.notFood ?? []).map((x) => posName(x)));
     return send(res, 200, {
       cards: (area ? cards.filter(usedOn) : cards).sort((a, b) => a.name.localeCompare(b.name)),
-      allCards: cards.map((c) => ({ name: c.name, id: recipeId(c.name), kind: c.kind, status: c.status, ...cardUnits(c.kind === 'prep' || c.kind === 'barPrep' ? c.yields : [{ amount: 1, unit: 'each' }]) })),
+      allCards: cards.map((c) => ({ name: c.name, id: c.id, kind: c.kind, status: c.status, ...cardUnits(c.kind === 'prep' || c.kind === 'barPrep' ? c.yields : [{ amount: 1, unit: 'each' }]) })),
       products: productsView(model),
       noCard: model.margins.unlinked.filter((u) => u.catalogId && u.netSales > 0 && !notFood.has(u.name) && (!area || areaOf(u.category) === area))
         .map((u) => ({ ...posItem(u.catalogId, u.name), name: u.name, category: u.category, sold: Math.round(u.quantity), netSales: Math.round(u.netSales) })),
@@ -437,7 +442,7 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
       // Where the price comes from shows as soon as the line names something, before an amount.
       const source = product ? model.priceSource.get(product.id) : card ? { from: 'recipe' as const } : undefined;
       if (!(amount > 0) || !i.unit) return source ? { source } : {};
-      const item = product ? { kind: 'product' as const, id: product.id } : card ? { kind: 'recipe' as const, id: recipeId(card.name) } : undefined;
+      const item = product ? { kind: 'product' as const, id: product.id } : card ? { kind: 'recipe' as const, id: cardId(card) } : undefined;
       if (!item) return { problem: 'Not a product or recipe' };
       const r = model.book.costOf(item, { amount, unit: String(i.unit) });
       // Said where the line is, not in a tooltip: why it has no cost, and what fixes it.
@@ -555,6 +560,31 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     for (const item of posItemArg(b.items)) links = withAnswer(links, { type: 'notFood', ...item });
     await saveBook(db, who.restaurantId, 'linkAnswers', links, who.staffId);
     return send(res, 200, { ok: true }), true;
+  }
+
+  if (method === 'GET' && path === '/api/cards/history') {
+    const id = String(url.searchParams.get('id') ?? '');
+    if (!/^[0-9a-f-]{36}$/.test(id)) throw new HttpError(400, 'Which recipe?');
+    return send(res, 200, { versions: await recipeVersions(db, who.restaurantId, id) }), true;
+  }
+
+  if (method === 'GET' && path === '/api/cards/version') {
+    const v = await recipeVersion(db, who.restaurantId, String(url.searchParams.get('id') ?? ''));
+    if (!v) throw new HttpError(404, 'No such version.');
+    const c = v.card;
+    return send(res, 200, { recipeId: v.recipeId, at: v.at, card: { name: c.name, kind: kindOf(c), yields: c.yields, ingredients: c.ingredients.map((i) => ({ amount: i.amount, unit: i.unit, name: i.name, ...(i.yieldPercent && i.yieldPercent !== 100 ? { yieldPercent: i.yieldPercent } : {}), ...(i.note ? { note: i.note } : {}) })), ...(c.method ? { method: c.method } : {}), ...(c.status === 'rough' ? { rough: true } : {}) } }), true;
+  }
+
+  if (method === 'POST' && path === '/api/cards/restore') {
+    const b = await body(req);
+    try {
+      const r = await restoreRecipeVersion(db, who.restaurantId, String(b.version ?? ''), who.staffId, who.name);
+      return send(res, 200, { ok: true, name: r.name }), true;
+    } catch (err) {
+      const status = (err as { status?: number }).status ?? (/No such version/.test((err as Error).message) ? 404 : 500);
+      if (status === 500) throw err;
+      throw new HttpError(status, (err as Error).message);
+    }
   }
 
   if (method === 'GET' && path === '/api/cards/drafts') {
