@@ -74,8 +74,14 @@ The weekly count is Saturday afternoon. The count sheet follows this order, top 
 | Dry storage (prep area) | Top | Pizza boxes |
 | Kitchen shelf | | Oils, apricot purée, vinegars, spices |
 
-Not mapped yet: the bar (bottles, fridges), and where paper and cleaning supplies live.
+Who counts what:
 
-## Open question
+- **Chef:** the kitchen (walk-in, freezer, dry storage, kitchen shelf).
+- **FOH manager:** front-of-house items, cleaning supplies and disposables.
+- **Bar manager:** alcohol.
 
-- Count paper and cleaning supplies too, or only food and bar?
+Not mapped yet: the bar's shelves and fridges, and where FOH items, cleaning supplies and disposables live.
+
+## Settled
+
+- Paper, cleaning supplies and disposables are counted (by the FOH manager), with no gap flag.
