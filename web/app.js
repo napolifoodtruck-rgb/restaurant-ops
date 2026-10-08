@@ -2340,41 +2340,334 @@ async function pickupWindowsCard(me) {
 // ------------------------------------------------------------------ recipe book
 
 /** The book: Kitchen | Bar, then sections (what sells most first, preps last), then cards. */
+// ---------------------------------------------------------------- Recipes: the book, as one tree
+//
+// Managers: a home that only lists what needs a look (a clean book is a clean page), then a tree from
+// the menu down through preps to each ingredient, with a cost chart at every step and markers that
+// roll up (a marker on a dish is somewhere under it). Cooks: today's list, and a search for the rest.
+
+const MARKERS = [
+  ['notBought', '?', 'not bought lately', 'Not bought lately: the recipe may name a product you’ve stopped buying'],
+  ['noCost', '✕', 'no cost', 'No cost: a line with no price, or a unit that won’t convert'],
+  ['red', '●', 'old price', 'A price over 6 months old, or MarginEdge’s last price'],
+  ['yellow', '●', 'price getting old', 'A price over 3 months old'],
+  ['rough', '✎', 'rough', 'Rough: not marked ready, so cooks don’t see it'],
+];
+const hasMarks = (m) => Boolean(m && MARKERS.some(([k]) => m[k]?.length));
+/** Small chips for what's wrong under something: "? not bought lately", "✕ 2 no cost". */
+function markerChips(m, max = 3) {
+  if (!m) return null;
+  const chips = MARKERS.filter(([k]) => m[k]?.length).slice(0, max).map(([k, icon, label]) =>
+    h('span', { class: `mk mk-${k}`, title: `${label}: ${m[k].join(', ')}` }, `${icon} ${m[k].length > 1 ? `${m[k].length} ` : ''}${label}`));
+  return chips.length ? h('div', { class: 'mks' }, chips) : null;
+}
+/** A year of cost as a small line: no axes, the last point marked. */
+function costSpark(vals) {
+  if (!vals?.length) return h('span');
+  const W = 84, H = 22, lo = Math.min(...vals), hi = Math.max(...vals), span = hi - lo || 1;
+  const pts = vals.map((v, i) => [(i / Math.max(1, vals.length - 1)) * (W - 4) + 2, H - 3 - ((v - lo) / span) * (H - 6)]);
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('class', 'spark'); svg.setAttribute('width', W); svg.setAttribute('height', H); svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('aria-hidden', 'true');
+  const line = document.createElementNS(ns, 'polyline'); line.setAttribute('points', pts.map((p) => p.join(',')).join(' ')); svg.append(line);
+  const dot = document.createElementNS(ns, 'circle'); dot.setAttribute('cx', pts.at(-1)[0]); dot.setAttribute('cy', pts.at(-1)[1]); dot.setAttribute('r', '2.5'); svg.append(dot);
+  return svg;
+}
+/** Change over the last 90 days of a sparkline (a point every 4 weeks): up is red (costs more). */
+function sparkChange(vals) {
+  if (!vals?.length) return h('span');
+  const a = vals.at(-4) ?? vals[0], z = vals.at(-1), c = a ? (z - a) / a : 0;
+  if (Math.abs(c) < 0.01) return h('span', { class: 'small muted', text: 'steady' });
+  return h('span', { class: c > 0 ? 'up-bad' : 'down-good', text: `${c > 0 ? '▲' : '▼'} ${Math.round(Math.abs(c) * 100)}%` });
+}
+/** What a recipe cost each week for a year: one line, a dot today, and a readout under the finger. */
+function costChart(points, label) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const W = 720, H = 210, L = 56, R = 72, T = 14, B = 30;
+  const vals = points.map((p) => p.cost), lo = Math.min(...vals), hi = Math.max(...vals), pad = Math.max((hi - lo) * 0.25, hi * 0.04, 0.01);
+  const y0 = Math.max(0, lo - pad), y1 = hi + pad;
+  const x = (i) => L + (i / Math.max(1, points.length - 1)) * (W - L - R), y = (v) => T + (1 - (v - y0) / (y1 - y0)) * (H - T - B);
+  const el = (tag, attrs, text) => { const e = document.createElementNS(ns, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text !== undefined) e.textContent = text; return e; };
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': label, class: 'cost-chart' });
+  for (const t of [y0 + (y1 - y0) * 0.1, (y0 + y1) / 2, y1 - (y1 - y0) * 0.1]) {
+    svg.append(el('line', { x1: L, x2: W - R, y1: y(t), y2: y(t), class: 'grid' }), el('text', { x: L - 8, y: y(t) + 4, 'text-anchor': 'end', class: 'tick' }, `$${t.toFixed(2)}`));
+  }
+  let lastMonth = '';
+  points.forEach((p, i) => { const m = p.date.slice(0, 7); if (m !== lastMonth && i % 2 === 0) { lastMonth = m; if (Number(m.slice(5)) % 2) svg.append(el('text', { x: x(i), y: H - 8, 'text-anchor': 'middle', class: 'tick' }, new Date(`${p.date}T12:00:00`).toLocaleDateString(undefined, { month: 'short' }))); } });
+  svg.append(el('polyline', { points: points.map((p, i) => `${x(i)},${y(p.cost)}`).join(' '), class: 'cost-line' }));
+  const last = points.at(-1);
+  svg.append(el('circle', { cx: x(points.length - 1), cy: y(last.cost), r: 4, class: 'cost-dot' }), el('text', { x: x(points.length - 1) + 8, y: y(last.cost) + 4, class: 'end-label' }, `$${last.cost.toFixed(2)}`));
+  // The readout: a line and a dot at the nearest week, with its date and cost.
+  const hover = el('g', { class: 'hover', visibility: 'hidden' });
+  const vline = el('line', { y1: T, y2: H - B, class: 'hover-line' }), hdot = el('circle', { r: 4, class: 'cost-dot' });
+  const box = el('rect', { width: 128, height: 36, rx: 6, class: 'hover-box' }), t1 = el('text', { class: 'hover-date' }), t2 = el('text', { class: 'hover-cost' });
+  hover.append(vline, hdot, box, t1, t2);
+  svg.append(hover, el('rect', { x: L, y: T, width: W - L - R, height: H - T - B, fill: 'transparent', class: 'hit' }));
+  const at = (e) => {
+    const r = svg.getBoundingClientRect(), px = ((e.clientX - r.left) / r.width) * W;
+    const i = Math.max(0, Math.min(points.length - 1, Math.round(((px - L) / (W - L - R)) * (points.length - 1)))), p = points[i];
+    hover.setAttribute('visibility', 'visible');
+    vline.setAttribute('x1', x(i)); vline.setAttribute('x2', x(i)); hdot.setAttribute('cx', x(i)); hdot.setAttribute('cy', y(p.cost));
+    const bx = Math.min(x(i) + 10, W - 132), by = Math.max(T, y(p.cost) - 44);
+    box.setAttribute('x', bx); box.setAttribute('y', by);
+    t1.setAttribute('x', bx + 10); t1.setAttribute('y', by + 15); t1.textContent = `Week of ${shortDate(p.date)}`;
+    t2.setAttribute('x', bx + 10); t2.setAttribute('y', by + 30); t2.textContent = `$${p.cost.toFixed(2)}`;
+  };
+  svg.addEventListener('pointermove', at); svg.addEventListener('pointerdown', at);
+  svg.addEventListener('pointerleave', () => hover.setAttribute('visibility', 'hidden'));
+  return h('div', { class: 'chart-wrap' }, svg);
+}
+/** Where a line's price comes from, with its age as a colour (yellow past 3 months, red past 6). */
+function sourceBox(src, kind) {
+  if (kind === 'recipe') return h('div', { class: 'src', text: 'its recipe' });
+  if (!src) return h('div', { class: 'src age-red' }, h('b', { text: 'No price' }), 'set one');
+  if (src.from === 'marginedge') return h('div', { class: 'src age-red', title: 'Not on an invoice we’ve read: MarginEdge’s last price' }, h('b', { text: 'MarginEdge' }), 'last price');
+  const days = src.date ? (Date.now() - Date.parse(`${src.date}T12:00:00`)) / 86_400_000 : 0;
+  const age = days > 182 ? ' age-red' : days > 91 ? ' age-yellow' : '';
+  if (src.from === 'manual') return h('div', { class: `src${age}` }, h('b', { text: 'Set by hand' }), src.date ? shortDate(src.date) : '');
+  const vendor = (src.vendor ?? 'Invoice').replace(/,?\s+(inc|llc|co|corp|ltd|company)\.?$/i, '').trim();
+  return h('div', { class: `src${age}`, title: `${src.vendor ?? 'Invoice'}, ${dateWithYear(src.date)}${src.invoices > 1 ? `: the average of ${src.invoices} invoices in the last 60 days` : ''}` },
+    h('b', { text: vendor }), `${days > 300 ? dateWithYear(src.date) : shortDate(src.date)}${src.invoices > 1 ? ` · avg of ${src.invoices}` : ''}`);
+}
+/** Find a recipe or ingredient as you type; picking one opens it in the tree. */
+function treeSearch(me, side, open) {
+  const input = h('input', { type: 'search', class: 'search-big', placeholder: 'Find a recipe or ingredient', 'aria-label': 'Find a recipe or ingredient' });
+  const out = h('div', { class: 'search-pop', hidden: true });
+  let timer, asked = '';
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const q = input.value.trim(); asked = q;
+      if (q.length < 2) { out.hidden = true; return; }
+      const r = await costGet(`/api/costs/search?q=${encodeURIComponent(q)}`);
+      if (asked !== q || !r.ok) return;
+      const hits = [...r.data.recipes.map((x) => ({ ...x, kind: 'recipe', label: x.kind === 'prep' ? 'prep' : 'recipe' })), ...r.data.products.map((x) => ({ ...x, kind: 'product', label: perUnitText(x.perUnit, x.unit) }))];
+      out.hidden = false;
+      fill(out, hits.length ? hits.slice(0, 12).map((x) => h('button', { class: 'linkish lrow', onclick: () => { out.hidden = true; open({ kind: x.kind, id: x.id, name: x.name }); } },
+        h('span', { class: 'grow', text: x.name }), h('span', { class: 'small muted', text: x.label }))) : h('div', { class: 'small muted', text: 'Nothing by that name.' }));
+    }, 180);
+  });
+  return h('div', { class: 'search-wrap' }, input, out);
+}
+
+/** Recipes: the manager's clean-book home, or the cook's list for today. */
 async function recipesScreen(me, state = {}) {
+  if (!atLeast(me.roleLevel, 'manager')) return cookRecipes(me);
   loadingScreen(me, 'recipes', 'Recipes');
-  const r = await api('GET', '/api/recipes');
-  if (!r.ok) return show(shell(me, 'recipes', [h('h1', { text: 'Recipes' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const side = sideOf(me);
-  const q = (state.q ?? '').trim().toLowerCase();
-  const sections = (q ? [...r.data.kitchen, ...r.data.bar] : r.data[side])
-    .map((s) => ({ ...s, cards: s.cards.filter((c) => !q || c.name.toLowerCase().includes(q) || (c.sellsAs ?? '').toLowerCase().includes(q)) }))
-    .filter((s) => s.cards.length);
-  const search = h('input', { type: 'search', placeholder: 'Find a recipe', 'aria-label': 'Find a recipe', value: state.q ?? '', class: 'search' });
-  search.addEventListener('input', () => { clearTimeout(search.timer); search.timer = setTimeout(() => { recipesScreen(me, { q: search.value }).then(() => { const s = document.querySelector('input.search'); s?.focus(); s?.setSelectionRange(s.value.length, s.value.length); }); }, 250); });
-  // Down the side: the sections to jump to, how much of the menu has cards, and (managers) the cards themselves.
-  const all = r.data[side];
-  const count = (pred) => all.reduce((a, sec) => a + sec.cards.filter(pred).length, 0);
-  const preps = count((c) => c.kind === 'prep' || c.kind === 'barPrep');
-  const contents = q ? null : sideBox('In the book', h('div', { class: 'picks' }, all.map((sec) => h('button', { class: 'pick', onclick: () => document.getElementById(`sec-${sec.section}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }) },
-    h('span', { class: 'grow', text: sec.section }), h('span', { class: 'small muted', text: String(sec.cards.length) })))),
-    h('div', { class: 'small muted', text: `${count(() => true) - preps} ${side === 'bar' ? 'drinks' : 'dishes'} and ${preps} preps. Tap one to read it; a prep in it opens its own recipe.` }));
-  const coverage = !q && r.data.coverage?.[side] ? coverageCard(me, r.data.coverage[side], side) : null;
-  const manager = atLeast(me.roleLevel, 'manager');
-  const newRecipe = manager ? h('button', { class: 'btn dark', text: 'New recipe', onclick: async () => { const d = (await api('GET', `/api/cards?area=${side}`)).data; cardEditor(me, d, null, { kind: side === 'bar' ? 'drink' : 'dish', back: { label: 'Recipes', go: (saved) => (saved ? recipePage(me, saved) : recipesScreen(me)), rail: 'recipes' } }); } }) : null;
-  const tools = manager ? sideBox('Recipe costs', h('div', { class: 'small muted', text: 'What each recipe costs from your invoice prices, and its share of the price.' }),
-    sideActions(h('button', { class: 'btn small-btn', text: 'Recipe costs', onclick: () => cardsScreen(me) }),
-      h('button', { class: 'btn small-btn', text: 'Recipe checks', title: 'Ingredients the menu uses but you haven’t bought lately, and what you buy that no recipe uses', onclick: () => recipeChecksScreen(me, { from: returnTo('Recipes', () => recipesScreen(me)) }) }))) : null;
+  const [r, book, sp] = await Promise.all([api('GET', `/api/costs/home?area=${side}`), api('GET', '/api/recipes'), costGet(`/api/costs/sparks?area=${side}`)]);
+  if (!r.ok) return show(shell(me, 'recipes', [h('h1', { text: 'Recipes' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const d = r.data, sparks = sp.ok ? sp.data.sparks : {};
+  const again = (s = state) => recipesScreen(me, s);
+  const here = () => returnTo('Recipes', () => recipesScreen(me, state));
+  const open = (node) => recipeTree(me, [node]);
+  const filter = state.filter;
+  const c = d.counts;
+  // Tiles: only what's there; the marker ones filter the list below, the others open their page.
+  const tile = (key, cls, title, n, sub, go) => (n ? h('button', { class: `attn-tile ${cls}${filter === key ? ' on' : ''}`, 'aria-pressed': filter === key ? 'true' : 'false', onclick: go ?? (() => again({ ...state, filter: filter === key ? undefined : key })) },
+    h('span', { class: 't', text: title }), h('b', { text: String(n) }), h('span', { class: 's', text: sub })) : null);
+  const tiles = [
+    tile('checks', 'red', 'Recipe checks', c.checks, 'not bought lately, bought but in no recipe, vendors gone quiet', () => recipeChecksScreen(me, { from: here() })),
+    tile('noCost', 'red', 'Can’t be fully costed', c.noCost, 'a line with no price, or a unit that won’t convert'),
+    tile('red', 'red', 'Old prices', c.red, 'a price over 6 months old, or MarginEdge’s last'),
+    tile('notBought', 'red', 'Not bought lately', c.notBought, 'the recipe may name something you stopped buying'),
+    tile('yellow', 'amber', 'Prices getting old', c.yellow, 'a price over 3 months old'),
+    tile('rough', 'amber', 'Rough recipes', c.rough, 'not marked ready: cooks don’t see them'),
+    tile('noRecipe', 'blue', 'Selling without a recipe', c.noRecipe, `${dollars(c.noRecipeSales)} in 90 days, not in food cost`, () => coverageScreen(me)),
+  ].filter(Boolean);
+  const shown = (m) => (!filter ? hasMarks(m) : Boolean(m[filter]?.length));
+  const dishes = d.dishes.filter((x) => shown(x.markers)), others = d.others.filter((x) => shown(x.markers));
+  const dishRow = (x) => h('button', { class: 'rt-row', onclick: () => open({ kind: 'recipe', id: x.id, name: x.name, cost: x.plateCost }) },
+    h('div', { class: 'nm' }, h('b', { text: x.name }), markerChips(x.markers)),
+    h('div', {}, costSpark(sparks[x.id])), h('div', { class: 'num' }, sparkChange(sparks[x.id])),
+    h('div', { class: 'num', text: dollars(x.plateCost, { cents: true }) }), h('div', { class: 'num', text: dollars(x.price, { cents: true }) }),
+    h('div', { class: 'num strong', text: x.share !== undefined ? `${Math.round(x.share * 100)}%` : '–' }), h('div', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
+  const otherRow = (x) => h('button', { class: 'rt-row', onclick: () => open({ kind: 'recipe', id: x.id, name: x.name }) },
+    h('div', { class: 'nm' }, h('b', { text: x.name }), markerChips(x.markers)), h('div', { class: 'small muted', text: KIND_NAMES[x.kind] ?? x.kind }),
+    h('div'), h('div'), h('div'), h('div'), h('div', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
+  const clean = !d.dishes.length && !d.others.length;
+  const list = clean
+    ? h('section', { class: 'card all-clear' }, h('div', { class: 'big good-text', text: '✓' }), h('h2', { text: 'Nothing needs a look' }),
+      h('div', { class: 'small muted', text: `All ${d.allDishes} ${side === 'bar' ? 'drinks' : 'dishes'} are costed from recent prices, and every recipe is ready.` }))
+    : h('section', { class: 'card' },
+      h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: filter ? `${MARKERS.find(([k]) => k === filter)?.[3] ?? 'Needs a look'}` : 'Needs a look' }),
+        filter ? h('button', { class: 'link', text: 'Show everything that needs a look', onclick: () => again({ ...state, filter: undefined }) }) : h('span', { class: 'small muted', text: `${d.dishes.length} of ${d.allDishes} ${side === 'bar' ? 'drinks' : 'dishes'}` })),
+      dishes.length ? h('div', { class: 'ttable' },
+        h('div', { class: 'rt-row head' }, ['Dish', 'Cost, 12 months', '90 days', 'Plate cost', 'Price', 'Food cost', ''].map((t, i) => h('div', { class: i > 1 && i < 6 ? 'num' : '', text: t }))),
+        dishes.map(dishRow)) : null,
+      others.length ? [h('h3', { class: 'sub-h', text: 'Recipes no selling dish uses' }), h('div', { class: 'ttable' }, others.map(otherRow))] : null,
+      !dishes.length && !others.length ? h('div', { class: 'small muted', text: 'Nothing with that marker.' }) : null,
+      h('div', { class: 'small muted', text: 'A marker on a dish is somewhere under it: tap down to find it. Fix it, and the dish leaves this list.' }));
+  const newRecipe = h('button', { class: 'btn dark', text: 'New recipe', onclick: async () => { const cd = (await api('GET', `/api/cards?area=${side}`)).data; cardEditor(me, cd, null, { kind: side === 'bar' ? 'drink' : 'dish', back: { label: 'Recipes', go: (saved) => (saved ? recipePage(me, saved) : recipesScreen(me)), rail: 'recipes' } }); } });
+  const coverage = book.ok && book.data.coverage?.[side] ? coverageCard(me, book.data.coverage[side], side) : null;
+  const recent = d.recent.length ? sideBox('Recently changed', h('div', { class: 'list compact' }, d.recent.map((x) => h('button', { class: 'linkish lrow', onclick: () => open({ kind: 'recipe', id: x.id, name: x.name }) },
+    h('span', { class: 'grow', text: x.name }), h('span', { class: 'small muted', text: `${x.by ?? ''} · ${when(x.at)}` }))))) : null;
+  const browse = sideBox('Browse the whole book', sideActions(
+    h('button', { class: 'btn small-btn', text: `Every ${side === 'bar' ? 'drink' : 'dish'} (${d.allDishes})`, onclick: () => recipeTree(me, [{ kind: 'menu', name: side === 'bar' ? 'Every drink' : 'Every dish' }]) }),
+    h('button', { class: 'btn small-btn', text: 'All recipes A–Z', onclick: () => recipesAZ(me, here()) }),
+    h('button', { class: 'btn small-btn', text: 'Recipe costs', onclick: () => cardsScreen(me) })));
   show(shell(me, 'recipes', [
     h('header', { class: 'row wrap' },
-      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: q ? 'Kitchen and bar' : AREA_NAMES[side] }), h('h1', { text: 'Recipes' })),
-      h('div', { class: 'row wrap' }, search, q ? null : sideSwitch(me, () => recipesScreen(me)), newRecipe)),
-    page(sections.length ? h('div', { class: 'book' }, sections.map((s) => h('section', { class: 'card', id: `sec-${s.section}` },
-      h('div', { class: 'row' }, h('h2', { class: 'grow', text: s.section }), h('span', { class: 'small muted', text: String(s.cards.length) })),
-      h('div', { class: 'book-list' }, s.cards.map((c) => h('button', { class: `book-item${c.image ? ' with-photo' : ''}`, onclick: () => recipePage(me, c.name) },
-        photo(c.image), h('span', { text: c.name }), c.rough ? h('span', { class: 'tag rough', text: 'rough' }) : null)))))
-    ) : h('div', { class: 'card small muted', text: q ? 'No recipe by that name.' : `No ${side === 'bar' ? 'drink' : ''} recipes yet.` }),
-    [contents, coverage, tools]),
+      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: AREA_NAMES[side] }), h('h1', { text: 'Recipes' })),
+      h('div', { class: 'row wrap' }, treeSearch(me, side, open), sideSwitch(me, () => recipesScreen(me)), newRecipe)),
+    page([tiles.length ? h('div', {}, h('div', { class: 'small muted strong attn-h', text: 'Needs attention' }), h('div', { class: 'attn' }, tiles)) : null, list], [coverage, recent, browse]),
   ]));
+}
+
+/** The tree: Recipes › a dish › a prep › an ingredient. Each step shows its cost over time and its lines. */
+async function recipeTree(me, trail) {
+  const node = trail.at(-1);
+  const side = sideOf(me);
+  const go = (next) => recipeTree(me, next);
+  const crumbs = h('nav', { class: 'crumbs', 'aria-label': 'Where you are' },
+    h('button', { class: 'crumb', onclick: () => recipesScreen(me) }, h('span', { text: 'Recipes' })),
+    trail.map((n, i) => [h('span', { class: 'crumb-sep', 'aria-hidden': 'true', text: '›' }),
+      h('button', { class: `crumb${i === trail.length - 1 ? ' on' : ''}`, 'aria-current': i === trail.length - 1 ? 'page' : undefined, onclick: () => go(trail.slice(0, i + 1)) },
+        h('span', { text: n.name }), n.cost !== undefined ? h('b', { text: dollars(n.cost, { cents: true }) }) : null)]));
+  const down = (x) => go([...trail, x]);
+  loadingScreen(me, 'recipes', node.name);
+  let main, sideBoxes;
+  if (node.kind === 'menu') [main, sideBoxes] = await treeMenu(me, side, down);
+  else if (node.kind === 'product') [main, sideBoxes] = await treeProduct(me, node, trail, down, () => recipeTree(me, trail));
+  else [main, sideBoxes] = await treeRecipe(me, node, trail, down, () => recipeTree(me, trail));
+  show(shell(me, 'recipes', [crumbs, page(main, sideBoxes)]));
+}
+
+async function treeMenu(me, side, down) {
+  const [r, sp] = await Promise.all([costGet(`/api/costs/menu?area=${side}`), costGet(`/api/costs/sparks?area=${side}`)]);
+  if (!r.ok) return [[h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })], []];
+  const sparks = sp.ok ? sp.data.sparks : {};
+  const cats = new Map();
+  for (const x of r.data.dishes) cats.set(x.category ?? 'Other', [...(cats.get(x.category ?? 'Other') ?? []), x]);
+  return [[...cats].map(([cat, xs]) => h('section', { class: 'card' }, h('div', { class: 'row' }, h('h2', { class: 'grow', text: cat }), h('span', { class: 'small muted', text: `${xs.length}` })),
+    h('div', { class: 'ttable' }, h('div', { class: 'rt-row head' }, ['Dish', 'Cost, 12 months', '90 days', 'Plate cost', 'Price', 'Food cost', ''].map((t, i) => h('div', { class: i > 1 && i < 6 ? 'num' : '', text: t }))),
+      xs.sort((a, b) => (b.share ?? 0) - (a.share ?? 0)).map((x) => h('button', { class: 'rt-row', onclick: () => down({ kind: 'recipe', id: x.id, name: x.name, cost: x.plateCost }) },
+        h('div', { class: 'nm' }, h('b', { text: x.name }), markerChips(x.markers, 2)), h('div', {}, costSpark(sparks[x.id])), h('div', { class: 'num' }, sparkChange(sparks[x.id])),
+        h('div', { class: 'num', text: dollars(x.plateCost, { cents: true }) }), h('div', { class: 'num', text: dollars(x.price, { cents: true }) }),
+        h('div', { class: 'num strong', text: x.share !== undefined ? `${Math.round(x.share * 100)}%` : '–' }), h('div', { class: 'chev', 'aria-hidden': 'true', text: '›' })))))),
+  [sideBox('The markers', markerKey())]];
+}
+function markerKey() {
+  return h('div', { class: 'alertlist' }, MARKERS.map(([k, icon, , text]) => h('div', { class: 'a' }, h('span', { class: `mk mk-${k}`, text: icon }), h('span', { text }))),
+    h('div', { class: 'small muted', text: 'A marker on a dish is somewhere under it: tap down to find it.' }));
+}
+/** "Needs a look" for a recipe or ingredient: each marker with what it's on, and the swap when there is one. */
+function needsALook(me, markers, stale, reload) {
+  if (!hasMarks(markers)) return sideBox('Needs a look', h('div', { class: 'small good-text', text: '✓ Nothing under this one.' }));
+  const staleBox = (x) => h('div', { class: 'rstale' },
+    h('div', { class: 'small' }, h('b', { text: x.name }), ` hasn’t been on an invoice ${x.last ? `since ${shortDate(x.last.date)}` : 'we have'}, though the menu uses about ${x.perWeek >= 10 ? Math.round(x.perWeek) : Math.round(x.perWeek * 10) / 10} ${UNIT_LABEL(x.unit)} a week.`,
+      x.likely ? [' You’ve been buying ', h('b', { text: x.likely.name }), `${x.likely.vendor ? ` (${x.likely.vendor})` : ''}${x.likely.inNoRecipe ? ', and no recipe uses it' : ''}.`] : null),
+    h('div', { class: 'row tight wrap' },
+      x.likely ? h('button', { class: 'btn small-btn dark', text: 'Swap it in', title: `Swap in ${x.likely.name}`, onclick: (e) => pageAction(async () => { busy(e.currentTarget, true); const res = await api('POST', '/api/cards/swap', { from: x.productId, to: x.likely.productId, recipes: x.recipes }); if (res.ok) reload(); else busy(e.currentTarget, false); }) }) : null,
+      h('button', { class: 'btn small-btn', text: 'It’s right as is', onclick: (e) => pageAction(async () => { busy(e.currentTarget, true); await api('POST', '/api/answers', { type: 'dismiss', dedupeKey: `ingredient:notBought:${x.productId}`, note: `${x.name}: right as is, though not bought lately` }); reload(); }) }),
+      h('button', { class: 'link', text: 'More', onclick: () => recipeChecksScreen(me, { from: returnTo('Back', reload) }) })));
+  return sideBox('Needs a look',
+    h('div', { class: 'alertlist' }, MARKERS.filter(([k]) => markers[k]?.length && k !== 'notBought').map(([k, icon, label]) => h('div', { class: 'a' }, h('span', { class: `mk mk-${k}`, text: icon }), h('span', {}, h('b', { text: label }), `: ${markers[k].join(', ')}`)))),
+    (stale ?? []).map(staleBox));
+}
+async function treeRecipe(me, node, trail, down, reload) {
+  const q = node.amount ? `?amount=${node.amount}&unit=${encodeURIComponent(node.unit)}` : '';
+  const [r, hist] = await Promise.all([costGet(`/api/costs/recipe/${encodeURIComponent(node.id)}${q}`, true), costGet(`/api/costs/history/${encodeURIComponent(node.id)}`, true)]);
+  if (!r.ok) return [[h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })], []];
+  const d = r.data, hs = hist.ok ? hist.data : null;
+  const dish = d.price !== undefined;
+  const parent = trail.at(-2);
+  const head = h('section', { class: 'card' },
+    h('div', { class: 'row wrap' },
+      h('div', { class: 'grow' }, h('div', { class: 'row tight wrap' }, h('h2', { text: d.name }), d.rough ? h('span', { class: 'tag rough', text: 'Rough' }) : null),
+        h('div', { class: 'small muted', text: dish ? 'Plate cost as the recipe is written, priced at each week’s invoices' : `Prep · one batch is ${unitAmount(d.yield.amount, d.yield.unit)}${node.amount && parent ? ` · ${parent.name} uses ${unitAmount(node.amount, node.unit)}` : ''}` })),
+      h('div', { class: 'right-col' }, h('div', { class: 'big', text: dollars(dish ? d.total : d.perBatch, { cents: true }) }),
+        h('div', { class: 'small muted', text: dish ? `${d.total && d.price ? Math.round((d.total / d.price) * 100) : '–'}% of the ${dollars(d.price, { cents: true })} it sells for` : 'a batch' }))),
+    hs && hs.points.length > 1 ? [costChart(hs.points, `${d.name} cost over 12 months`),
+      h('div', { class: 'small muted', text: `A year ago ${dollars(hs.points[0].cost, { cents: true })} · 90 days ago ${dollars(hs.points.at(-14)?.cost ?? hs.points[0].cost, { cents: true })} · now ${dollars(hs.points.at(-1).cost, { cents: true })}` })] : null);
+  const lines = h('section', { class: 'card' }, h('h2', { text: 'What goes in' }),
+    h('div', { class: 'ttable' }, h('div', { class: 'lrow2 head' }, ['Goes in', 'Amount', 'Price from', 'Cost', 'Share', ''].map((t, i) => h('div', { class: i === 1 || i === 3 || i === 4 ? 'num' : '', text: t }))),
+      d.lines.map((l) => {
+        const can = l.kind === 'recipe' || l.kind === 'product';
+        return h(can ? 'button' : 'div', { class: `lrow2${can ? ' clickable' : ''}`, onclick: can ? () => down({ kind: l.kind, id: l.id, name: l.name, amount: l.amount, unit: l.unit, cost: l.cost }) : undefined },
+          h('div', { class: 'nm' }, h('span', {}, h('b', { text: l.name }), l.kind === 'recipe' ? h('span', { class: 'small muted', text: ' · recipe' }) : null), markerChips(l.markers, 2)),
+          h('div', { class: 'num small', text: unitAmount(l.amount, UNIT_LABEL(l.unit)) }),
+          h('div', {}, sourceBox(l.source, l.kind)),
+          h('div', { class: 'num' }, l.complete ? dollars(l.cost, { cents: true }) : h('span', { class: 'warn-text small', text: 'no cost' })),
+          h('div', { class: 'num small', text: `${Math.round(l.share * 100)}%` }),
+          h('div', { class: 'chev', 'aria-hidden': 'true', text: can ? '›' : '' }));
+      })));
+  const moved = hs?.drivers?.length ? sideBox('What moved it in 90 days', h('div', { class: 'moved' }, hs.drivers.slice(0, 5).map((x) => h('div', { class: 'row' }, h('span', { class: 'grow', text: x.name }), h('span', { class: x.change > 0 ? 'up-bad' : 'down-good', text: `${x.change > 0 ? '+' : '−'}${dollars(Math.abs(x.change), { cents: true })}` }))))) : null;
+  const recipeName = d.name;
+  const actions = sideBox(dish ? `Sells as ${recipeName}` : 'Used in',
+    !dish && d.usedIn.length ? h('div', { class: 'small' }, d.usedIn.map((u, k) => [k ? ', ' : '', h('button', { class: 'linkish card-link', text: u.name, onclick: () => recipeTree(me, [{ kind: 'recipe', id: u.id, name: u.name }]) })])) : null,
+    dish ? h('div', { class: 'small muted', text: `${(d.sold ?? 0).toLocaleString()} sold in 90 days` }) : null,
+    sideActions(h('button', { class: 'btn small-btn', text: 'Open the recipe', onclick: () => recipePage(me, recipeName, { from: returnTo(recipeName, reload) }) }),
+      h('button', { class: 'btn small-btn', text: 'Edit recipe', onclick: async () => { const cd = (await api('GET', '/api/cards')).data; const c = cd.cards.find((x) => x.name === recipeName); if (c) cardEditor(me, cd, c, { back: { label: recipeName, go: () => { costCache.clear(); reload(); }, rail: 'recipes' } }); } })));
+  return [[head, lines], [needsALook(me, d.markers, d.stale, () => { costCache.clear(); reload(); }), moved, actions]];
+}
+async function treeProduct(me, node, trail, down, reload) {
+  const q = node.amount ? `?amount=${node.amount}&unit=${encodeURIComponent(node.unit)}` : '';
+  const r = await costGet(`/api/costs/product/${encodeURIComponent(node.id)}${q}`, true);
+  if (!r.ok) return [[h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })], []];
+  const d = r.data;
+  const [main, boxes] = productNode(d, node, (next) => { const n = next.at(-1); recipeTree(me, n.kind === 'recipe' ? [...trail, n] : next); });
+  // Where its price comes from, and a price set by hand when there's none (or it's wrong).
+  const priceIn = h('input', { inputmode: 'decimal', class: 'short', placeholder: '0.00', 'aria-label': `Price of ${d.name}` });
+  const msg = h('span', { class: 'small error' });
+  const setForm = h('div', { class: 'row tight wrap', hidden: true }, h('span', { text: '$' }), priceIn, h('span', { class: 'small', text: `a ${UNIT_LABEL(d.unit)}` }),
+    h('button', { class: 'btn small-btn dark', text: 'Set', onclick: () => pageAction(async () => {
+      const v = parseAmount(priceIn.value.replace('$', ''));
+      if (!(v > 0)) return (msg.textContent = 'A price like 4.25');
+      const res = await api('POST', '/api/answers', { type: 'price', productId: d.id, price: v, amount: 1, unit: d.unit });
+      if (!res.ok) return (msg.textContent = res.data.error ?? 'Not saved.');
+      costCache.clear(); reload();
+    }) }), msg);
+  const src = d.source;
+  const source = sideBox('Where the price comes from',
+    h('div', {}, sourceBox(src, 'product')),
+    h('div', { class: 'small muted', text: !src ? 'No invoice we’ve read has it, and MarginEdge has no last price.' : src.from === 'marginedge' ? 'Not on an invoice we’ve read: this is MarginEdge’s last price, which may be old.' : src.from === 'manual' ? 'Set by hand. A newer invoice takes over when one comes in.' : src.invoices > 1 ? `The average of ${src.invoices} invoices in the last 60 days, latest shown.` : 'The latest invoice.' }),
+    h('button', { class: 'link', text: src ? 'Set a price by hand' : 'Set a price', onclick: () => { setForm.hidden = false; priceIn.focus(); } }), setForm);
+  return [main, [needsALook(me, d.markers, d.stale, () => { costCache.clear(); reload(); }), source, ...boxes]];
+}
+
+/** Every recipe on a side, A to Z, for when you know it's there. */
+async function recipesAZ(me, from) {
+  loadingScreen(me, 'recipes', 'All recipes');
+  const side = sideOf(me);
+  const r = await api('GET', '/api/recipes');
+  const all = (r.ok ? r.data[side] : []).flatMap((s) => s.cards).sort((a, b) => a.name.localeCompare(b.name));
+  const search = h('input', { type: 'search', class: 'search-big', placeholder: 'Find a recipe', 'aria-label': 'Find a recipe' });
+  const list = h('div', { class: 'az' });
+  const draw = () => { const q = search.value.trim().toLowerCase(); fill(list, all.filter((c) => !q || c.name.toLowerCase().includes(q)).map((c) => h('button', { class: 'az-row', onclick: () => recipeTree(me, [{ kind: 'recipe', id: c.id, name: c.name }]) }, h('span', { class: 'grow', text: c.name }), c.rough ? h('span', { class: 'tag rough', text: 'rough' }) : null, h('span', { class: 'chev', text: '›' })))); };
+  search.addEventListener('input', draw); draw();
+  show(shell(me, 'recipes', [h('header', { class: 'row wrap' }, h('div', { class: 'grow' }, h('div', { class: 'kicker', text: AREA_NAMES[side] }), h('h1', { text: 'All recipes' })),
+    h('div', { class: 'row wrap' }, search, sideSwitch(me, () => recipesAZ(me, from)), from ? h('button', { class: 'btn', text: `← ${from.label}`, onclick: () => from.go() }) : null)),
+  page(h('section', { class: 'card' }, list), [])]));
+}
+
+/** For cooks: what's on their station's list today (each opens its recipe, scaled), then a search for the rest. */
+async function cookRecipes(me) {
+  loadingScreen(me, 'recipes', 'Recipes');
+  const [book, prep] = await Promise.all([api('GET', '/api/recipes'), api('GET', '/api/prep')]);
+  const all = book.ok ? [...book.data.kitchen, ...book.data.bar].flatMap((s) => s.cards) : [];
+  const p = prep.ok ? prep.data : null;
+  const stationId = me.device?.stationId ?? recall('station');
+  const stations = p ? (stationId && p.stations.some((s) => s.id === stationId) ? p.stations.filter((s) => s.id === stationId) : p.stations) : [];
+  const lists = await Promise.all(stations.map(async (s) => ({ s, v: (await api('GET', `/api/prep/${s.id}/${p.today}`)).data })));
+  const today = lists.map(({ s, v }) => ({ s, lines: (v?.lines ?? []).filter((l) => l.recipeName && (l.kind === 'task' || (l.toMake ?? 0) > 0)) })).filter((x) => x.lines.length);
+  const results = h('div', { class: 'cook-list' });
+  const search = h('input', { type: 'search', class: 'search-big', placeholder: 'Find a recipe', 'aria-label': 'Find a recipe' });
+  search.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    fill(results, q.length < 2 ? null : all.filter((c) => c.name.toLowerCase().includes(q) || (c.sellsAs ?? '').toLowerCase().includes(q)).slice(0, 20)
+      .map((c) => h('button', { onclick: () => recipePage(me, c.name, { from: returnTo('Recipes', () => cookRecipes(me)) }) }, h('span', { text: c.name }), h('span', { class: 'chev', text: '›' }))));
+  });
+  show(shell(me, 'recipes', [
+    h('header', { class: 'row wrap' }, h('div', { class: 'grow' }, h('h1', { text: 'Recipes' }))),
+    page([
+      today.length ? today.map(({ s, lines }) => h('section', { class: 'card' }, h('div', { class: 'row' }, h('h2', { class: 'grow', text: `On the ${s.name} list today` }), h('span', { class: 'small muted', text: 'opens scaled to what the list says' })),
+        h('div', { class: 'cook-list' }, lines.map((l) => h('button', { onclick: () => recipeSheet(me, l.recipeName, { amount: l.toMake, unit: l.unit }) },
+          h('span', { text: l.recipeName }), h('span', { class: 'small muted', text: l.toMake ? `make ${amountWithWeight(l.toMake, l.unit, l)} ›` : '›' })))))) : h('section', { class: 'card small muted', text: 'Nothing with a recipe on today’s list yet.' }),
+      h('section', { class: 'card' }, h('h2', { text: 'Any other recipe' }), search, results),
+    ], []),
+  ]));
+  search.focus({ preventScroll: true });
 }
 
 /** One card, on its own page in the book. */
@@ -3987,8 +4280,8 @@ function hoursView(d, state, pickMetric) {
 
 /** Answers already fetched this visit, so stepping back up the trail is instant. */
 const costCache = new Map();
-async function costGet(path) {
-  if (costCache.has(path)) return costCache.get(path);
+async function costGet(path, fresh = false) {
+  if (!fresh && costCache.has(path)) return costCache.get(path);
   const r = await api('GET', path);
   if (r.ok) costCache.set(path, r);
   return r;

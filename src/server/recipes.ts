@@ -21,7 +21,7 @@ import { loadAreas } from './areas.ts';
 import { coverageOf } from './views.ts';
 import { cardView, kindOf, lineState, linkedItems, yieldConversions } from './cards.ts';
 import { tryConvert } from '../core/units.ts';
-import { normalizeName as cardKey } from '../connectors/marginedgeRecipes.ts';
+import { normalizeName as cardKey, recipeId as recipeIdOf } from '../connectors/marginedgeRecipes.ts';
 
 const PREP_SECTION = { kitchen: 'Prepared Items', bar: 'Prepared Items' };
 
@@ -58,7 +58,7 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
   };
 
   if (path === '/api/recipes') {
-    const sides: Record<'kitchen' | 'bar', Map<string, { name: string; kind: string; sellsAs?: string; image?: string }[]>> = { kitchen: new Map(), bar: new Map() };
+    const sides: Record<'kitchen' | 'bar', Map<string, { name: string; id: string; kind: string; sellsAs?: string; image?: string }[]>> = { kitchen: new Map(), bar: new Map() };
     for (const c of cards) {
       const side = sideOf(c), section = sectionOf(c);
       const list = sides[side].get(section) ?? [];
@@ -66,7 +66,7 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
       const top = c.view.linked.sort((a, b) => b.sold - a.sold)[0];
       const sellsAs = top?.itemName;
       const image = c.view.linked.map((l) => model.imageOf(l.catalogId)).find(Boolean);
-      list.push({ name: c.card.name, kind: c.view.kind, ...(c.card.status === 'rough' ? { rough: true } : {}), ...(sellsAs && cardKey(sellsAs) !== cardKey(c.card.name) ? { sellsAs } : {}), ...(image ? { image } : {}) });
+      list.push({ name: c.card.name, id: recipeIdOf(c.card.name), kind: c.view.kind, ...(c.card.status === 'rough' ? { rough: true } : {}), ...(sellsAs && cardKey(sellsAs) !== cardKey(c.card.name) ? { sellsAs } : {}), ...(image ? { image } : {}) });
       sides[side].set(section, list);
     }
     // Sections that sell most first, preps last.

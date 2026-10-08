@@ -44,7 +44,8 @@ export function costHistory(input: HistoryInput): { points: CostPoint[]; drivers
   const dates: string[] = [];
   for (let d = weeks * 7; d >= 0; d -= every) dates.push(addDays(input.today, -d));
   if (dates.at(-1) !== input.today) dates.push(input.today);
-  const price = (l: PricedLine, date: string) => priceOn(input.pricesOf(l.productId), date) ?? input.priceNow(l.productId);
+  // Today is today's price (the 60-day average the plate cost uses), so the chart ends where the plate cost reads.
+  const price = (l: PricedLine, date: string) => (date === input.today ? input.priceNow(l.productId) : undefined) ?? priceOn(input.pricesOf(l.productId), date) ?? input.priceNow(l.productId);
   const complete = input.lines.every((l) => price(l, input.today) !== undefined);
   const points = dates.map((date) => ({ date, cost: Math.round(input.lines.reduce((a, l) => a + l.amount * (price(l, date) ?? 0), 0) * 100) / 100 }));
   // What moved it over the last 90 days, biggest first.

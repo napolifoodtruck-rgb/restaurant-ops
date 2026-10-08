@@ -391,6 +391,15 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   const tidied = (await db!.query<{ value: any }>("SELECT value FROM kitchen_book WHERE key = 'linkAnswers'")).rows[0]!.value;
   assert.deepEqual((typeof tidied === 'string' ? JSON.parse(tidied) : tidied).confirm.filter((c: any) => c.catalogId === 'V-LEM').map((c: any) => c.recipe), ['Lemonade']);
 
+  // Recipes home (managers): only what needs a look, with counts for the tiles; the tree's pages carry markers.
+  assert.equal((await call('GET', '/api/costs/home?area=kitchen', { cookies: marcoOnExpo })).status, 403);
+  const home = (await call('GET', '/api/costs/home?area=bar', { cookies: ownerSession })).json;
+  assert.ok(home.counts && Array.isArray(home.dishes) && Array.isArray(home.others) && Array.isArray(home.recent));
+  assert.ok(home.recent.some((x: any) => x.name === 'Lemonade' && x.by === 'Owner')); // saved in the app: who and when
+  const sodaNode = (await call('GET', `/api/costs/recipe/${encodeURIComponent('me-house-soda')}`, { cookies: ownerSession })).json;
+  assert.ok(sodaNode.markers && sodaNode.lines.every((l: any) => l.markers));
+  assert.equal((await call('GET', `/api/costs/history/${encodeURIComponent('me-house-soda')}`, { cookies: ownerSession })).status, 200);
+
   // Orders: managers only; never marked sent before a manager approves; no vendors without invoices.
   assert.equal((await call('GET', '/api/orders', { cookies: marcoOnExpo })).status, 403);
   assert.deepEqual((await call('GET', '/api/orders', { cookies: ownerSession })).json.vendors, []);

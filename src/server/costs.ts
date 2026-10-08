@@ -16,7 +16,11 @@ import type { Db } from './db.ts';
 import { HttpError, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { areaFor, loadAreas } from './areas.ts';
-import { getModel, type Model } from './model.ts';
+import { getModel, loadBook, type Model } from './model.ts';
+import { hasMarkers, treeAlerts, type Markers } from './treeAlerts.ts';
+import { recipeChecks } from './recipeChecks.ts';
+import { kindOf } from './cards.ts';
+import { recipeId as idOfName } from '../connectors/marginedgeRecipes.ts';
 import { priceHistory, purchaseKind } from '../core/costReports.ts';
 import { squareModifierSales } from '../connectors/square.ts';
 import { storedModifierSales } from './squareSync.ts';
@@ -158,6 +162,57 @@ export async function costRoutes(db: Db, res: ServerResponse, url: URL, who: Sig
       vendors: [...vendors.values()].filter((v) => v.spent > 0).sort((a, b) => b.spent - a.spent).map((v) => ({ vendor: v.vendor, spent: cents(v.spent), items: [...v.items.values()].filter((i) => i.spent > 0).sort((a, b) => b.spent - a.spent).map((i) => ({ ...i, spent: cents(i.spent) })) })) }), true;
   }
 
+  const dismissed = async () => ((await loadBook(db, who.restaurantId)).linkAnswers?.dismissed ?? []).map((d) => d.dedupeKey);
+
+  // The Recipes home for managers: only what needs a look. Selling dishes with a marker anywhere
+  // under them, recipes no selling dish uses that have one, counts for the tiles, and recent changes.
+  if (path === '/api/costs/home') {
+    const area = areaFor(who, url.searchParams.get('area'));
+    const areaOf = await loadAreas(db, who.restaurantId);
+    const gone = await dismissed();
+    const alerts = treeAlerts(model, today, gone);
+    const book2 = await loadBook(db, who.restaurantId);
+    const sold = model.margins.dishes.filter((d) => areaOf(d.category) === area && d.quantity > 0);
+    const seen = new Set<string>();
+    const dishes = sold.filter((d) => !seen.has(d.recipeId) && seen.add(d.recipeId)).map((d) => ({
+      id: d.recipeId, name: d.name, category: d.category, plateCost: cents(d.cost.total), complete: d.cost.complete,
+      price: cents(d.averagePrice), share: d.averagePrice > 0 ? d.cost.total / d.averagePrice : undefined, markers: alerts.recipes.get(d.recipeId) ?? {},
+    }));
+    // Everything a selling dish (either side) reaches: the rest is "not under any dish".
+    const reach = new Set<string>();
+    const walk = (id: string) => { if (reach.has(id)) return; reach.add(id); for (const i of model.book.recipes.get(id)?.ingredients ?? []) if (i.item.kind === 'recipe') walk(i.item.id); };
+    for (const d of model.margins.dishes) if (d.quantity > 0) walk(d.recipeId);
+    const sideOfCard = (k: string) => (k === 'drink' || k === 'barPrep' ? 'bar' : 'kitchen');
+    const others = (book2.recipeCards ?? []).filter((c) => sideOfCard(kindOf(c)) === area && !reach.has(idOfName(c.name)))
+      .map((c) => ({ id: idOfName(c.name), name: c.name, kind: kindOf(c), markers: alerts.recipes.get(idOfName(c.name)) ?? {} }))
+      .filter((x) => hasMarkers(x.markers));
+    const flagged = [...dishes.filter((d) => hasMarkers(d.markers)), ...others];
+    const count = (k: keyof Markers) => flagged.filter((x) => x.markers[k]?.length).length;
+    const checks = recipeChecks(model, today, gone);
+    const unlinked = model.margins.unlinked.filter((u) => u.catalogId && u.netSales > 0 && areaOf(u.category) === area);
+    const recent = (book2.recipeCards ?? []).filter((c) => c.updatedAt && sideOfCard(kindOf(c)) === area).sort((a, b) => b.updatedAt!.localeCompare(a.updatedAt!)).slice(0, 6)
+      .map((c) => ({ id: idOfName(c.name), name: c.name, at: c.updatedAt, by: c.updatedBy }));
+    return send(res, 200, {
+      area, dishes: dishes.filter((d) => hasMarkers(d.markers)), allDishes: dishes.length, others,
+      counts: { notBought: count('notBought'), noCost: count('noCost'), red: count('red'), yellow: count('yellow'), rough: count('rough'),
+        checks: checks.notBought.filter((x) => x.side === area).length + checks.quietVendors.filter((x) => x.side === area).length + checks.notInRecipes.filter((x) => x.side === area).length,
+        noRecipe: unlinked.length, noRecipeSales: Math.round(unlinked.reduce((a, u) => a + u.netSales, 0)) },
+      recent,
+    }), true;
+  }
+  // Every selling dish on a side, with its markers (the whole menu, when the manager wants it all).
+  if (path === '/api/costs/menu') {
+    const area = areaFor(who, url.searchParams.get('area'));
+    const areaOf = await loadAreas(db, who.restaurantId);
+    const alerts = treeAlerts(model, today, await dismissed());
+    const seen = new Set<string>();
+    const dishes = model.margins.dishes.filter((d) => areaOf(d.category) === area && d.quantity > 0 && !seen.has(d.recipeId) && seen.add(d.recipeId)).map((d) => ({
+      id: d.recipeId, name: d.name, category: d.category, plateCost: cents(d.cost.total), complete: d.cost.complete,
+      price: cents(d.averagePrice), share: d.averagePrice > 0 ? d.cost.total / d.averagePrice : undefined, markers: alerts.recipes.get(d.recipeId) ?? {},
+    }));
+    return send(res, 200, { area, dishes }), true;
+  }
+
   // Cost over time: one recipe in full (a point a week for a year), or every dish on a side as a sparkline.
   let m = path.match(/^\/api\/costs\/history\/(.+)$/);
   if (m) {
@@ -196,10 +251,22 @@ export async function costRoutes(db: Db, res: ServerResponse, url: URL, who: Sig
     }).sort((a, b) => b.cost - a.cost);
     const dish = model.margins.dishes.find((d) => d.recipeId === id && d.quantity > 0);
     const usedIn = [...book.recipes.values()].filter((r) => r.ingredients.some((i) => i.item.kind === 'recipe' && i.item.id === id)).map((r) => ({ id: r.id, name: r.name }));
+    const gone = await dismissed();
+    const alerts = treeAlerts(model, today, gone);
+    const lineMarkers = (l: (typeof lines)[number]): Markers => {
+      if (l.kind === 'recipe') return alerts.recipes.get(l.id) ?? {};
+      const own: Markers = { ...(alerts.products.get(l.id) ?? {}) };
+      delete own.noCost;
+      return l.complete ? own : { ...own, noCost: [l.name] };
+    };
+    const markers = alerts.recipes.get(id) ?? {};
+    // The checks behind a "not bought lately" anywhere below, with their suggested swap.
+    const stale = recipeChecks(model, today, gone).notBought.filter((x) => markers.notBought?.includes(x.name));
     return send(res, 200, {
       id, name: recipe.name, kind: recipe.kind, yield: recipe.yield, ...(asked ? { asked } : {}),
       total: cents(forAsked.total), complete: forAsked.complete, perBatch: cents(one.total),
-      lines: lines.map((l) => ({ ...l, share: forAsked.total > 0 ? l.cost / forAsked.total : 0 })),
+      markers, stale, rough: model.rough.has(id),
+      lines: lines.map((l) => ({ ...l, share: forAsked.total > 0 ? l.cost / forAsked.total : 0, markers: lineMarkers(l), ...(l.kind === 'product' && model.priceSource.get(l.id) ? { source: model.priceSource.get(l.id) } : {}) })),
       ...(dish ? { price: cents(dish.averagePrice), sold: Math.round(dish.quantity) } : {}),
       usedIn,
     }), true;
@@ -227,6 +294,9 @@ export async function costRoutes(db: Db, res: ServerResponse, url: URL, who: Sig
       ...(perUnit !== undefined ? { perUnit: Math.round(perUnit * 10000) / 10000 } : {}),
       ...(asked ? { asked, ...(forAsked ? { total: cents(forAsked.total) } : {}) } : {}),
       history, dishes, usedIn,
+      ...(model.priceSource.get(id) ? { source: model.priceSource.get(id) } : {}),
+      markers: treeAlerts(model, today, await dismissed()).products.get(id) ?? {},
+      stale: recipeChecks(model, today, await dismissed()).notBought.filter((x) => x.productId === id),
       tenPercent: cents(dishes.reduce((a, d) => a + d.costPerPlate * d.plates, 0) * 0.1),
     }), true;
   }
