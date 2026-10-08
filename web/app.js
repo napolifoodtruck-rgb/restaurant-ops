@@ -2427,6 +2427,7 @@ function costChart(points, label) {
 function sourceBox(src, kind) {
   if (kind === 'recipe') return h('div', { class: 'src', text: 'its recipe' });
   if (!src) return h('div', { class: 'src age-red' }, h('b', { text: 'No price' }), 'set one');
+  if (src.from === 'free') return h('div', { class: 'src', title: src.manual ? 'Marked as costing nothing' : 'Water, ice and soda water cost nothing' }, h('b', { text: 'Free' }), src.manual ? 'set by hand' : 'costs nothing');
   if (src.from === 'marginedge') return h('div', { class: 'src age-red', title: 'Not on an invoice we’ve read: MarginEdge’s last price' }, h('b', { text: 'MarginEdge' }), 'last price');
   const days = src.date ? (Date.now() - Date.parse(`${src.date}T12:00:00`)) / 86_400_000 : 0;
   const age = days > 182 ? ' age-red' : days > 91 ? ' age-yellow' : '';
@@ -2627,8 +2628,11 @@ async function treeProduct(me, node, trail, down, reload) {
   const src = d.source;
   const source = sideBox('Where the price comes from',
     h('div', {}, sourceBox(src, 'product')),
-    h('div', { class: 'small muted', text: !src ? 'No invoice we’ve read has it, and MarginEdge has no last price.' : src.from === 'marginedge' ? 'Not on an invoice we’ve read: this is MarginEdge’s last price, which may be old.' : src.from === 'manual' ? 'Set by hand. A newer invoice takes over when one comes in.' : src.invoices > 1 ? `The average of ${src.invoices} invoices in the last 60 days, latest shown.` : 'The latest invoice.' }),
-    h('button', { class: 'link', text: src ? 'Set a price by hand' : 'Set a price', onclick: () => { setForm.hidden = false; priceIn.focus(); } }), setForm);
+    h('div', { class: 'small muted', text: !src ? 'No invoice we’ve read has it, and MarginEdge has no last price.' : src.from === 'free' ? (src.manual ? 'Marked as costing nothing. Set a price to change that.' : 'Water, ice and soda water count as free unless an invoice prices them.') : src.from === 'marginedge' ? 'Not on an invoice we’ve read: this is MarginEdge’s last price, which may be old.' : src.from === 'manual' ? 'Set by hand. A newer invoice takes over when one comes in.' : src.invoices > 1 ? `The average of ${src.invoices} invoices in the last 60 days, latest shown.` : 'The latest invoice.' }),
+    h('div', { class: 'row tight wrap' },
+      h('button', { class: 'link', text: src ? 'Set a price by hand' : 'Set a price', onclick: () => { setForm.hidden = false; priceIn.focus(); } }),
+      src?.from === 'free' ? null : h('button', { class: 'link', text: 'It costs nothing', title: 'Soda from the gun, herbs from the garden: counted at $0', onclick: () => pageAction(async () => { const res = await api('POST', '/api/answers', { type: 'price', productId: d.id, price: 0, amount: 1, unit: d.unit }); if (res.ok) { costCache.clear(); reload(); } }) })),
+    setForm);
   return [main, [needsALook(me, d.markers, d.stale, () => { costCache.clear(); reload(); }), source, ...boxes]];
 }
 
@@ -3088,7 +3092,8 @@ function cardEditor(me, d, card, start = {}) {
       const p = l.needsPrice;
       const o = byName.get(p.name.toLowerCase());
       return h('span', { class: 'warn-text' }, `No price for ${p.name}: it isn’t on an invoice we’ve read, and MarginEdge has no last price for it. `,
-        h('button', { class: 'link', text: 'Set a price', onclick: (e) => priceForm(e.currentTarget.parentElement, p, o) }));
+        h('button', { class: 'link', text: 'Set a price', onclick: (e) => priceForm(e.currentTarget.parentElement, p, o) }), ' · ',
+        h('button', { class: 'link', text: 'It costs nothing', title: 'Soda from the gun, herbs from the garden: counted at $0', onclick: async () => { const res = await api('POST', '/api/answers', { type: 'price', productId: p.productId, price: 0, amount: 1, unit: p.unit }); if (res.ok) preview(); } }));
     }
     if (l.cantConvert) return h('span', { class: 'warn-text', text: `No cost: ${l.problem}. Try another unit, or set how much one ${UNIT_LABEL(i.unit)} is.` });
     if (l.problem) return h('span', { class: 'warn-text', text: `No cost yet: ${l.problem}.` });
@@ -3119,6 +3124,7 @@ function cardEditor(me, d, card, start = {}) {
       const vendor = (src.vendor ?? 'Invoice').replace(/,?\s+(inc|llc|co|corp|ltd|company)\.?$/i, '').trim();
       return fill(el, h('b', { text: vendor }), h('span', { text: `${when}${src.invoices > 1 ? ` · avg of ${src.invoices}` : ''}` }));
     }
+    if (src.from === 'free') { el.title = src.manual ? 'Marked as costing nothing' : 'Water, ice and soda water cost nothing'; return fill(el, h('b', { text: 'Free' }), h('span', { text: src.manual ? 'set by hand' : 'costs nothing' })); }
     if (src.from === 'manual') { el.title = 'A price set by hand in the app'; return fill(el, h('b', { text: 'Set by hand' }), src.date ? h('span', { text: shortDate(src.date) }) : null); }
     if (src.from === 'marginedge') { el.title = 'Not on an invoice we’ve read: MarginEdge’s last price, which may be old'; return fill(el, h('b', { text: 'MarginEdge' }), h('span', { text: 'last price' })); }
     el.title = 'Costed from its own recipe’s lines';

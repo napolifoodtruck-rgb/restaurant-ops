@@ -86,7 +86,8 @@ export function withProductAnswer(current: PilotImportAnswers, a: Extract<Answer
 
 export function answerProblem(a: any): string | undefined {
   if (!a || typeof a !== 'object') return 'Missing answer.';
-  if (a.type === 'price') return typeof a.productId === 'string' && a.price > 0 && a.amount > 0 && typeof a.unit === 'string' && a.unit ? undefined : 'A price needs the amount it buys, e.g. $25.99 for 25 lb.';
+  // A price of 0 is "costs nothing" (soda from the gun, herbs from the garden).
+  if (a.type === 'price') return typeof a.productId === 'string' && a.price >= 0 && Number.isFinite(a.price) && a.amount > 0 && typeof a.unit === 'string' && a.unit ? undefined : 'A price needs the amount it buys, e.g. $25.99 for 25 lb.';
   if (a.type === 'conversion') {
     if (typeof a.productId !== 'string' || !['gramsPerEach', 'gramsPerMl', 'customUnit'].includes(a.fact)) return 'Unknown answer.';
     if (!(a.amount > 0) || typeof a.amountUnit !== 'string' || !a.amountUnit) return 'How much, and in what unit?';
@@ -191,7 +192,13 @@ export async function saveBook(db: Db, restaurantId: string, key: BookKey, value
 // ---------------------------------------------------------------- the model
 
 /** Where a product's price came from: the latest invoice (and how many recent ones are averaged), a price set in the app, or MarginEdge's last price. */
-export type PriceSource = { from: 'invoice'; vendor?: string; date: string; invoices: number } | { from: 'manual'; date?: string } | { from: 'marginedge' };
+export type PriceSource = { from: 'invoice'; vendor?: string; date: string; invoices: number } | { from: 'manual'; date?: string } | { from: 'marginedge' } | { from: 'free'; manual?: boolean };
+
+/** Free by nature, when nothing prices it: tap water, ice, soda water or club soda from the gun. */
+export function costsNothing(name: string): boolean {
+  const n = name.toLowerCase().replace(/[^a-z ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return /^(tap |filtered |still )?water$|^ice$|^(soda water|water soda|club soda|soda club|seltzer|seltzer water|sparkling water)( gun)?$/.test(n);
+}
 
 export interface Model {
   /** Last day of the period (today, unless a past range was asked for). */
@@ -360,8 +367,13 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     }
     const manual = answers.manualPrices?.[p.externalId];
     if (price === undefined && manual) {
-      try { price = manual.price / convert(manual.per, p.baseUnit!, p.conversions); priceSource.set(p.externalId, { from: 'manual', ...(manual.date ? { date: manual.date } : {}) }); } catch {}
+      try {
+        price = manual.price / convert(manual.per, p.baseUnit!, p.conversions);
+        priceSource.set(p.externalId, manual.price === 0 ? { from: 'free', manual: true } : { from: 'manual', ...(manual.date ? { date: manual.date } : {}) });
+      } catch {}
     }
+    // Water, ice and soda water from the gun cost nothing, unless an invoice says otherwise.
+    if (price === undefined && costsNothing(p.name)) { price = 0; priceSource.set(p.externalId, { from: 'free' }); }
     const reference = (p as { referencePrice?: number }).referencePrice;
     if (price === undefined && reference && reference > 0) { price = reference; priceSource.set(p.externalId, { from: 'marginedge' }); }
     // Drinks bought by the each or bottle: what one holds, assumed from its name or type when unknown.

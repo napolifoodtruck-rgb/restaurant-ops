@@ -338,7 +338,7 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   const button = { catalogId: 'V-SODA', itemName: 'House Soda' };
   assert.equal((await call('POST', '/api/cards', { body: { card: soda, link: [button] }, cookies: ownerSession })).status, 200);
   assert.equal((await call('POST', '/api/cards', { body: { card: { ...syrup, ingredients: [{ amount: 1, unit: 'floz', name: 'House Soda' }] }, previousName: 'Simple Syrup' }, cookies: ownerSession })).status, 400); // no loops
-  assert.deepEqual((await call('POST', '/api/cards/preview', { body: { card: soda }, cookies: ownerSession })).json, { lines: [{ cost: 0, source: { from: 'recipe' } }, { cost: 0 }], total: 0, complete: true }); // the syrup's price comes from its own recipe
+  assert.deepEqual((await call('POST', '/api/cards/preview', { body: { card: soda }, cookies: ownerSession })).json, { lines: [{ cost: 0, source: { from: 'recipe' } }, { cost: 0, source: { from: 'free' } }], total: 0, complete: true }); // the syrup's price comes from its own recipe; water is free
   // Renaming a prep follows it into the cards that use it; a card in use can't be deleted.
   assert.equal((await call('POST', '/api/cards', { body: { card: { ...syrup, name: 'Simple Syrup 1:1' }, previousName: 'Simple Syrup' }, cookies: ownerSession })).status, 200);
   const cards = (await call('GET', '/api/cards', { cookies: ownerSession })).json.cards;
