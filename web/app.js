@@ -2287,11 +2287,14 @@ async function onlineMenuCard(me) {
 
 /**
  * Pickup windows: how many pizzas each 20-minute window takes. Tonight (or any date) on top, changed
- * on its own; the weekly plan under it, a column per weekday. Every number saves as it's typed.
+ * on its own; the weekly plan under it, a column per weekday. A date's numbers save as they're
+ * typed; the weekly plan's wait for Save, so the grid doesn't redraw under the person filling it in.
  */
 async function pickupWindowsCard(me) {
   const box = h('section', { class: 'stack', 'aria-label': 'Pickup windows' });
   let day = null;
+  // Weekly plan edits not saved yet: "weekday|starts" → pizzas. Kept across redraws of the date card.
+  const unsaved = new Map();
   async function draw() {
     const r = await api('GET', `/api/online/windows${day ? `?day=${day}` : ''}`);
     if (!r.ok) return fill(box, h('section', { class: 'card' }, h('h2', { text: 'Pickup windows' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })));
@@ -2338,18 +2341,53 @@ async function pickupWindowsCard(me) {
     // The weekly plan: windows down the side, weekdays across. A blank weekday sells nothing online.
     const cell = (weekday, starts) => w.plan.find((c) => c.weekday === weekday && c.starts === starts)?.maxPizzas ?? 0;
     const order = [1, 2, 3, 4, 5, 6, 0];
-    const savePlan = (cells) => post('/api/online/windows/plan', { cells });
+    const key = (d, starts) => `${d}|${starts}`;
+    for (const [k, n] of unsaved) { const [d, starts] = k.split('|'); if (cell(Number(d), starts) === n) unsaved.delete(k); }
+    const inputs = new Map();
+    const saveBtn = h('button', { class: 'btn small-btn dark', text: 'Save' });
+    const discardBtn = h('button', { class: 'link', text: 'Discard changes' });
+    const status = h('span', { class: 'small muted grow' });
+    const showUnsaved = () => {
+      for (const [k, input] of inputs) input.classList.toggle('dirty', unsaved.has(k));
+      saveBtn.disabled = !unsaved.size;
+      discardBtn.hidden = !unsaved.size;
+      status.textContent = unsaved.size ? `${unsaved.size} change${unsaved.size === 1 ? '' : 's'} not saved yet` : 'All saved';
+    };
+    const edit = (d, starts, n) => {
+      const k = key(d, starts);
+      if (n === cell(d, starts)) unsaved.delete(k); else unsaved.set(k, n);
+      inputs.get(k).value = String(n);
+      showUnsaved();
+    };
+    const planErr = h('div', { class: 'error small' });
+    saveBtn.addEventListener('click', () => pageAction(async () => {
+      const cells = [...unsaved].map(([k, n]) => { const [d, starts] = k.split('|'); return { weekday: Number(d), starts, maxPizzas: n }; });
+      if (!cells.length) return;
+      saveBtn.disabled = true;
+      const res = await api('POST', '/api/online/windows/plan', { cells });
+      if (!res.ok) { planErr.textContent = res.data.error ?? 'Not saved.'; saveBtn.disabled = false; return; }
+      unsaved.clear();
+      await draw();
+    }));
+    discardBtn.addEventListener('click', () => { unsaved.clear(); draw(); });
+    const planInput = (d, starts) => {
+      const k = key(d, starts);
+      const input = number(unsaved.get(k) ?? cell(d, starts), `${WEEKDAYS[d]} ${clock(starts)}, pizzas`, (n) => edit(d, starts, n));
+      inputs.set(k, input);
+      return input;
+    };
     const grid = h('table', { class: 'wgrid' },
       h('thead', {}, h('tr', {}, h('th', { text: '' }), order.map((d) => h('th', { text: WEEKDAYS[d] })))),
       h('tbody', {},
         h('tr', { class: 'all' }, h('th', { class: 'small', text: 'Every window' }), order.map((d) => h('td', {},
-          number('', `${WEEKDAYS[d]}, every window`, (n) => savePlan(w.starts.map((starts) => ({ weekday: d, starts, maxPizzas: n }))))))),
-        w.starts.map((starts) => h('tr', {}, h('th', { class: 'small', text: clock(starts) }), order.map((d) => h('td', {},
-          number(cell(d, starts), `${WEEKDAYS[d]} ${clock(starts)}, pizzas`, (n) => savePlan([{ weekday: d, starts, maxPizzas: n }]))))))));
+          number('', `${WEEKDAYS[d]}, every window`, (n) => w.starts.forEach((starts) => edit(d, starts, n)))))),
+        w.starts.map((starts) => h('tr', {}, h('th', { class: 'small', text: clock(starts) }), order.map((d) => h('td', {}, planInput(d, starts)))))));
     const planCard = h('section', { class: 'card' },
       h('h2', { text: 'Weekly plan' }),
-      h('div', { class: 'small muted', text: 'Pizzas each 20-minute window takes, by weekday. Salads, gelato and drinks don’t count. An order goes in the first window with room for all its pizzas; 0 means no online orders in that window.' }),
-      h('div', { class: 'wgrid-wrap' }, grid));
+      h('div', { class: 'small muted', text: 'Pizzas each 20-minute window takes, by weekday. Salads, gelato and drinks don’t count. An order goes in the first window with room for all its pizzas; 0 means no online orders in that window. Changes here wait for Save.' }),
+      h('div', { class: 'wgrid-wrap' }, grid),
+      h('div', { class: 'row wrap plan-save' }, status, discardBtn, saveBtn), planErr);
+    showUnsaved();
 
     const changedCard = w.changedDays.length ? sideBox('Dates with their own limits', h('div', { class: 'list compact' }, w.changedDays.map((c) => h('div', {},
       h('button', { class: 'linkish grow', text: `${shortDate(c.day)}${c.note ? ` · ${c.note}` : ''}`, onclick: () => { day = c.day; draw(); } }),
