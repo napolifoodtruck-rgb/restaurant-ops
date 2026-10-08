@@ -791,7 +791,7 @@ function renderMargins(me, state, m) {
     // Roles judge money over the whole period; in the per-day view, a dish that joined partway is just marked new.
     const role = d.offSince ? null : perDay ? (partOfPeriod(d) ? h('span', { class: 'tag blue', text: 'New' }) : null) : roleText ? h('span', { class: `tag ${roleCls}`, text: roleText }) : null;
     const row = h('div', { class: `mrow${d.offSince ? ' off' : ''}` },
-      h('div', { class: 'name-cell' }, h('button', { class: 'name linkish', 'aria-expanded': opened ? 'true' : 'false', title: 'Show the plate, ingredient by ingredient', onclick: () => again({ open: opened ? state.open.filter((n) => n !== d.name) : [...(state.open ?? []), d.name] }) }, d.name, h('span', { class: 'muted', text: opened ? ' ▾' : ' ▸' })), note ? h('div', { class: 'small muted', text: note }) : null, role),
+      h('div', { class: 'name-cell' }, h('button', { class: 'name linkish', 'aria-expanded': opened ? 'true' : 'false', title: 'Show the plate, ingredient by ingredient', onclick: () => { const y = window.scrollY; again({ open: opened ? state.open.filter((n) => n !== d.name) : [...(state.open ?? []), d.name] }); window.scrollTo(0, y); } }, d.name, h('span', { class: 'muted', text: opened ? ' ▾' : ' ▸' })), note ? h('div', { class: 'small muted', text: note }) : null, role),
       h('div', { class: 'plate-cell' }, h('div', { class: 'row tight' }, plate,
         // What guests paid on average, beside the menu price when they differ, so the number isn't a mystery.
         h('span', { class: 'price-pair', title: 'What guests paid on average in this period, after specials, discounts and comps. The menu price is today’s price in Square.' },
