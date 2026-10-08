@@ -22,7 +22,9 @@ services:
         sync: false
       - key: MARGINEDGE_API_KEY
         sync: false
-      # Online orders. Leave SQUARE_ENVIRONMENT as sandbox until a test order has gone through end to end.
+      # Online orders. SQUARE_ENVIRONMENT ('production' or 'sandbox') is set by hand in Render, never
+      # here: a value here is put back every time this file changes, which once sent live checkout
+      # back to sandbox (Square then refuses the production token).
       - key: SQUARE_CHECKOUT_TOKEN
         sync: false
       - key: SQUARE_APPLICATION_ID
@@ -30,7 +32,7 @@ services:
       - key: SQUARE_CHECKOUT_LOCATION_ID
         sync: false
       - key: SQUARE_ENVIRONMENT
-        value: sandbox
+        sync: false
       # Order confirmation emails (Resend). Unset = none sent.
       - key: RESEND_API_KEY
         sync: false
