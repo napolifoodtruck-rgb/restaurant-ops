@@ -64,7 +64,8 @@ export async function loadOnlineMenu(db: Db, restaurantId: string, today: string
 /** The windows of a date, with the pizzas already in paid orders and live holds. */
 export async function loadWindows(db: Db, restaurantId: string, day: string, exceptOrder?: string): Promise<PickupWindow[]> {
   const taken = Object.fromEntries((await db.query<{ starts: string; pizzas: string }>(
-    "SELECT window_starts::text AS starts, sum(pizzas)::text AS pizzas FROM online_orders WHERE restaurant_id = $1 AND day = $2 AND (status = 'paid' OR (status = 'held' AND hold_until > now())) AND id <> $3 GROUP BY window_starts",
+    // Orders from before windows were 15 minutes (5:20, 5:40) count in the window their time falls in.
+    "SELECT (time '00:00' + floor(extract(epoch FROM window_starts) / 900) * interval '15 minutes')::text AS starts, sum(pizzas)::text AS pizzas FROM online_orders WHERE restaurant_id = $1 AND day = $2 AND (status = 'paid' OR (status = 'held' AND hold_until > now())) AND id <> $3 GROUP BY 1",
     [restaurantId, day, exceptOrder ?? '00000000-0000-0000-0000-000000000000'])).rows.map((r) => [hhmm(r.starts), Number(r.pizzas)]));
   return windowsFor(day, await loadPlan(db, restaurantId), await loadDay(db, restaurantId, day), taken);
 }

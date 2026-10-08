@@ -10,13 +10,13 @@ const plan: PlanCell[] = [
 const SATURDAY = '2026-10-10';
 const SUNDAY = '2026-10-11';
 
-test('twelve 20-minute windows from 5 to 9 pm', () => {
-  assert.equal(windowStarts().length, 12);
+test('sixteen 15-minute windows from 5 to 9 pm', () => {
+  assert.equal(windowStarts().length, 16);
   assert.equal(windowStarts()[0], '17:00');
-  assert.equal(windowStarts().at(-1), '20:40');
+  assert.equal(windowStarts().at(-1), '20:45');
   const w = windowsFor(SATURDAY, plan);
   assert.equal(w.at(-1)!.ends, '21:00');
-  assert.deepEqual(w.map((x) => x.max), [4, 4, 4, 6, 6, 6, 4, 4, 4, 4, 4, 4]);
+  assert.deepEqual(w.map((x) => x.max), [4, 4, 4, 4, 6, 6, 6, 6, 4, 4, 4, 4, 4, 4, 4, 4]);
 });
 
 test('a weekday without a plan takes nothing online', () => {
@@ -28,22 +28,22 @@ test("a date's own limits win over the plan, window by window", () => {
   const w = windowsFor(SATURDAY, plan, [{ starts: '17:00', maxPizzas: 0 }, { starts: '18:00', maxPizzas: 8 }]);
   assert.equal(w[0]!.max, 0);
   assert.equal(w[0]!.changed, true);
-  assert.equal(w[3]!.max, 8);
+  assert.equal(w[4]!.max, 8);
   assert.equal(w[1]!.max, 4);
   assert.equal(w[1]!.changed, undefined);
 });
 
 test('an order goes in the first window with room for all its pizzas, never split', () => {
-  // 5:00 has 1 pizza left, 5:20 has 3, 5:40 is empty.
-  const w = windowsFor(SATURDAY, plan, [], { '17:00': 3, '17:20': 1 });
+  // 5:00 has 1 pizza left, 5:15 has 3, 5:30 is empty.
+  const w = windowsFor(SATURDAY, plan, [], { '17:00': 3, '17:15': 1 });
   const small = fitOrder(w, 1, '12:00');
   assert.equal(small.kind === 'fits' && small.earliest.starts, '17:00');
   const three = fitOrder(w, 3, '12:00');
-  assert.equal(three.kind === 'fits' && three.earliest.starts, '17:20');
-  // Four pizzas wait for 5:40; the earlier windows stay open for smaller orders.
+  assert.equal(three.kind === 'fits' && three.earliest.starts, '17:15');
+  // Four pizzas wait for 5:30; the earlier windows stay open for smaller orders.
   const four = fitOrder(w, 4, '12:00');
-  assert.equal(four.kind === 'fits' && four.earliest.starts, '17:40');
-  assert.deepEqual(fittingWindows(w, 1, '12:00').slice(0, 2).map((x) => x.starts), ['17:00', '17:20']);
+  assert.equal(four.kind === 'fits' && four.earliest.starts, '17:30');
+  assert.deepEqual(fittingWindows(w, 1, '12:00').slice(0, 2).map((x) => x.starts), ['17:00', '17:15']);
 });
 
 test('salads and gelato alone fit any open window', () => {
@@ -64,7 +64,7 @@ test('a window stops taking orders 20 minutes before it starts', () => {
   const at440 = fitOrder(w, 1, '16:40');
   assert.equal(at440.kind === 'fits' && at440.earliest.starts, '17:00');
   const at441 = fitOrder(w, 1, '16:41');
-  assert.equal(at441.kind === 'fits' && at441.earliest.starts, '17:20');
+  assert.equal(at441.kind === 'fits' && at441.earliest.starts, '17:15');
   assert.deepEqual(fitOrder(w, 1, '20:30'), { kind: 'full' });
 });
 

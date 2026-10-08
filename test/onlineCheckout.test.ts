@@ -141,7 +141,7 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   menu = (await customer('GET', '/api/order/menu')).json;
   assert.equal(menu.open, true);
   assert.deepEqual(menu.items.map((x: any) => [x.name, x.isPizza, x.notes]), [['Soda', false, []], ['Margherita', true, ['Partially cooked']]]);
-  assert.deepEqual(menu.windows.slice(0, 2).map((w: any) => [w.starts, w.label, w.left, w.open]), [['17:00', '5:00 pm', 2, true], ['17:20', '5:20 pm', 4, true]]);
+  assert.deepEqual(menu.windows.slice(0, 2).map((w: any) => [w.starts, w.label, w.left, w.open]), [['17:00', '5:00 pm', 2, true], ['17:15', '5:15 pm', 4, true]]);
 
   const order = { lines: [{ variationId: 'var-marg', quantity: 2, optionIds: ['m-arugula'] }, { variationId: 'var-soda', quantity: 1 }], window: '17:00', firstName: 'Ada', lastName: 'Lovelace', phone: '(919) 555-0100', email: 'ada@example.com', tip: 300, understood: true };
   // What a customer has to give us.
@@ -170,11 +170,11 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.deepEqual([pickup.recipient.phone_number, pickup.schedule_type, pickup.pickup_at.endsWith('Z')], ['+19195550100', 'SCHEDULED', true]);
   assert.equal(new Date(pickup.pickup_at).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }), '5:00 PM');
 
-  // The 5:00 window is full while it's held: the next customer is offered 5:20.
+  // The 5:00 window is full while it's held: the next customer is offered 5:15.
   menu = (await customer('GET', '/api/order/menu')).json;
   assert.equal(menu.windows[0].left, 0);
   const late = await customer('POST', '/api/order/checkout', { ...order, lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
-  assert.deepEqual([late.status, /5:20 pm/.test(late.json.error)], [409, true]);
+  assert.deepEqual([late.status, /5:15 pm/.test(late.json.error)], [409, true]);
   // Drinks alone don't need room.
   const drinks = await customer('POST', '/api/order/checkout', { ...order, lines: [{ variationId: 'var-soda', quantity: 2 }], tip: 0 });
   assert.equal(drinks.status, 201);
@@ -202,10 +202,10 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.equal((await customer('GET', '/api/order/00000000-0000-0000-0000-000000000000')).status, 404);
 
   // A lapsed hold can still pay if its window has room, and not once someone else took it.
-  const second = await customer('POST', '/api/order/checkout', { ...order, window: '17:20', lines: [{ variationId: 'var-marg', quantity: 4 }], tip: 0 });
+  const second = await customer('POST', '/api/order/checkout', { ...order, window: '17:15', lines: [{ variationId: 'var-marg', quantity: 4 }], tip: 0 });
   assert.equal(second.status, 201);
   await db!.query("UPDATE online_orders SET hold_until = now() - interval '1 minute' WHERE id = $1", [second.json.id]);
-  const third = await customer('POST', '/api/order/checkout', { ...order, window: '17:20', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
+  const third = await customer('POST', '/api/order/checkout', { ...order, window: '17:15', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
   assert.equal(third.status, 201);
   const lapsed = await customer('POST', `/api/order/${second.json.id}/pay`, { sourceId: 'cnon:card-ok' });
   assert.deepEqual([lapsed.status, /filled up/.test(lapsed.json.error)], [409, true]);
@@ -218,7 +218,7 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   const s2 = createServer(broken);
   await new Promise<void>((r) => s2.listen(0, '127.0.0.1', r));
   t.after(() => s2.close());
-  const res = await fetch(`http://127.0.0.1:${(s2.address() as AddressInfo).port}/api/order/checkout`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...order, window: '17:40', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 }) });
+  const res = await fetch(`http://127.0.0.1:${(s2.address() as AddressInfo).port}/api/order/checkout`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...order, window: '17:30', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 }) });
   assert.equal(res.status, 502);
   assert.equal((await customer('GET', '/api/order/menu')).json.windows[2].left, before);
 
@@ -286,11 +286,11 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   live.clear();
 
   // Going back to change the order gives up the first hold: the pizzas aren't held twice.
-  const left20 = async () => (await customer('GET', '/api/order/menu')).json.windows.find((w: any) => w.starts === '18:20').left;
+  const left20 = async () => (await customer('GET', '/api/order/menu')).json.windows.find((w: any) => w.starts === '18:15').left;
   const room = await left20();
-  const first = await customer('POST', '/api/order/checkout', { ...order, window: '18:20', lines: [{ variationId: 'var-marg', quantity: 2 }], tip: 0 });
+  const first = await customer('POST', '/api/order/checkout', { ...order, window: '18:15', lines: [{ variationId: 'var-marg', quantity: 2 }], tip: 0 });
   assert.equal(await left20(), room - 2);
-  const changed = await customer('POST', '/api/order/checkout', { ...order, window: '18:20', lines: [{ variationId: 'var-marg', quantity: 3 }], tip: 0, replaces: first.json.id });
+  const changed = await customer('POST', '/api/order/checkout', { ...order, window: '18:15', lines: [{ variationId: 'var-marg', quantity: 3 }], tip: 0, replaces: first.json.id });
   assert.equal(changed.status, 201);
   assert.equal(await left20(), room - 3);
   assert.equal((await customer('GET', `/api/order/${first.json.id}`)).json.status, 'released');
@@ -300,7 +300,7 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.equal(await left20(), room);
 
   // The signal drops after Pay: the charge went through, the answer didn't. Pressing Pay again (a new card token) doesn't charge twice.
-  const dropped = await customer('POST', '/api/order/checkout', { ...order, window: '18:20', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
+  const dropped = await customer('POST', '/api/order/checkout', { ...order, window: '18:15', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
   dropAnswer = true;
   const lost = await customer('POST', `/api/order/${dropped.json.id}/pay`, { sourceId: 'cnon:card-ok-5' });
   assert.deepEqual([lost.status, /won’t be charged twice/.test(lost.json.error)], [502, true]);
@@ -311,7 +311,7 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   // Paid with the charge whose answer was lost: still confirmed, once.
   assert.equal((await emailsFor(dropped.json.id)).length, 1);
   // A payment already with Square: a second Pay waits rather than charging.
-  const busy = await customer('POST', '/api/order/checkout', { ...order, window: '18:20', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
+  const busy = await customer('POST', '/api/order/checkout', { ...order, window: '18:15', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
   await db!.query('UPDATE online_orders SET paying_since = now() WHERE id = $1', [busy.json.id]);
   const waits = await customer('POST', `/api/order/${busy.json.id}/pay`, { sourceId: 'cnon:card-ok-7' });
   assert.deepEqual([waits.status, waits.json.paying], [409, true]);
@@ -320,7 +320,7 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.equal((await customer('POST', `/api/order/${busy.json.id}/pay`, { sourceId: 'cnon:card-ok-7' })).json.status, 'paid');
 
   // A page from before first and last name sends one name. Email down: tried again when the order is next looked at.
-  const later = await customer('POST', '/api/order/checkout', { ...order, firstName: undefined, lastName: undefined, name: 'Ada  King Lovelace', window: '18:40', lines: [{ variationId: 'var-soda', quantity: 1 }], tip: 0 });
+  const later = await customer('POST', '/api/order/checkout', { ...order, firstName: undefined, lastName: undefined, name: 'Ada  King Lovelace', window: '18:30', lines: [{ variationId: 'var-soda', quantity: 1 }], tip: 0 });
   assert.equal(later.json.name, 'Ada King Lovelace');
   emailDown = true;
   assert.equal((await customer('POST', `/api/order/${later.json.id}/pay`, { sourceId: 'cnon:card-ok-9' })).json.status, 'paid');
