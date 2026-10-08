@@ -508,7 +508,7 @@ function doneView(order) {
 async function refreshMenu() {
   const r = await api('GET', '/api/order/menu');
   if (!r.ok) throw new Error(r.data.error ?? 'The menu didn’t load.');
-  const names = new Map(cart.map((l) => [l, variationOf(l.variationId)?.item.name]));
+  const names = new Map(cart.map((l) => [l, (M ? variationOf(l.variationId)?.item.name : undefined)]));
   M = r.data;
   menuAt = Date.now();
   const gone = cart.filter((l) => !variationOf(l.variationId));
