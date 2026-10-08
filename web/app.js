@@ -2433,7 +2433,7 @@ async function onlineMenuCard(me, openSettings) {
 async function orderPageCard() {
   const box = h('section', { class: 'card', 'aria-label': 'Order page' });
   const err = h('div', { class: 'error small' });
-  let page = { headerImage: null, notice: '', noticeChanged: false };
+  let page = { headerImage: null, notice: '', noticeChanged: false, whyPartial: '', whyPartialChanged: false };
   const post = (b) => pageAction(async () => {
     err.textContent = '';
     const res = await api('POST', '/api/online/page', b);
@@ -2451,8 +2451,18 @@ async function orderPageCard() {
       if (!photo.preview) { err.textContent = 'Use a JPEG, PNG or WebP photo.'; return; }
       await post({ headerImage: photo.preview });
     });
-    const text = h('textarea', { rows: '6', maxlength: '600', class: 'notice-text', 'aria-label': 'Notice text' });
-    text.value = page.notice;
+    // A box of words on the order page: saved on its own, and able to go back to the usual words.
+    const words = (label, help, key, rows, max) => {
+      const text = h('textarea', { rows: String(rows), maxlength: String(max), class: 'notice-text', 'aria-label': `${label} text` });
+      text.value = page[key];
+      return h('div', { class: 'stack' },
+        h('label', { class: 'small strong', text: label }),
+        h('div', { class: 'small muted', text: help }),
+        text,
+        h('div', { class: 'row tight wrap' },
+          h('button', { class: 'btn small-btn dark', text: 'Save', onclick: () => post({ [key]: text.value }) }),
+          page[`${key}Changed`] ? h('button', { class: 'link', text: 'Back to the usual words', onclick: () => post({ [key]: null }) }) : null));
+    };
     fill(box,
       h('h2', { text: 'Order page' }),
       h('div', { class: 'small muted', text: 'The photo goes across the top of the online menu. A wide landscape photo works best.' }),
@@ -2462,13 +2472,8 @@ async function orderPageCard() {
         h('label', { class: 'small strong', text: page.headerImage ? 'Replace the header photo' : 'Header photo' }),
         h('div', { class: 'row tight wrap' }, file,
           page.headerImage ? h('button', { class: 'link', text: 'Remove photo', onclick: () => post({ headerImage: null }) }) : null)),
-      h('div', { class: 'stack' },
-        h('label', { class: 'small strong', text: 'Notice' }),
-        h('div', { class: 'small muted', text: 'The dark box above the menu and on the thank-you page. The first line is bold; leave a blank line before the smaller part underneath.' }),
-        text,
-        h('div', { class: 'row tight wrap' },
-          h('button', { class: 'btn small-btn dark', text: 'Save notice', onclick: () => post({ notice: text.value }) }),
-          page.noticeChanged ? h('button', { class: 'link', text: 'Back to the usual words', onclick: () => post({ notice: null }) }) : null)),
+      words('Notice', 'The dark box above the menu and on the thank-you page. The first line is bold; leave a blank line before the smaller part underneath.', 'notice', 6, 600),
+      words('Why partially cooked?', 'Opens from the “Why partially cooked?” button beside the menu sections. Leave a blank line between paragraphs; the finishing-at-home steps show under it.', 'whyPartial', 9, 2000),
       err);
   }
   const r = await api('GET', '/api/online/page');

@@ -92,6 +92,10 @@ h2 { font-size: 22px; font-weight: 600; letter-spacing: -.01em; margin: 24px 0 1
 .cats::-webkit-scrollbar { display: none; }
 .cats a { flex: none; padding: 8px 14px; border-radius: 999px; background: var(--card); box-shadow: inset 0 0 0 1px var(--line); text-decoration: none; color: inherit; font-size: 14px; font-weight: 500; transition: background .15s, color .15s; }
 .cats a.on { background: var(--ink); color: #fff; box-shadow: none; }
+/* "Why partially cooked?": at the right end of the section bar */
+.cats .why { flex: none; margin-left: auto; position: sticky; right: 0; box-shadow: -10px 0 10px var(--bg); padding: 8px 14px; border-radius: 999px; border: 0; background: var(--ink); color: #fff; font: inherit; font-size: 14px; font-weight: 500; cursor: pointer; }
+.why-body p { margin: 0 0 12px; line-height: 1.55; }
+.why-body .finish { box-shadow: none; background: var(--soft); margin: 4px 0 8px; }
 
 /* Menu items */
 .items { display: grid; gap: 10px; }
@@ -140,8 +144,8 @@ h2 { font-size: 22px; font-weight: 600; letter-spacing: -.01em; margin: 24px 0 1
 .sheet h3 { font-size: 24px; margin: 0 44px 6px 0; font-weight: 600; letter-spacing: -.01em; }
 .sheet-body > p.muted { margin: 0 0 8px; line-height: 1.5; }
 .sheet .note { margin: 8px 0 4px; padding: 10px 12px; background: var(--soft); border-radius: var(--radius-sm); font-size: 14px; }
-/* The whole photo, never cropped: as wide as the sheet, and a tall photo stops at 45% of the screen with soft space at its sides. */
-.sheet img.hero { width: 100%; height: auto; max-height: 45vh; object-fit: contain; background: var(--soft); display: block; flex: none; }
+/* The whole photo, never cropped: as wide as the sheet, and a tall photo stops at 45% of the screen with white space at its sides. */
+.sheet img.hero { width: 100%; height: auto; max-height: 45vh; object-fit: contain; background: var(--card); display: block; flex: none; }
 .sheet-foot { padding: 12px 20px calc(14px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--card); }
 .sheet-foot .row { gap: 12px; }
 .sheet-foot .btn { flex: 1; }

@@ -106,11 +106,28 @@ export const NOTICE_DEFAULT = [
 ].join('\n');
 export const NOTICE_MAX = 600;
 
-/** The order page's own content, as customers get it: the header photo's address (null: none) and the notice. */
-export async function loadOrderPage(db: Db, restaurantId: string): Promise<{ headerImage: string | null; notice: string; noticeChanged: boolean }> {
-  const r = (await db.query<{ notice_text: string | null; has_image: boolean; image_at: Date | null }>('SELECT notice_text, header_image IS NOT NULL AS has_image, header_image_updated_at AS image_at FROM online_page WHERE restaurant_id = $1', [restaurantId])).rows[0];
-  return { headerImage: r?.has_image ? `/api/order/header-image?v=${r.image_at ? new Date(r.image_at).getTime() : 0}` : null, notice: r?.notice_text ?? NOTICE_DEFAULT, noticeChanged: r?.notice_text != null };
+/** The "Why partially cooked?" panel, until a manager writes their own. A blank line starts a paragraph. */
+export const WHY_PARTIAL_DEFAULT = [
+  'Neapolitan pizza is soft, thin in the middle and at its best within minutes of leaving the oven. Closed in a box on the way home, it steams and goes soggy.',
+  '',
+  'So every pizza we sell online leaves our oven partially cooked. You finish it in your own oven just before eating, and it comes out crisp and hot, the way it does here.',
+  '',
+  'Fully cooked pizzas and gluten-sensitive crust are available in person only: come by or call, usually under 8 minutes.',
+].join('\n');
+export const WHY_PARTIAL_MAX = 2000;
+
+/** The order page's own content, as customers get it: the header photo's address (null: none), the notice and the "why" panel. */
+export async function loadOrderPage(db: Db, restaurantId: string): Promise<{ headerImage: string | null; notice: string; noticeChanged: boolean; whyPartial: string; whyPartialChanged: boolean }> {
+  const r = (await db.query<{ notice_text: string | null; why_partial_text: string | null; has_image: boolean; image_at: Date | null }>('SELECT notice_text, why_partial_text, header_image IS NOT NULL AS has_image, header_image_updated_at AS image_at FROM online_page WHERE restaurant_id = $1', [restaurantId])).rows[0];
+  return {
+    headerImage: r?.has_image ? `/api/order/header-image?v=${r.image_at ? new Date(r.image_at).getTime() : 0}` : null,
+    notice: r?.notice_text ?? NOTICE_DEFAULT, noticeChanged: r?.notice_text != null,
+    whyPartial: r?.why_partial_text ?? WHY_PARTIAL_DEFAULT, whyPartialChanged: r?.why_partial_text != null,
+  };
 }
+
+/** Words a manager typed for the order page: spaces tidied, at most one blank line in a row. */
+const tidyWords = (v: string): string => v.replace(/\r/g, '').split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 
 export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResponse, path: string, url: URL, who: SignedIn, timezone: string): Promise<boolean> {
   if (!path.startsWith('/api/online/')) return false;
@@ -181,16 +198,22 @@ export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResp
     return send(res, 200, { ok: true }), true;
   }
 
-  // The order page: a header photo (a JPEG, PNG or WebP under 3 MB; null takes it off) and the notice (null or '': back to the usual words).
+  // The order page: a header photo (a JPEG, PNG or WebP under 3 MB; null takes it off), the notice, and the "Why partially cooked?" text (null or '': back to the usual words).
   if (path === '/api/online/page') {
     if (method === 'POST') {
       const b = await body(req, 5 * 1024 * 1024);
       await db.query('INSERT INTO online_page (restaurant_id, updated_by) VALUES ($1, $2) ON CONFLICT (restaurant_id) DO NOTHING', [who.restaurantId, who.staffId]);
       if (b.notice !== undefined) {
         if (b.notice !== null && typeof b.notice !== 'string') throw new HttpError(400, 'The notice is words, or nothing.');
-        const text = typeof b.notice === 'string' ? b.notice.replace(/\r/g, '').split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim() : '';
+        const text = typeof b.notice === 'string' ? tidyWords(b.notice) : '';
         if (text.length > NOTICE_MAX) throw new HttpError(400, `Keep the notice under ${NOTICE_MAX} characters.`);
         await db.query('UPDATE online_page SET notice_text = $2, updated_at = now(), updated_by = $3 WHERE restaurant_id = $1', [who.restaurantId, text && text !== NOTICE_DEFAULT ? text : null, who.staffId]);
+      }
+      if (b.whyPartial !== undefined) {
+        if (b.whyPartial !== null && typeof b.whyPartial !== 'string') throw new HttpError(400, 'The "why partially cooked" text is words, or nothing.');
+        const text = typeof b.whyPartial === 'string' ? tidyWords(b.whyPartial) : '';
+        if (text.length > WHY_PARTIAL_MAX) throw new HttpError(400, `Keep the "why partially cooked" text under ${WHY_PARTIAL_MAX} characters.`);
+        await db.query('UPDATE online_page SET why_partial_text = $2, updated_at = now(), updated_by = $3 WHERE restaurant_id = $1', [who.restaurantId, text && text !== WHY_PARTIAL_DEFAULT ? text : null, who.staffId]);
       }
       if (b.headerImage !== undefined) {
         if (b.headerImage === null) await db.query('UPDATE online_page SET header_image = NULL, header_image_type = NULL, header_image_updated_at = now(), updated_at = now(), updated_by = $2 WHERE restaurant_id = $1', [who.restaurantId, who.staffId]);
