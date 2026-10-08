@@ -19,7 +19,7 @@ import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, loadBook } from './model.ts';
 import { loadAreas } from './areas.ts';
 import { coverageOf } from './views.ts';
-import { cardView, kindOf, lineState, linkedItems, yieldConversions } from './cards.ts';
+import { cardView, kindOf, lineState, linkedItems, sameDishAs, yieldConversions } from './cards.ts';
 import { tryConvert } from '../core/units.ts';
 import { cardId, normalizeName as cardKey } from '../core/recipeCards.ts';
 
@@ -121,6 +121,7 @@ export async function recipeRoutes(db: Db, res: ServerResponse, url: URL, who: S
       ...(c.view.linked.map((l) => model.imageOf(l.catalogId)).find(Boolean) ? { image: c.view.linked.map((l) => model.imageOf(l.catalogId)).find(Boolean) } : {}),
       ...(manager && c.view.cost !== undefined ? { cost: c.view.cost, complete: c.view.complete } : {}),
       ...(manager ? { linked: c.view.linked.map((l) => ({ catalogId: l.catalogId, itemName: l.itemName, ...(l.variationName ? { variationName: l.variationName } : {}), name: l.name, sold: l.sold, netSales: l.netSales, ...(model.folded.get(l.catalogId)?.length ? { includes: model.folded.get(l.catalogId) } : {}) })) } : {}),
+      ...(manager ? { sameAs: sameDishAs(c.card, book.recipeCards ?? []) } : {}),
       canEdit: manager,
     }), true;
   }
