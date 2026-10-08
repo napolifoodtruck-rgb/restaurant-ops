@@ -731,14 +731,14 @@ function renderMargins(me, state, m) {
     if (y === null) return -1;
     return (x < y ? -1 : x > y ? 1 : 0) * sign;
   });
-  const maxPrice = Math.max(...dishes.map((d) => d.averagePrice), 1);
   const maxValue = Math.max(...dishes.map((d) => (perDay ? d.leftPerDay ?? 0 : d.leftTotal)), 1);
   const partOfPeriod = (d) => d.daysOn && d.daysOn < m.openDays;
   const rows = dishes.map((d) => {
-    // Bars take a share of their column, so they fit however wide the middle is.
-    const plate = h('div', { class: 'pricebar' }, h('div', { class: 'food' }), h('div', { class: 'left' }));
-    plate.style.width = `calc((100% - 56px) * ${(d.averagePrice / maxPrice).toFixed(4)})`;
-    plate.firstChild.style.width = `${Math.min(100, (d.plateCost / d.averagePrice) * 100).toFixed(2)}%`;
+    // Every plate's bar is the same length, split at its food-cost share, so the column reads straight down.
+    const foodShare = d.averagePrice > 0 ? Math.min(1, d.plateCost / d.averagePrice) : 0;
+    const plate = h('div', { class: 'pricebar', title: `${pct(foodShare)} of the price is food` }, h('div', { class: 'food' }), h('div', { class: 'left' }));
+    plate.style.width = 'calc(100% - 56px)';
+    plate.firstChild.style.width = `${(foodShare * 100).toFixed(2)}%`;
     const [roleText, roleCls] = ROLE[d.role] ?? ['', ''];
     const value = perDay ? d.leftPerDay ?? 0 : d.leftTotal;
     const other = perDay ? `${dollars(d.leftTotal)} in all` : d.leftPerDay !== undefined ? `${dollars(d.leftPerDay)} a day` : '';
@@ -749,7 +749,7 @@ function renderMargins(me, state, m) {
     const row = h('div', { class: `mrow${d.offSince ? ' off' : ''}` },
       h('div', { class: 'name-cell' }, h('button', { class: 'name linkish', 'aria-expanded': opened ? 'true' : 'false', title: 'Show the plate, ingredient by ingredient', onclick: () => again({ open: opened ? state.open.filter((n) => n !== d.name) : [...(state.open ?? []), d.name] }) }, d.name, h('span', { class: 'muted', text: opened ? ' ▾' : ' ▸' })), note ? h('div', { class: 'small muted', text: note }) : null, role),
       h('div', { class: 'plate-cell' }, h('div', { class: 'row tight' }, plate, h('span', { class: 'small muted', text: `${dollars(d.averagePrice, { cents: true })}` })),
-        h('div', { class: 'small', text: `${dollars(d.plateCost, { cents: true })}${d.estimated ? '*' : ''} food · ${dollars(d.leftPerPlate, { cents: true })} profit` })),
+        h('div', { class: 'small', text: `${dollars(d.plateCost, { cents: true })}${d.estimated ? '*' : ''} food (${Math.round(foodShare * 100)}%) · ${dollars(d.leftPerPlate, { cents: true })} profit` })),
       h('div', { class: 'num' }, h('div', { text: d.sold.toLocaleString() }), d.soldPerDay !== undefined ? h('div', { class: 'small muted', text: `${d.soldPerDay}/day` }) : null),
       h('div', {}, h('div', { class: 'row tight' }, (() => { const t = h('div', { class: 'total' }); t.style.width = `calc((100% - 64px) * ${(Math.max(0, value) / maxValue).toFixed(4)})`; return t; })(), h('b', { text: dollars(value) })), other ? h('div', { class: 'small muted', text: other }) : null),
       trendCell(d.trend),
@@ -2512,6 +2512,7 @@ async function recipesScreen(me, state = {}) {
   const browse = sideBox('Browse the whole book', sideActions(
     h('button', { class: 'btn small-btn', text: `Every ${side === 'bar' ? 'drink' : 'dish'} (${d.allDishes})`, onclick: () => recipeTree(me, [{ kind: 'menu', name: side === 'bar' ? 'Every drink' : 'Every dish' }]) }),
     h('button', { class: 'btn small-btn', text: 'All recipes A–Z', onclick: () => recipesAZ(me, here()) }),
+    h('button', { class: 'btn small-btn', text: 'Modifiers', onclick: () => modifiersScreen(me, here()) }),
     h('button', { class: 'btn small-btn', text: 'Recipe costs', onclick: () => cardsScreen(me) })));
   show(shell(me, 'recipes', [
     h('header', { class: 'row wrap' },
@@ -2606,7 +2607,9 @@ async function treeRecipe(me, node, trail, down, reload) {
     dish ? h('div', { class: 'small muted', text: `${(d.sold ?? 0).toLocaleString()} sold in 90 days` }) : null,
     sideActions(h('button', { class: 'btn small-btn', text: 'Open the recipe', onclick: () => recipePage(me, recipeName, { from: returnTo(recipeName, reload) }) }),
       h('button', { class: 'btn small-btn', text: 'Edit recipe', onclick: async () => { const cd = (await api('GET', '/api/cards')).data; const c = cd.cards.find((x) => x.name === recipeName); if (c) cardEditor(me, cd, c, { back: { label: recipeName, go: () => { costCache.clear(); reload(); }, rail: 'recipes' } }); } })));
-  return [[head, lines], [needsALook(me, d.markers, d.stale, () => { costCache.clear(); reload(); }), moved, actions]];
+  // A dish: its variations and modifiers, loaded after the page shows (one click away from the menu).
+  const extras = dish ? itemExtras(me, node.id, d.name, d.lines.filter((l) => l.kind === 'product' || l.kind === 'recipe'), null) : null;
+  return [[head, lines, extras], [needsALook(me, d.markers, d.stale, () => { costCache.clear(); reload(); }), moved, actions]];
 }
 async function treeProduct(me, node, trail, down, reload) {
   const q = node.amount ? `?amount=${node.amount}&unit=${encodeURIComponent(node.unit)}` : '';
@@ -2678,6 +2681,159 @@ async function cookRecipes(me) {
     ], []),
   ]));
   search.focus({ preventScroll: true });
+}
+
+// ---------------------------------------------------------------- Variations and modifiers
+//
+// On an item's page, under its recipe: its variations side by side, and each modifier sold with it,
+// what one use adds or takes off, and what that costs. A modifier is set once: Square shares modifier
+// lists across items, so the page says where else it's used before you change it.
+
+const MOD_STATUS = {
+  notSet: ['mk mk-noCost', 'not set'], assumed: ['mk mk-yellow', 'guessed'], set: [null, ''], nothing: ['tag', 'no food change'], none: ['tag', 'service only'],
+};
+const MOD_UNITS = ['oz', 'floz', 'g', 'lb', 'each', 'slice', 'portion', 'tsp', 'tbsp', 'cup', 'ml', 'pump'];
+let modItems = null; // products and preps to pick from, loaded once
+async function modPickList() {
+  if (modItems) return modItems;
+  const r = await costGet('/api/cards');
+  modItems = r.ok ? [...r.data.products.map((p) => ({ kind: 'product', id: p.id, name: p.name })), ...r.data.allCards.filter((c) => c.kind === 'prep' || c.kind === 'barPrep').map((c) => ({ kind: 'recipe', id: c.id, name: c.name }))] : [];
+  return modItems;
+}
+const modText = (m) => {
+  const part = (x) => `${qty(x.amount)} ${UNIT_LABEL(x.unit)} ${x.name}`;
+  if (m.status === 'none') return 'No change to the food';
+  if (m.status === 'nothing') return 'Changes nothing';
+  if (m.status === 'notSet') return m.action === 'remove' ? 'Takes off: not set' : 'Adds: not set';
+  return [m.adds.length ? `Adds ${m.adds.map(part).join(' + ')}` : '', m.removes.length ? `takes off ${m.removes.map(part).join(' + ')}` : ''].filter(Boolean).join(', ') || 'Changes nothing';
+};
+
+/** The section on an item's page (recipeId) or the whole Modifiers page (no recipeId). */
+function modifierSection(me, ctx, d, reload) {
+  const shared = (list) => list.on.filter((n) => !ctx.dishName || n.toLowerCase() !== ctx.dishName.toLowerCase());
+  const save = async (answers, btn, msg) => pageAction(async () => {
+    busy(btn, true);
+    const res = await api('POST', '/api/modifiers/answer', { answers });
+    if (!res.ok) { busy(btn, false); msg.textContent = res.data.error ?? 'Not saved.'; return; }
+    costCache.clear();
+    reload();
+  });
+  const editor = (m, slot) => {
+    const msg = h('span', { class: 'small error' });
+    const lines = (m.adds.length ? m.adds : m.suggest ? [{ ...m.suggest, amount: m.suggest.amount ?? '', unit: m.suggest.unit ?? '' }] : [{ amount: '', unit: '', name: '' }]).map((x) => ({ ...x }));
+    const box = h('div', { class: 'mod-edit' });
+    const draw = async () => {
+      const items = await modPickList();
+      const listId = 'mod-items';
+      fill(box,
+        document.getElementById(listId) ? null : h('datalist', { id: listId }, items.map((i) => h('option', { value: i.name }))),
+        document.getElementById('mod-units') ? null : h('datalist', { id: 'mod-units' }, MOD_UNITS.map((u) => h('option', { value: UNIT_LABEL(u) }))),
+        m.action !== 'remove' ? [h('div', { class: 'small strong', text: 'One use adds' }),
+          lines.map((x, n) => {
+            const amt = h('input', { inputmode: 'decimal', class: 'short', value: x.amount === '' ? '' : String(x.amount), placeholder: '1.5', 'aria-label': 'Amount' });
+            const unit = h('input', { type: 'text', class: 'short', list: 'mod-units', value: x.unit ? UNIT_LABEL(x.unit) : '', placeholder: 'oz', 'aria-label': 'Unit' });
+            const name = h('input', { type: 'text', list: listId, class: 'grow-in', value: x.name ?? '', placeholder: 'Raspberry syrup, mozzarella…', 'aria-label': 'Ingredient' });
+            amt.addEventListener('change', () => { x.amount = parseAmount(amt.value); });
+            unit.addEventListener('change', () => { x.unit = unit.value.trim() === 'fl oz' ? 'floz' : unit.value.trim(); });
+            name.addEventListener('change', () => { const it = items.find((i) => i.name.toLowerCase() === name.value.trim().toLowerCase()); x.name = name.value.trim(); x.kind = it?.kind; x.id = it?.id; });
+            return h('div', { class: 'row tight wrap' }, amt, unit, name, lines.length > 1 ? h('button', { class: 'btn small-btn', text: '×', 'aria-label': 'Remove line', onclick: () => { lines.splice(n, 1); draw(); } }) : null);
+          }),
+          h('button', { class: 'link', text: '+ Another ingredient', onclick: () => { lines.push({ amount: '', unit: '', name: '' }); draw(); } })] : null,
+        (m.action === 'remove' || m.action === 'swap') && ctx.dishLines ? [h('div', { class: 'small strong', text: 'Takes off' }),
+          (() => { const sel = h('select', { 'aria-label': 'Takes off' }, h('option', { value: '', text: 'Nothing' }), ctx.dishLines.map((l) => h('option', { value: `${l.kind}|${l.id}`, text: l.name, selected: m.removes[0]?.id === l.id ? true : undefined }))); box.takeOff = sel; return sel; })(),
+          h('label', { class: 'row tight small' }, (() => { const c = h('input', { type: 'checkbox', checked: true }); box.everyDish = c; return c; })(), 'On every item it’s sold with')] : null,
+        h('div', { class: 'row tight wrap' },
+          h('button', { class: 'btn small-btn dark', text: 'Save', onclick: (e) => {
+            const adds = m.action === 'remove' ? undefined : lines.filter((x) => x.name);
+            if (adds && adds.some((x) => !x.id || !(x.amount > 0) || !x.unit)) return (msg.textContent = 'Each line: an amount, a unit, and an ingredient picked from the list.');
+            const answer = { key: m.key, ...(adds ? { adds: adds.map((x) => ({ kind: x.kind, id: x.id, amount: x.amount, unit: x.unit })) } : {}) };
+            if (box.takeOff) { const [kind, ...id] = box.takeOff.value.split('|'); answer.removes = { dish: box.everyDish?.checked ? '*' : ctx.recipeId, item: box.takeOff.value ? { kind, id: id.join('|') } : null }; }
+            save([answer], e.currentTarget, msg);
+          } }),
+          m.action === 'remove' ? null : h('button', { class: 'btn small-btn', text: 'Changes nothing', onclick: (e) => save([{ key: m.key, nothing: true }], e.currentTarget, msg) }),
+          h('button', { class: 'link', text: 'Cancel', onclick: () => fill(slot) }), msg));
+    };
+    draw();
+    fill(slot, box);
+  };
+  const row = (m) => {
+    const slot = h('div');
+    const [cls, label] = MOD_STATUS[m.status] ?? [null, ''];
+    return h('div', { class: 'mod-row' },
+      h('button', { class: 'mod-line', disabled: m.status === 'none' ? true : undefined, onclick: () => (slot.firstChild ? fill(slot) : editor(m, slot)) },
+        h('div', { class: 'nm' }, h('span', {}, h('b', { text: m.name.replace(/^[\s+*\-–]+/, '') }), cls ? h('span', { class: cls, text: label }) : null),
+          h('span', { class: 'small muted', text: modText(m) })),
+        h('div', { class: 'num small muted', text: m.share !== undefined ? `${Math.round(m.share * 100)}% of plates` : `${m.uses.toLocaleString()} uses` }),
+        h('div', { class: 'num', text: m.status === 'none' ? '' : m.status === 'notSet' ? '–' : `${m.costPerUse < 0 ? '−' : '+'}${dollars(Math.abs(m.costPerUse), { cents: true })}` }),
+        h('div', { class: 'chev', 'aria-hidden': 'true', text: m.status === 'none' ? '' : '›' })),
+      slot);
+  };
+  // A choice list ("Syrup": Raspberry, Vanilla…): one amount for every choice, each its matching ingredient.
+  const sameForAll = (list) => {
+    const open = list.modifiers.filter((m) => m.status === 'notSet' && m.action === 'ask');
+    if (open.length < 2) return null;
+    const slot = h('div');
+    const go = () => {
+      const amt = h('input', { inputmode: 'decimal', class: 'short', placeholder: '1.5', 'aria-label': 'Amount' });
+      const unit = h('input', { type: 'text', class: 'short', list: 'mod-units', placeholder: 'oz', 'aria-label': 'Unit' });
+      const msg = h('span', { class: 'small error' });
+      fill(slot, h('div', { class: 'mod-edit' },
+        h('div', { class: 'small strong', text: `Every choice adds the same amount of its own ingredient` }),
+        h('div', { class: 'row tight wrap' }, amt, unit, h('span', { class: 'small', text: 'of the matching ingredient' })),
+        h('div', { class: 'small' }, open.map((m) => h('div', {}, h('span', { text: `${m.name} → ` }), m.suggest ? h('b', { text: m.suggest.name }) : h('span', { class: 'warn-text', text: 'no match: set it on its own' })))),
+        h('div', { class: 'row tight wrap' }, h('button', { class: 'btn small-btn dark', text: 'Save for all', onclick: (e) => {
+          const a = parseAmount(amt.value), u = unit.value.trim() === 'fl oz' ? 'floz' : unit.value.trim();
+          if (!(a > 0) || !u) return (msg.textContent = 'An amount and a unit, like 1.5 oz.');
+          save(open.filter((m) => m.suggest).map((m) => ({ key: m.key, adds: [{ kind: m.suggest.kind, id: m.suggest.id, amount: a, unit: u }] })), e.currentTarget, msg);
+        } }), h('button', { class: 'link', text: 'Cancel', onclick: () => fill(slot) }), msg)));
+    };
+    return [h('button', { class: 'link', text: `Same for every choice (${open.length} not set)`, onclick: go }), slot];
+  };
+  return (d.lists ?? []).map((list) => {
+    const others = shared(list);
+    return h('section', { class: 'card' },
+      h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: list.listName }),
+        ctx.recipeId ? null : h('span', { class: 'small muted', text: `${list.uses.toLocaleString()} uses` })),
+      !ctx.recipeId && list.on.length === 1 ? h('div', { class: 'small muted', text: `On ${list.on[0]}` }) : null,
+      others.length && (ctx.recipeId || list.on.length > 1) ? h('div', { class: 'note small' }, h('b', { text: ctx.recipeId ? 'Shared. ' : 'On: ' }),
+        `${ctx.recipeId ? 'Also on ' : ''}${others.slice(0, 5).join(', ')}${others.length > 5 ? ` and ${others.length - 5} more` : ''}.${ctx.recipeId ? ' Changing a modifier here changes it there too.' : ''}`) : null,
+      h('div', { class: 'mod-list' }, list.modifiers.map(row)),
+      sameForAll(list));
+  });
+}
+
+/** On a dish's page: its variations and modifiers, loaded after the page shows. */
+function itemExtras(me, recipeId, dishName, dishLines, reloadPage) {
+  const box = h('div', { class: 'item-extras' }, h('section', { class: 'card small muted', text: 'Loading variations and modifiers…' }));
+  const load = async () => {
+    const r = await costGet(`/api/modifiers?recipe=${encodeURIComponent(recipeId)}`, true);
+    if (!r.ok) return fill(box, h('section', { class: 'card small error', text: r.data.error ?? 'Couldn’t load modifiers.' }));
+    const d = r.data;
+    const variations = d.variations.length > 1 ? h('section', { class: 'card' }, h('h2', { text: 'Variations' }),
+      h('div', { class: 'ttable' }, h('div', { class: 'rt-row head vars' }, ['Sold as', 'Sold', 'Price', 'Recipe cost', 'With modifiers'].map((t, i) => h('div', { class: i ? 'num' : '', text: t }))),
+        d.variations.map((v) => h('div', { class: 'rt-row vars' }, h('div', { class: 'strong', text: v.name }), h('div', { class: 'num', text: v.sold.toLocaleString() }), h('div', { class: 'num', text: dollars(v.price, { cents: true }) }), h('div', { class: 'num', text: dollars(v.cost, { cents: true }) }), h('div', { class: 'num', text: dollars(v.plateCost, { cents: true }) }))))) : null;
+    const lists = modifierSection(me, { recipeId, dishName, dishLines }, d, () => { load(); reloadPage?.(); });
+    fill(box, variations,
+      lists.length ? [h('div', { class: 'row wrap mod-head' }, h('h2', { class: 'grow', text: 'Modifiers' }),
+        h('span', { class: 'small muted', text: `${d.modifierCostPerPlate >= 0 ? '+' : '−'}${dollars(Math.abs(d.modifierCostPerPlate), { cents: true })} a plate on average` })), lists] : null);
+  };
+  load();
+  return box;
+}
+
+/** Every modifier list, set once for everything it's sold with. */
+async function modifiersScreen(me, from) {
+  loadingScreen(me, 'recipes', 'Modifiers');
+  const r = await costGet('/api/modifiers', true);
+  const again = () => modifiersScreen(me, from);
+  if (!r.ok) return show(shell(me, 'recipes', [h('h1', { text: 'Modifiers' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const open = r.data.lists.reduce((a, l) => a + l.modifiers.filter((m) => m.status === 'notSet').length, 0);
+  show(shell(me, 'recipes', [
+    h('header', { class: 'row wrap' }, h('div', { class: 'grow' }, h('div', { class: 'kicker', text: 'Every item they’re sold with' }), h('h1', { text: 'Modifiers' }),
+      h('div', { class: 'sub', text: open ? `${open} not set yet: until they are, what they add isn’t in food cost.` : 'Every modifier is set.' })),
+      from ? h('button', { class: 'btn', text: `← ${from.label}`, onclick: () => from.go() }) : null),
+    page(modifierSection(me, {}, r.data, again), [sideBox('How modifiers count', h('div', { class: 'small muted', text: 'Each one is set once and counts wherever it’s sold. An item’s cost is its recipe plus what its modifiers add on average, from what was actually picked. “Guessed” ones are read from the name (extra mozzarella: half again the pizza’s cheese): check them once.' }))]),
+  ]));
 }
 
 /** One card, on its own page in the book. */

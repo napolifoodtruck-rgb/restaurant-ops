@@ -531,6 +531,19 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   const sodaAddOns = (await call('GET', '/api/costs/breakdown?name=House%20Soda', { cookies: ownerSession })).json;
   assert.deepEqual([sodaAddOns.addOns, sodaAddOns.free], [[{ name: 'Extra Lime', value: 2, uses: 2 }], [{ name: 'No Ice', uses: 1 }]]);
   assert.equal((await call('GET', '/api/costs/breakdown', { cookies: ownerSession })).status, 400);
+
+  // Modifiers: every list and the items it's on; set what one adds, once, for everywhere it's sold.
+  assert.equal((await call('GET', '/api/modifiers', { cookies: marcoOnExpo })).status, 403);
+  const extras = (await call('GET', '/api/modifiers', { cookies: ownerSession })).json.lists.find((l: any) => l.listName === 'Extras');
+  assert.deepEqual(extras.modifiers.map((m: any) => [m.name, m.uses, m.on]), [['++ Extra Lime', 2, ['House Soda']], ['-- No Ice', 1, ['House Soda']]]);
+  const lime = extras.modifiers[0];
+  const syrupId = (await call('GET', '/api/recipes', { cookies: ownerSession })).json.bar.flatMap((x: any) => x.cards).find((c: any) => c.name === 'Simple Syrup 1:1').id;
+  assert.equal((await call('POST', '/api/modifiers/answer', { body: { answers: [{ key: lime.key, adds: [{ kind: 'recipe', id: 'nope', amount: 1, unit: 'floz' }] }] }, cookies: ownerSession })).status, 400);
+  assert.equal((await call('POST', '/api/modifiers/answer', { body: { answers: [{ key: lime.key, adds: [{ kind: 'recipe', id: syrupId, amount: 0.5, unit: 'floz' }] }] }, cookies: ownerSession })).status, 200);
+  const limeNow = (await call('GET', '/api/modifiers', { cookies: ownerSession })).json.lists.find((l: any) => l.listName === 'Extras').modifiers.find((m: any) => m.key === lime.key);
+  assert.deepEqual([limeNow.status, limeNow.adds.map((x: any) => [x.name, x.amount, x.unit])], ['set', [['Simple Syrup 1:1', 0.5, 'floz']]]);
+  assert.equal((await call('POST', '/api/modifiers/answer', { body: { answers: [{ key: lime.key, clear: true }] }, cookies: ownerSession })).status, 200);
+  assert.equal((await call('GET', '/api/modifiers?recipe=nope', { cookies: ownerSession })).status, 404);
   assert.ok(Array.isArray((await call('GET', '/api/costs/spend?area=bar', { cookies: ownerSession })).json.vendors));
 
   // Ideas: managers and owners only; Done sets one aside (listed), Bring back undoes it.

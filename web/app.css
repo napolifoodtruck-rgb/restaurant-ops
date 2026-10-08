@@ -1021,3 +1021,17 @@ button.donut-row { display: flex; min-width: 0; }
 /* The newer pieces use the theme's corners: boxes like cards, markers like tags. */
 .attn-tile, .search-big, .search-pop, .src, .isrc, .rcheck-likely, .rcheck-pick .pick-in, .base-pick, .search-wrap input { border-radius: var(--radius); }
 .mk { border-radius: 2px; }
+
+/* Variations and modifiers on an item's page, and the Modifiers page. */
+.item-extras { display: flex; flex-direction: column; gap: 14px; }
+.mod-head { margin-top: 4px; } .mod-head h2 { margin: 0; }
+.mod-list { display: flex; flex-direction: column; }
+.mod-row { border-top: 1px solid var(--line); }
+.mod-line { display: grid; grid-template-columns: minmax(0, 1fr) 96px 70px 14px; gap: 10px; align-items: center; padding: 10px 4px; width: 100%; border: 0; background: none; font: inherit; text-align: left; color: inherit; cursor: pointer; }
+.mod-line:hover:not(:disabled) { background: var(--soft); } .mod-line:disabled { cursor: default; }
+.mod-line .nm > span:first-child { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.mod-line .num { text-align: right; font-variant-numeric: tabular-nums; }
+.mod-edit { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; margin: 0 0 10px; background: var(--soft); border-radius: var(--radius); }
+.mod-edit input.short { width: 80px; } .mod-edit .grow-in { flex: 1 1 220px; min-width: 180px; height: 40px; }
+.rt-row.vars { grid-template-columns: minmax(0, 1.6fr) 70px 80px 90px 100px; cursor: default; }
+.rt-row.vars:hover { background: none; }

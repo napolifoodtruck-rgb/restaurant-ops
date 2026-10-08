@@ -370,7 +370,7 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     const notFood = new Set((book.linkAnswers?.notFood ?? []).map((x) => posName(x)));
     return send(res, 200, {
       cards: (area ? cards.filter(usedOn) : cards).sort((a, b) => a.name.localeCompare(b.name)),
-      allCards: cards.map((c) => ({ name: c.name, kind: c.kind, status: c.status, ...cardUnits(c.kind === 'prep' || c.kind === 'barPrep' ? c.yields : [{ amount: 1, unit: 'each' }]) })),
+      allCards: cards.map((c) => ({ name: c.name, id: recipeId(c.name), kind: c.kind, status: c.status, ...cardUnits(c.kind === 'prep' || c.kind === 'barPrep' ? c.yields : [{ amount: 1, unit: 'each' }]) })),
       products: productsView(model),
       noCard: model.margins.unlinked.filter((u) => u.catalogId && u.netSales > 0 && !notFood.has(u.name) && (!area || areaOf(u.category) === area))
         .map((u) => ({ ...posItem(u.catalogId, u.name), name: u.name, category: u.category, sold: Math.round(u.quantity), netSales: Math.round(u.netSales) })),

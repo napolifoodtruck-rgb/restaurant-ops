@@ -169,7 +169,7 @@ function findLine(book: RecipeBook, dishRecipeId: string, text: string, minScore
 }
 
 /** Products and recipes whose names fit, best first. */
-function findItems(book: RecipeBook, text: string): ItemRef[] {
+export function findItems(book: RecipeBook, text: string): ItemRef[] {
   const scored: { item: ItemRef; score: number }[] = [];
   for (const p of book.products.values()) {
     const score = ingredientSimilarity(text, p.name);

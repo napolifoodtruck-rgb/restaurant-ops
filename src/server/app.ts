@@ -44,6 +44,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { Db } from './db.ts';
 import { inTurn } from './turns.ts';
+import { modifierRoutes } from './modifierRoutes.ts';
 import { HttpError, body, cookie, cookies, send, str } from './http.ts';
 import {
   ACCESS, atLeast, canAdminister, deviceFor, hashSecret, tokenHash, newToken, passwordProblem, pinProblem, sessionFor, signInWithPassword, signInWithPin, signOut,
@@ -92,7 +93,7 @@ function signInReply(res: ServerResponse, result: SignInResult, secure: boolean)
 }
 
 /** Routes that rewrite the kitchen book (recipe cards, answers, menu status). */
-const bookWrites = (path: string) => ['/api/book', '/api/book/import', '/api/answers', '/api/answers/undo', '/api/menu/status', '/api/menu/price-variation'].includes(path)
+const bookWrites = (path: string) => ['/api/book', '/api/book/import', '/api/answers', '/api/answers/undo', '/api/menu/status', '/api/menu/price-variation', '/api/modifiers/answer'].includes(path)
   || (path.startsWith('/api/cards') && path !== '/api/cards/preview');
 
 const WEB_FILES: Record<string, { file: string; type: string }> = {
@@ -677,6 +678,12 @@ export function createApp(config: AppConfig) {
       const who = await signedIn(req);
       const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
       if (await onlineRoutes(db, req, res, path, url, who, tz)) return;
+    }
+
+    if (path === '/api/modifiers' || path === '/api/modifiers/answer') {
+      const who = await signedIn(req);
+      const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+      if (await modifierRoutes(db, req, res, url, method, who, localDateHour(tz).date)) return;
     }
 
     if (path.startsWith('/api/cards')) {
