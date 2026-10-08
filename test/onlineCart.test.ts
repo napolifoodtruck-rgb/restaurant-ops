@@ -134,8 +134,8 @@ test('options marked unavailable in Square aren’t sold online', () => {
   const items = [{ itemId: 'item-marg', published: true }];
   const menu = onlineMenu(withOut(['m-arugula', 'm-part']), items, modes, today, 'loc-1');
   const marg = publicMenu(menu)[0]!;
-  // Arugula drops off; partially cooked is how it's made, so it stays on.
-  assert.deepEqual([marg.soldOut, marg.notes, marg.optionLists.map((l) => l.options.map((o) => o.name))], [false, ['Partially cooked'], [['Basil']]]);
+  // Arugula shows as sold out (greyed, can't be picked); partially cooked is how it's made, so it stays on.
+  assert.deepEqual([marg.soldOut, marg.notes, marg.optionLists.map((l) => l.options.map((o) => `${o.name}${o.soldOut ? ' (sold out)' : ''}`))], [false, ['Partially cooked'], [['Arugula (sold out)', 'Basil']]]);
   assert.throws(() => priceCart(menu, [{ variationId: 'var-marg', quantity: 1, optionIds: ['m-arugula'] }]), /Arugula is sold out tonight/);
   assert.deepEqual(priceCart(menu, [{ variationId: 'var-marg', quantity: 1, optionIds: ['m-basil'] }]).lines[0]!.modifiers.map((m) => m.name), ['Partially cooked', 'Basil']);
   // Unavailable somewhere else: still sold here.

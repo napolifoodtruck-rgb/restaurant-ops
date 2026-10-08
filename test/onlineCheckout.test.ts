@@ -273,12 +273,12 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   // An option marked unavailable in Square at this location drops off the menu within a minute, and can't be bought.
   const veg = objects.find((o) => o.id === 'ml-veg')!;
   const arugula = (override: object) => ({ ...veg, modifier_list_data: { ...veg.modifier_list_data, modifiers: [{ id: 'm-arugula', modifier_data: { name: 'Arugula', price_money: { amount: 200 }, ...override } }] } });
-  const optionsNow = async () => (await customer('GET', '/api/order/menu')).json.items.find((x: any) => x.itemId === 'item-marg').optionLists.flatMap((l: any) => l.options.map((o: any) => o.name));
+  const optionsNow = async () => (await customer('GET', '/api/order/menu')).json.items.find((x: any) => x.itemId === 'item-marg').optionLists.flatMap((l: any) => l.options.map((o: any) => `${o.name}${o.soldOut ? ' (sold out)' : ''}`));
   assert.deepEqual(await optionsNow(), ['Arugula']);
   live.set('ml-veg', arugula({ location_overrides: [{ location_id: 'loc-2', sold_out: true }] }));
   assert.deepEqual(await optionsNow(), ['Arugula']);
   live.set('ml-veg', arugula({ location_overrides: [{ location_id: 'loc-1', sold_out: true }] }));
-  assert.deepEqual(await optionsNow(), []);
+  assert.deepEqual(await optionsNow(), ['Arugula (sold out)']);
   const noArugula = await customer('POST', '/api/order/checkout', { ...order, window: '19:00', lines: [{ variationId: 'var-marg', quantity: 1, optionIds: ['m-arugula'] }], tip: 0 });
   assert.deepEqual([noArugula.status, /Arugula is sold out/.test(noArugula.json.error)], [400, true]);
   // Marked unavailable between checkout and paying: not charged.
