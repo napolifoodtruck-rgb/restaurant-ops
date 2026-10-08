@@ -163,7 +163,7 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
     return loadOnlineMenu(db, restaurantId, today, { fresh: fresh?.objects ?? [], ...(ready ? { locationId: ready.locationId } : {}) });
   }
 
-  // Square's word on the order's items right now: still on, and enough of anything it counts.
+  // Square's word on the order's items right now: still on, and enough of anything it counts, less what's on open tables.
   async function confirmStock(restaurantId: string, today: string, lines: readonly CartLine[]) {
     if (!ready) return;
     const { menu } = await menuNow(restaurantId, today, true);
@@ -171,6 +171,10 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
     let counts = new Map<string, number>();
     if (counted.length) {
       try { counts = await ready.square.stockCounts(counted, ready.locationId); } catch (err) { console.error(`online order: couldn’t read stock counts from Square: ${(err as Error).message}`); }
+      // Pizzas on tables not paid yet are spoken for, though Square's count doesn't drop until they are.
+      try {
+        for (const [id, n] of await ready.square.onOpenTables([...counts.keys()], ready.locationId)) counts.set(id, counts.get(id)! - n);
+      } catch (err) { console.error(`online order: couldn’t read open tables from Square: ${(err as Error).message}`); }
     }
     const problem = stockProblem(menu, lines, counts);
     if (problem) throw new HttpError(409, problem, { backToOrder: true });
