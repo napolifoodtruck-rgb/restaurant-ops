@@ -133,6 +133,8 @@ export interface ImportedInvoice {
   lines: ImportedInvoiceLine[];
   /** Invoice total minus (lines + tax + delivery + other charges − credits). */
   unexplainedDifference: number;
+  /** What's on it besides the lines. */
+  charges?: { tax: number; delivery: number; other: number; credit: number };
 }
 
 export interface PricePoint {
@@ -382,6 +384,7 @@ export function importMarginEdge(data: MarginEdgeExport, answers: ImportAnswers 
       isCredit: invoice.isCredit ?? false,
       lines,
       unexplainedDifference,
+      charges: { tax: money(invoice.tax), delivery: money(invoice.deliveryCharges), other: money(invoice.otherCharges), credit: money(invoice.creditAmount) },
     });
   }
 

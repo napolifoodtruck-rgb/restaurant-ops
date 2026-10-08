@@ -19,7 +19,7 @@ export interface KnownVendor { key: string; name: string }
 export interface PastLine { vendorKey: string; code?: string; description: string; productId: string; perQuantity: number; unitPrice: number; date: string }
 export interface Learned { productId: string; per: number }
 export interface MatchProduct { id: string; name: string; baseUnit: string }
-export interface PastInvoice { externalId: string; vendorKey?: string; number?: string; date?: string; total: number; lines?: { description: string; total: number }[] }
+export interface PastInvoice { externalId: string; source: 'app' | 'marginedge'; vendorKey?: string; number?: string; date?: string; total: number; lines?: { description: string; total: number }[] }
 
 export interface MatchInput {
   read: ReadInvoice;
@@ -156,6 +156,6 @@ export function matchInvoice(input: MatchInput): MatchedInvoice {
       if (at >= 0) { left.splice(at, 1); l.flags.push('alreadyIn'); }
     }
   }
-  if (dup) result.duplicateOf = { externalId: dup.externalId, ...(dup.number ? { number: dup.number } : {}), ...(dup.date ? { date: dup.date } : {}), source: dup.externalId.startsWith('app:') ? 'app' : 'marginedge' };
+  if (dup) result.duplicateOf = { externalId: dup.externalId, ...(dup.number ? { number: dup.number } : {}), ...(dup.date ? { date: dup.date } : {}), source: dup.source };
   return result;
 }

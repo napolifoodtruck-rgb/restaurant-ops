@@ -20,6 +20,7 @@ import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, invalidate, type Model } from './model.ts';
 import { appendAppInvoiceLines, baseOf, createAppInvoice } from './appInvoices.ts';
+import { replaceMarginEdgeCopy } from './meImport.ts';
 import { readInvoice, ReaderError, type ReadInvoice, type ReadPage } from '../connectors/claudeInvoices.ts';
 import { itemKey, matchInvoice, vendorKey, type Learned, type PastLine } from '../core/invoiceMatch.ts';
 import { packBaseOf } from '../connectors/marginedge.ts';
@@ -61,11 +62,7 @@ export async function readScan(db: Db, restaurantId: string, scanId: string): Pr
 
 /** What the reader saw, matched against what we know: vendors, past lines, learned answers, prices. */
 async function matched(db: Db, restaurantId: string, model: Model, read: ReadInvoice) {
-  const ours = await ourVendors(db, restaurantId);
-  const vendors = [
-    ...model.imported.vendors.filter((v) => !v.externalId.startsWith('app:')).map((v) => ({ key: v.externalId, name: v.name })),
-    ...ours.map((v) => ({ key: `app:${v.id}`, name: v.name })),
-  ];
+  const vendors = model.imported.vendors.map((v) => ({ key: v.externalId, name: v.name }));
   const perOf = new Map(model.imported.prices.map((p) => [`${p.invoiceExternalId}|${p.lineNumber}`, packBaseOf(p)]));
   const history: PastLine[] = [];
   for (const inv of model.imported.invoices) {
@@ -86,8 +83,11 @@ async function matched(db: Db, restaurantId: string, model: Model, read: ReadInv
     baseOf: (id, unit) => { const p = byId.get(id); return p ? baseOf(p, unit) : undefined; },
     priceNow: (id) => model.book.unitCost(id),
     // Already in, from MarginEdge or saved here before (the same photo taken twice).
-    invoices: model.imported.invoices.map((i) => ({ externalId: i.externalId, ...(i.vendorExternalId ? { vendorKey: i.vendorExternalId } : {}), ...(i.invoiceNumber ? { number: i.invoiceNumber } : {}), ...(i.invoiceDate ? { date: i.invoiceDate } : {}), total: i.total,
-      ...(i.externalId.startsWith('app:') ? { lines: i.lines.map((l) => ({ description: l.description, total: l.lineTotal })) } : {}) })),
+    invoices: model.imported.invoices.map((i) => {
+      const source = model.invoiceSources.get(i.externalId) === 'marginedge' ? 'marginedge' as const : 'app' as const;
+      return { externalId: i.externalId, source, ...(i.vendorExternalId ? { vendorKey: i.vendorExternalId } : {}), ...(i.invoiceNumber ? { number: i.invoiceNumber } : {}), ...(i.invoiceDate ? { date: i.invoiceDate } : {}), total: i.total,
+        ...(source === 'app' ? { lines: i.lines.map((l) => ({ description: l.description, total: l.lineTotal })) } : {}) };
+    }),
   });
   return { ...m, lines: m.lines.map((l) => ({ ...l, ...(l.productId ? { productName: byId.get(l.productId)?.name ?? l.productId } : {}) })) };
 }
@@ -118,8 +118,8 @@ export async function scanRoutes(db: Db, req: IncomingMessage, res: ServerRespon
 
   const m = path.match(/^\/api\/invoices\/scan\/([0-9a-f-]{36})(?:\/(page)\/(\d+)|\/(save|discard|retry|join))?$/);
   if (!m) throw new HttpError(404, 'Not found.');
-  const scan = (await db.query<{ id: string; status: string; result: any; error: string | null; usage: any; app_invoice_id: string | null; created_at: string; pages: string }>(
-    'SELECT s.id, s.status, s.result, s.error, s.usage, s.app_invoice_id, s.created_at::text AS created_at, (SELECT count(*) FROM invoice_scan_pages p WHERE p.scan_id = s.id)::text AS pages FROM invoice_scans s WHERE s.restaurant_id = $1 AND s.id = $2', [who.restaurantId, m[1]])).rows[0];
+  const scan = (await db.query<{ id: string; status: string; result: any; error: string | null; usage: any; invoice_id: string | null; created_at: string; pages: string }>(
+    'SELECT s.id, s.status, s.result, s.error, s.usage, s.invoice_id, s.created_at::text AS created_at, (SELECT count(*) FROM invoice_scan_pages p WHERE p.scan_id = s.id)::text AS pages FROM invoice_scans s WHERE s.restaurant_id = $1 AND s.id = $2', [who.restaurantId, m[1]])).rows[0];
   if (!scan) throw new HttpError(404, 'No invoice photo by that id.');
   const result: ReadInvoice | null = scan.result ? (typeof scan.result === 'string' ? JSON.parse(scan.result) : scan.result) : null;
 
@@ -154,7 +154,7 @@ export async function scanRoutes(db: Db, req: IncomingMessage, res: ServerRespon
       .map((o) => ({ id: o.id, pages: Number(o.pages), createdAt: o.created_at })) : [];
     return send(res, 200, {
       id: scan.id, status: scan.status, error: scan.error, pages: Number(scan.pages), createdAt: scan.created_at,
-      ...(scan.app_invoice_id ? { invoiceId: scan.app_invoice_id } : {}),
+      ...(scan.invoice_id ? { invoiceId: scan.invoice_id } : {}),
       ...(result ? { read: result } : {}),
       ...(model && result ? { matched: await matched(db, who.restaurantId, model, result) } : {}),
       ...(samePaper.length ? { samePaper } : {}),
@@ -180,13 +180,18 @@ export async function scanRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     const model = await getModel(db, who.restaurantId, today);
     // The same invoice MarginEdge already has: kept as a check of the reading, not counted twice.
     const check = await matched(db, who.restaurantId, model, result);
-    let invoiceId: string | null = null;
-    // Saved here before (another photo of it): the lines it didn't have go onto it. MarginEdge's
-    // own copy: kept as a check only.
+    let invoiceId: string;
     if (check.duplicateOf?.source === 'app') {
-      invoiceId = check.duplicateOf.externalId.slice(4);
+      // Saved here before (another photo of it): the lines it didn't have go onto it.
+      invoiceId = check.duplicateOf.externalId;
       await appendAppInvoiceLines(db, who, model, invoiceId, b.lines);
-    } else if (!check.duplicateOf || b.countAnyway === true) invoiceId = await createAppInvoice(db, who, model, today, b, scan.id);
+    } else {
+      invoiceId = await createAppInvoice(db, who, model, today, b, scan.id);
+      // MarginEdge has it too: the two are compared, and ours (checked) is the one that counts.
+      const theirs = check.duplicateOf ? model.imported.invoices.find((i) => i.externalId === check.duplicateOf!.externalId) : undefined;
+      if (theirs) await replaceMarginEdgeCopy(db, who.restaurantId, invoiceId, theirs.externalId, theirs,
+        new Map(model.imported.prices.map((p) => [`${p.invoiceExternalId}|${p.lineNumber}`, p])), new Map(model.imported.products.map((p) => [p.externalId, p])));
+    }
     // Learn each confirmed line: this vendor's item is this ingredient, one of them holds this much.
     const vName = String((b.vendor as any)?.name ?? '') || (await (async () => {
       const v = b.vendor as any;
@@ -202,9 +207,9 @@ export async function scanRoutes(db: Db, req: IncomingMessage, res: ServerRespon
         ON CONFLICT (restaurant_id, vendor_key, item_key) DO UPDATE SET product_id = EXCLUDED.product_id, unit = EXCLUDED.unit, per = EXCLUDED.per, confirmed_at = now()`,
         [who.restaurantId, vendorKey(vName), key, String(l.productId), String(l.unit ?? ''), per]);
     }
-    await db.query("UPDATE invoice_scans SET status = 'saved', app_invoice_id = $2, updated_at = now() WHERE id = $1", [scan.id, invoiceId]);
-    if (invoiceId) invalidate(who.restaurantId);
-    return send(res, 200, { ok: true, invoiceId, checkOnly: !invoiceId }), true;
+    await db.query("UPDATE invoice_scans SET status = 'saved', invoice_id = $2, updated_at = now() WHERE id = $1", [scan.id, invoiceId]);
+    invalidate(who.restaurantId);
+    return send(res, 200, { ok: true, invoiceId }), true;
   }
   throw new HttpError(404, 'Not found.');
 }

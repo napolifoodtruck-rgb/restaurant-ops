@@ -63,14 +63,14 @@ test('lines matched by history, pack, name and unit; checks flagged', () => {
 });
 
 test('an invoice MarginEdge already has is spotted', () => {
-  const m = matchInvoice(base({ invoices: [{ externalId: 'me-1', vendorKey: 'v-produce', number: 'A9', date: '2026-10-07', total: 80 }] }));
+  const m = matchInvoice(base({ invoices: [{ externalId: 'me-1', source: 'marginedge', vendorKey: 'v-produce', number: 'A9', date: '2026-10-07', total: 80 }] }));
   assert.deepEqual(m.duplicateOf, { externalId: 'me-1', number: 'A9', date: '2026-10-07', source: 'marginedge' });
   assert.equal(matchInvoice(base({ read: { ...base().read, vendor: 'Someone New' } })).vendor.how, 'new');
 });
 
 test('a page sent again: lines already saved are marked; hand corrections flagged', () => {
   const read = { ...base().read, lines: [{ ...base().read.lines[0]!, handwritten: 'qty 3 → 2' }, base().read.lines[1]!] };
-  const m = matchInvoice(base({ read, invoices: [{ externalId: 'app:inv-1', vendorKey: 'v-produce', number: 'A-9', total: 80, lines: [{ description: 'Basil fresh', total: 24 }] }] }));
+  const m = matchInvoice(base({ read, invoices: [{ externalId: 'inv-1', source: 'app', vendorKey: 'v-produce', number: 'A-9', total: 80, lines: [{ description: 'Basil fresh', total: 24 }] }] }));
   assert.equal(m.duplicateOf?.source, 'app');
   assert.deepEqual(m.lines.map((l) => l.flags), [['handwritten', 'alreadyIn'], []]);
 });

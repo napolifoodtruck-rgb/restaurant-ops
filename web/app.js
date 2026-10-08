@@ -5031,13 +5031,32 @@ function ingredientPick(initial, onPick, onType) {
       const res = await costGet(`/api/costs/search?q=${encodeURIComponent(q)}`);
       if (!res.ok || input.value.trim() !== q) return;
       pop.hidden = false;
-      fill(pop, res.data.products.length ? res.data.products.slice(0, 10).map((p) => h('button', { class: 'linkish lrow', type: 'button', onclick: () => { input.value = p.name; pop.hidden = true; onPick(p); } },
-        h('span', { class: 'grow', text: p.name }), h('span', { class: 'small muted', text: p.perUnit !== undefined ? perUnitText(p.perUnit, p.unit) : UNIT_LABEL(p.unit) }))) : h('div', { class: 'small muted', text: 'No ingredient by that name.' }));
+      // Not on the list yet (a new item on an invoice): add it here.
+      const add = h('button', { class: 'linkish lrow', type: 'button', onclick: () => fill(pop, newIngredientForm(q, (p) => { input.value = p.name; pop.hidden = true; onPick(p); })) },
+        h('span', { class: 'grow', text: `+ Add “${q}” as a new ingredient` }));
+      fill(pop, ...res.data.products.slice(0, 10).map((p) => h('button', { class: 'linkish lrow', type: 'button', onclick: () => { input.value = p.name; pop.hidden = true; onPick(p); } },
+        h('span', { class: 'grow', text: p.name }), h('span', { class: 'small muted', text: p.perUnit !== undefined ? perUnitText(p.perUnit, p.unit) : UNIT_LABEL(p.unit) }))), add);
     }, 180);
   });
   const wrap = h('div', { class: 'search-wrap' }, input, pop);
   wrap.set = (name) => { input.value = name; };
   return wrap;
+}
+
+/** A new ingredient: its name, what it's counted in, and food or drink. */
+function newIngredientForm(name, onAdded) {
+  const nameIn = h('input', { type: 'text', value: name, 'aria-label': 'Ingredient name' });
+  const unit = h('select', { 'aria-label': 'Counted in' }, [['lb', 'pounds'], ['oz', 'ounces'], ['kg', 'kilograms'], ['g', 'grams'], ['each', 'each'], ['gal', 'gallons'], ['qt', 'quarts'], ['l', 'liters'], ['ml', 'milliliters'], ['floz', 'fl oz']].map(([v, t]) => h('option', { value: v, text: t })));
+  const type = h('select', { 'aria-label': 'Kind' }, [['food', 'Food'], ['wine', 'Wine'], ['beer', 'Beer'], ['liquor', 'Liquor'], ['na', 'Non-alcoholic drink'], ['other', 'Supplies, other']].map(([v, t]) => h('option', { value: v, text: t })));
+  const err = h('div', { class: 'error' });
+  return h('div', { class: 'new-ing' }, h('div', { class: 'small strong', text: 'New ingredient' }), nameIn,
+    h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Counted in' }), unit, type), err,
+    h('button', { class: 'btn small-btn', type: 'button', text: 'Add it', onclick: async () => {
+      const r = await api('POST', '/api/ingredients', { name: nameIn.value, baseUnit: unit.value, type: type.value });
+      if (!r.ok) return (err.textContent = r.data.error ?? 'Couldn’t add it.');
+      costCache.clear();
+      onAdded({ id: r.data.id, name: r.data.name, unit: r.data.unit });
+    } }));
 }
 
 /** A photo, made small enough to send (long edge 2000 px, JPEG), as { mediaType, data (base64), preview }. */
@@ -5084,6 +5103,32 @@ function photoChecks(img) {
 }
 const BLURRY = 60;
 const samePrint = (a, b) => a && b && a.reduce((t, v, i) => t + Math.abs(v - b[i]), 0) / a.length < 6;
+
+/**
+ * While both run: the app's reading of an invoice against MarginEdge's, line by line. Fills in
+ * after the page is up; nothing shows until there's something to compare.
+ */
+function compareCard() {
+  const box = h('section', { class: 'card', hidden: true });
+  api('GET', '/api/invoices/compare').then((r) => {
+    if (!r.ok || !r.data.invoices) return;
+    const d = r.data;
+    const pctOf = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : '–');
+    box.hidden = false;
+    fill(box, h('h2', { text: 'The app against MarginEdge' }),
+      h('div', { class: 'small muted', text: 'Invoices both have read: the same ingredient, quantity and total on each line. When these stay high for a few weeks, MarginEdge isn’t needed.' }),
+      h('div', { class: 'cmp-score' },
+        h('div', {}, h('b', { text: pctOf(d.matching, d.lines) }), h('span', { class: 'small muted', text: `of ${d.lines} lines the same` })),
+        h('div', {}, h('b', { text: pctOf(d.totalsMatching, d.invoices) }), h('span', { class: 'small muted', text: `of ${d.invoices} invoice${d.invoices === 1 ? '' : 's'} with the same total` }))),
+      h('div', { class: 'list' }, d.list.slice(0, 20).map((x) => h('details', { class: 'cmp-row' },
+        h('summary', {}, h('span', { class: 'grow', text: `${x.vendor} · ${shortDate(x.date)}${x.number ? ` · #${x.number}` : ''}` }),
+          h('span', { class: `small ${x.matching === x.lines && x.totalsMatch ? 'good-text' : ''}`, text: `${x.matching}/${x.lines} lines${x.totalsMatch ? '' : ` · ${dollars(x.oursTotal, { cents: true })} vs ${dollars(x.theirsTotal, { cents: true })}`}` })),
+        x.detail.length ? h('div', { class: 'small' }, x.detail.map((l) => h('div', { class: 'cmp-line' }, h('b', { text: l.name }), ' ',
+          h('span', { class: 'muted', text: l.match === 'onlyOurs' ? 'only in the app' : l.match === 'onlyTheirs' ? 'only in MarginEdge' : l.match === 'quantity' ? 'different amount' : 'different total' }),
+          h('div', { class: 'muted', text: `App: ${l.ours ? `${qty(l.ours.quantity)} ${UNIT_LABEL(l.ours.unit)}, ${dollars(l.ours.total, { cents: true })}` : '–'} · MarginEdge: ${l.theirs ? `${l.theirs.quantity !== undefined ? `${qty(l.theirs.quantity)} ${UNIT_LABEL(l.theirs.unit)}, ` : ''}${dollars(l.theirs.total, { cents: true })}` : '–'}` })))) : h('div', { class: 'small good-text', text: 'Every line the same.' })))));
+  });
+  return box;
+}
 
 /** Photograph an invoice: one or more pages, then the app reads it. */
 function photoCard(me, connected) {
@@ -5203,7 +5248,7 @@ function renderScan(me, id, x, pagesBox, back) {
   const banners = [
     mt.duplicateOf ? h('div', { class: 'note', text: mt.duplicateOf.source === 'app'
       ? `This invoice is already saved${mt.duplicateOf.number ? ` (#${mt.duplicateOf.number})` : ''}${mt.duplicateOf.date ? `, ${shortDate(mt.duplicateOf.date)}` : ''}. Lines it already has are unticked; saving adds the rest to it, so nothing counts twice.`
-      : `MarginEdge already has this invoice${mt.duplicateOf.number ? ` (#${mt.duplicateOf.number})` : ''}${mt.duplicateOf.date ? `, ${shortDate(mt.duplicateOf.date)}` : ''}. Saving keeps it as a check and teaches the app this vendor’s items; prices won’t count it twice.` }) : null,
+      : `MarginEdge already has this invoice${mt.duplicateOf.number ? ` (#${mt.duplicateOf.number})` : ''}${mt.duplicateOf.date ? `, ${shortDate(mt.duplicateOf.date)}` : ''}. Saving compares the two line by line (under Invoices), and the copy you checked is the one that counts: never twice.` }) : null,
     ...(x.samePaper ?? []).map((o) => h('div', { class: 'note warn-note' },
       h('div', { text: `This invoice${mt.number ? ` (#${mt.number})` : ''} was also photographed ${shortDate(o.createdAt.slice(0, 10))} (${o.pages} page${o.pages === 1 ? '' : 's'}) and isn’t saved yet. Are these more pages of it?` }),
       h('button', { class: 'btn small-btn', text: 'Join them and read again', onclick: async () => { const r2 = await api('POST', `/api/invoices/scan/${id}/join`, { into: o.id }); if (r2.ok) scanScreen(me, r2.data.id); else err.textContent = r2.data.error ?? 'Couldn’t join them.'; } }))),
@@ -5213,7 +5258,7 @@ function renderScan(me, id, x, pagesBox, back) {
   const save = async () => {
     err.textContent = '';
     const name = vendorIn.value.trim();
-    const vendor = mt.vendor.key && name === mt.vendor.name ? (mt.vendor.key.startsWith('app:') ? { id: mt.vendor.key.slice(4) } : { meId: mt.vendor.key }) : { name };
+    const vendor = mt.vendor.key && name === mt.vendor.name ? { key: mt.vendor.key } : { name };
     const lines = rows.filter((r) => r.include).map((r) => r.get());
     if (lines.some((l) => !l.productId)) return (err.textContent = 'Each line you’re counting needs its ingredient.');
     const res = await api('POST', `/api/invoices/scan/${id}/save`, { vendor, date: dateIn.value, number: numIn.value.trim() || undefined, lines });
@@ -5229,7 +5274,7 @@ function renderScan(me, id, x, pagesBox, back) {
     h('div', { class: 'scan-lines' }, rows.map((r) => r.row)),
     extras ? h('div', { class: 'small', text: extras }) : null,
     err,
-    h('div', { class: 'row wrap' }, h('button', { class: 'btn primary', text: mt.duplicateOf?.source === 'app' ? 'Add the new lines' : mt.duplicateOf ? 'Save as a check' : 'Save', onclick: save }), h('span', { class: 'grow' }),
+    h('div', { class: 'row wrap' }, h('button', { class: 'btn primary', text: mt.duplicateOf?.source === 'app' ? 'Add the new lines' : 'Save', onclick: save }), h('span', { class: 'grow' }),
       h('button', { class: 'link', text: 'Throw it away', onclick: async () => { await api('POST', `/api/invoices/scan/${id}/discard`); invoicesScreen(me); } })));
   show(shell(me, 'orders', [
     h('header', {}, h('div', { class: 'kicker', text: 'Invoice photo · check it' }), h('h1', { text: mt.vendor.name }),
@@ -5348,7 +5393,7 @@ async function invoicesScreen(me, opts = {}) {
   show(shell(me, 'orders', [
     h('header', {}, h('div', { class: 'kicker', text: 'Orders' }), h('h1', { text: 'Invoices' }),
       h('div', { class: 'sub', text: 'Photograph an invoice for the app to read, or type one in. MarginEdge still reads your regular invoices for now.' })),
-    page([photoCard(me, readerConnected), waiting, form, list], [sideBox('', sideActions(h('button', { class: 'btn', text: '← Orders', onclick: () => ordersScreen(me) })))]),
+    page([photoCard(me, readerConnected), waiting, compareCard(), form, list], [sideBox('', sideActions(h('button', { class: 'btn', text: '← Orders', onclick: () => ordersScreen(me) })))]),
   ]));
 }
 

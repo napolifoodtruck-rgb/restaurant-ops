@@ -1,24 +1,34 @@
 # Invoices in the app
 
-## Now: typed in
+## How invoices are stored
 
-`Orders › Invoices typed in` (and `🌱 Log a garden harvest`) records an invoice by hand: who it's
-from, the day it came in, and lines of ingredient · how much · unit · total. Stored in
-`app_invoices` / `app_invoice_lines` (migration 0028); vendors of our own in `vendors`
-(`kind = 'garden'` for the garden).
+One store for every invoice, whatever brought it in (migration 0031):
 
-They join MarginEdge's invoices in the model (`src/server/appInvoices.ts › appImport`), so
-everything downstream treats them alike:
+| Table | What it holds |
+|---|---|
+| `ingredients` | the app's ingredient list. Started as a copy of MarginEdge's products (same ids); new ones get uuids |
+| `vendors` | our vendors; `kind = 'garden'` for the garden; `me_vendor_id` while MarginEdge runs |
+| `supplier_invoices` | every invoice: `source` is `photo`, `typed`, `garden` or `marginedge`; tax, delivery, other charges, total |
+| `supplier_invoice_lines` | what was printed (code, description, quantity, unit price, total) and what it means (ingredient, `per_amount per_unit` one purchased unit holds, `per_base` when the importer worked it out, `priced`) |
+| `vendor_item_matches` | this vendor's item → ingredient and how much one holds, learned from every confirmed line |
+| `invoice_scans`, `invoice_scan_pages` | photos and what was read from them |
+| `invoice_comparisons` | ours against MarginEdge's reading of the same invoice, line by line |
 
-- **Prices:** an ingredient's price is the 60-day average of what came in. Garden lines are $0
-  but count their quantity (`PricePoint.perBase`), so garden basil beside bought basil halves its
-  price, and it goes back to the invoice price when the garden stops.
-- **Checks:** a garden harvest counts as "bought" (no "ingredient not bought" flag); the garden is
-  never a "vendor gone quiet".
-- **Price source:** a recipe line shows `🌱 Our garden` and the date.
-- **Orders:** $0 lines don't draft orders.
+The model (`src/server/invoiceStore.ts`) reads vendors, invoices and price points from these
+tables only; prices are the 60-day average of what came in, whatever the source.
 
-MarginEdge keeps reading the regular invoices. Nothing typed here is sent anywhere.
+### MarginEdge, while it runs
+
+`src/server/meImport.ts` is the only code that reads MarginEdge. When its sync brings something
+new, or an import answer changes how its export reads, it re-stores MarginEdge's invoices
+(`source = 'marginedge'`), adds new products to `ingredients` and vendors to `vendors`, and
+skips any invoice the app already has (photo or typed; same vendor and number, or same day and
+total): those are compared into `invoice_comparisons` instead. Saving a photo of an invoice
+MarginEdge already has does the same from the other side: ours is saved, the two are compared,
+MarginEdge's copy is taken out. Either way an invoice counts once, as the copy a manager checked.
+
+Taking MarginEdge out: delete `meImport.ts`, its sync and `invoice_comparisons`. The tables
+above stay as they are.
 
 ## Next: a photo of an invoice
 

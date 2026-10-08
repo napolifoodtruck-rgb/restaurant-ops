@@ -51,7 +51,7 @@ function minusDays(day: string, n: number): string {
   return dayOf(d);
 }
 
-async function insertMany(db: Db, table: string, columns: string[], rows: unknown[][]): Promise<void> {
+export async function insertMany(db: Db, table: string, columns: string[], rows: unknown[][]): Promise<void> {
   const per = Math.floor(30000 / columns.length);
   for (let i = 0; i < rows.length; i += per) {
     const chunk = rows.slice(i, i + per);

@@ -47,6 +47,7 @@ import { inTurn } from './turns.ts';
 import { modifierRoutes } from './modifierRoutes.ts';
 import { invoiceRoutes } from './appInvoices.ts';
 import { scanRoutes } from './invoiceScans.ts';
+import { ingredientRoutes } from './ingredients.ts';
 import { HttpError, body, cookie, cookies, send, str } from './http.ts';
 import {
   ACCESS, atLeast, canAdminister, deviceFor, hashSecret, tokenHash, newToken, passwordProblem, pinProblem, sessionFor, signInWithPassword, signInWithPin, signOut,
@@ -698,6 +699,11 @@ export function createApp(config: AppConfig) {
       const who = await signedIn(req);
       const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
       if (await modifierRoutes(db, req, res, url, method, who, localDateHour(tz).date)) return;
+    }
+
+    if (path === '/api/ingredients') {
+      const who = await signedIn(req);
+      if (await ingredientRoutes(db, req, res, method, path, who)) return;
     }
 
     if (path === '/api/invoices' || path.startsWith('/api/invoices/')) {
