@@ -1140,3 +1140,6 @@ button.donut-row { display: flex; min-width: 0; }
 .history-detail { display: flex; flex-direction: column; gap: 6px; padding: 8px 0 4px; }
 .history-lines { margin: 0; padding-left: 18px; }
 .history-row > .link { align-self: flex-start; }
+.changed-row { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; background: var(--soft); border-radius: var(--radius); }
+.changed-row label.inline { justify-content: flex-start; font-weight: 600; }
+.changed-row label.inline input[type=checkbox] { width: 20px; height: 20px; min-height: 0; padding: 0; flex: none; margin: 0; accent-color: var(--ink); }

@@ -5,7 +5,7 @@
  *
  *   GET  /api/cards?area=kitchen|bar        cards on that side, costed, with what they're linked to
  *   POST /api/cards/preview                 { card }: what it would cost, line by line
- *   POST /api/cards                         { card, previousName?, link?: [posItem], unlink?: [posItem] }
+ *   POST /api/cards                         { card, previousName?, link?: [posItem], unlink?: [posItem], changedFromToday? }
  *   POST /api/cards/batch                   { cards: [{ card, link }] } (a group of drafts at once)
  *   POST /api/cards/delete                  { name }
  *   POST /api/cards/no-card                 { items: [posItem] }: a fee or not a drink (corkage)
@@ -254,7 +254,7 @@ function buildProductsView(model: Model) {
   })).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function saveCards(db: Db, who: SignedIn, changes: { card: CardInput; previousName?: string; link?: PosMenuItem[]; unlink?: PosMenuItem[] }[]) {
+async function saveCards(db: Db, who: SignedIn, changes: { card: CardInput; previousName?: string; link?: PosMenuItem[]; unlink?: PosMenuItem[]; changedFromToday?: boolean }[]) {
   const book = await loadBook(db, who.restaurantId);
   let cards: RecipeCard[] = [...(book.recipeCards ?? [])];
   let links: LinkAnswers = book.linkAnswers ?? { confirm: [], newDish: [] };
@@ -277,7 +277,9 @@ async function saveCards(db: Db, who: SignedIn, changes: { card: CardInput; prev
       links = { ...links, confirm: links.confirm.filter((x) => !same(x)), newDish: [...links.newDish.filter((x) => !same(x)), { catalogId: item.catalogId, itemName: item.itemName, ...(item.variationName ? { variationName: item.variationName } : {}), note: 'unlinked in the app' }] };
     }
   }
-  await saveBook(db, who.restaurantId, 'recipeCards', cards, who.staffId);
+  // A real change from today (not a fix): past periods keep the recipe as it was.
+  const dated = new Set(changes.filter((ch) => ch.changedFromToday).map((ch) => ch.card.name.trim()));
+  await saveBook(db, who.restaurantId, 'recipeCards', cards, who.staffId, dated);
   await saveBook(db, who.restaurantId, 'linkAnswers', links, who.staffId);
   if (importChanged) await saveBook(db, who.restaurantId, 'importAnswers', importAnswers, who.staffId);
 }
@@ -482,7 +484,7 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
       // Later cards in a batch may use earlier ones.
       cards = [...cards.filter((c) => cardKey(c.name) !== cardKey(prev ?? ch.card.name)), toStored(ch.card, undefined, ch.card.ready)];
     }
-    await saveCards(db, who, list.map((ch) => ({ card: ch.card as CardInput, ...(typeof ch.previousName === 'string' ? { previousName: ch.previousName } : {}), link: posItemArg(ch.link), unlink: posItemArg(ch.unlink) })));
+    await saveCards(db, who, list.map((ch) => ({ card: ch.card as CardInput, ...(typeof ch.previousName === 'string' ? { previousName: ch.previousName } : {}), link: posItemArg(ch.link), unlink: posItemArg(ch.unlink), ...(ch.changedFromToday === true ? { changedFromToday: true } : {}) })));
     const toFinish = (list[0]?.card?.ingredients ?? []).filter((i: any) => lineState(i, model, cards) !== 'ok').length;
     return send(res, 200, { saved: list.length, status: statuses[0], ...(statuses[0] === 'rough' ? { toFinish } : {}) }), true;
   }

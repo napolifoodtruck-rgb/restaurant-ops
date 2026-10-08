@@ -3306,7 +3306,7 @@ function recipeHistoryBox(r, onRestored) {
             back, err);
         } }) : null;
         return h('div', { class: 'history-row' },
-          h('div', { class: 'row tight' }, h('span', { class: 'grow small', text: `${i === 0 ? 'Now: ' : ''}${VERSION_CHANGE[v.change] ?? v.change}${v.by ? ` by ${v.by}` : ''}${v.name && v.name !== r.name ? ` (as ${v.name})` : ''}` }), h('span', { class: 'small muted', text: when(v.at) })),
+          h('div', { class: 'row tight' }, h('span', { class: 'grow small', text: `${i === 0 ? 'Now: ' : ''}${v.dated ? 'Changed from that day' : VERSION_CHANGE[v.change] ?? v.change}${v.by ? ` by ${v.by}` : ''}${v.name && v.name !== r.name ? ` (as ${v.name})` : ''}` }), h('span', { class: 'small muted', text: when(v.at) })),
           open, detail);
       }),
       versions.length > 6 && !all ? h('button', { class: 'link small', text: `All ${versions.length} versions`, onclick: () => { all = true; draw(); } }) : null);
@@ -3872,6 +3872,11 @@ function cardEditor(me, d, card, start = {}) {
   };
   // Saving: both buttons grey out and say so until the next page shows (or an error comes back).
   const saveBtn = h('button', { class: 'btn dark', text: 'Save', onclick: () => save(false) });
+  // An existing recipe: a fix (past numbers use it too), unless it really changed from today on.
+  const changedBox = card ? h('input', { type: 'checkbox', 'aria-describedby': 'changed-help' }) : null;
+  const changedRow = card ? h('div', { class: 'changed-row' },
+    h('label', { class: 'inline' }, changedBox, 'The recipe changed from today'),
+    h('div', { id: 'changed-help', class: 'small muted', text: 'Tick it for a real change (a new dough, a bigger portion): past numbers keep the recipe as it was. Leave it off to fix a mistake: past numbers use the fix too.' })) : null;
   const readyBtn = c.status === 'rough' ? h('button', { class: 'btn', text: 'Mark ready', title: 'Cooks see it from then on. Every line needs to be finished.', onclick: () => save(true) }) : null;
   let saving = false;
   const busy = (on, ready) => {
@@ -3897,6 +3902,7 @@ function cardEditor(me, d, card, start = {}) {
     const yields = prepKind() ? c.yields.filter((y) => Number(y.amount) > 0 && y.unit).map((y) => ({ amount: Number(y.amount), unit: y.unit })) : [];
     const body = { card: { name: nameInput.value, kind: c.kind, yields, ingredients: sent.map(({ _err, _amountText, state, ...i }) => ({ ...i, amount: Number(i.amount) > 0 ? Number(i.amount) : 0, unit: i.unit ?? '' })), method: steps.map((x) => x.trim()).filter(Boolean).join('\n'), ...(ready ? { ready: true } : {}) },
       ...(card ? { previousName: card.name } : {}),
+      ...(changedBox?.checked ? { changedFromToday: true } : {}),
       link: c.linked.filter((l) => !(card?.linked ?? []).some((x) => x.catalogId === l.catalogId && x.name === l.name)), unlink: unlinked };
     const res = await api('POST', '/api/cards', body);
     if (!res.ok) {
@@ -3935,6 +3941,7 @@ function cardEditor(me, d, card, start = {}) {
         datalist, h('div', { class: 'ilist-wrap' }, lines, ageNote),
         h('div', { class: 'strong', text: 'Steps' }), stepsBox,
         err,
+        changedRow,
         h('div', { class: 'row wrap' },
           saveBtn, readyBtn,
           h('button', { class: 'btn', text: 'Cancel', onclick: () => back.go() }), h('div', { class: 'grow' }), del),

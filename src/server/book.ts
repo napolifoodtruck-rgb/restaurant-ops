@@ -332,9 +332,10 @@ export async function recipeCardsOn(db: Db, restaurantId: string, day: string): 
 
 // ---------------------------------------------------------------- writing
 
-export async function saveBook(db: Db, restaurantId: string, key: BookKey, value: unknown, staffId?: string): Promise<void> {
+/** `dated`: recipes (by id or name) that changed from today on, rather than being fixed. */
+export async function saveBook(db: Db, restaurantId: string, key: BookKey, value: unknown, staffId?: string, dated?: Set<string>): Promise<void> {
   if (!(await inTables(db, restaurantId))) return saveDocument(db, restaurantId, key, value, staffId);
-  if (key === 'recipeCards') await saveRecipeCards(db, restaurantId, value as RecipeCard[], staffId);
+  if (key === 'recipeCards') await saveRecipeCards(db, restaurantId, value as RecipeCard[], staffId, dated?.size ? { dated } : {});
   else if (key === 'linkAnswers') await saveLinkAnswers(db, restaurantId, value as LinkAnswers, staffId);
   else if (key === 'importAnswers') await saveImportAnswers(db, restaurantId, value as PilotImportAnswers, staffId);
   else await saveModifierAnswers(db, restaurantId, value as ModifierAnswers, staffId);
