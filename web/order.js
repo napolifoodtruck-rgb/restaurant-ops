@@ -172,6 +172,7 @@ function pickupChoice(redraw) {
 // ------------------------------------------------------------------ menu
 
 function menuView() {
+  view = 'menu';
   const cats = [...new Set(M.items.map((x) => x.category))];
   const slug = (c) => `cat-${c.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
   show(header({ wide: true }), h('div', { class: 'wrap menu' },
@@ -216,7 +217,9 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet
 function itemSheet(item, editing) {
   let variationId = editing?.variationId ?? item.variations[0].id;
   let quantity = editing?.quantity ?? 1;
-  const picked = new Set(editing?.optionIds ?? []);
+  // An option that sold out since it was picked comes off: the customer sees it greyed out and picks again.
+  const out = new Set(item.optionLists.flatMap((l) => l.options.filter((o) => o.soldOut).map((o) => o.id)));
+  const picked = new Set((editing?.optionIds ?? []).filter((id) => !out.has(id)));
   const err = h('div', { class: 'error' });
   const total = () => (item.variations.find((v) => v.id === variationId).price + optionsOf(item, [...picked]).reduce((s, o) => s + o.price, 0)) * quantity;
   const addBtn = h('button', { class: 'btn dark wide' });
@@ -230,6 +233,7 @@ function itemSheet(item, editing) {
   const lists = item.optionLists.map((list) => h('fieldset', {},
     h('legend', { text: `${list.name}${list.min ? ' (pick one)' : list.max && !list.single ? ` (up to ${list.max})` : ''}` }),
     list.options.map((o) => {
+      if (o.soldOut) return h('label', { class: 'opt out' }, h('input', { type: list.single ? 'radio' : 'checkbox', name: list.id, disabled: true }), h('span', { class: 'grow', text: tidy(o.name) }), h('span', { class: 'tag out', text: 'Sold out' }));
       const input = h('input', { type: list.single ? 'radio' : 'checkbox', name: list.id, value: o.id, checked: picked.has(o.id) ? true : undefined });
       input.addEventListener('change', () => {
         if (list.single) for (const x of list.options) picked.delete(x.id);
@@ -289,21 +293,36 @@ function addedPreview(line) {
   box.addEventListener('focusin', () => clearTimeout(timer));
   document.body.append(box);
 }
+/** Why a cart line can't be ordered as it is any more (sold out since it was added), or null. */
+function lineProblem(l) {
+  const f = variationOf(l.variationId);
+  if (!f) return null;
+  if (f.item.soldOut) return `Sorry, ${f.item.name} just sold out.`;
+  const options = f.item.optionLists.flatMap((x) => x.options);
+  const gone = (l.optionIds ?? []).map((id) => options.find((o) => o.id === id)).find((o) => !o || o.soldOut);
+  if (gone === undefined && (l.optionIds ?? []).every((id) => options.some((o) => o.id === id))) return null;
+  return gone ? `Sorry, ${tidy(gone.name)} just sold out. Change your ${f.item.name} to carry on.` : `Sorry, an option on your ${f.item.name} isn’t available any more. Change it to carry on.`;
+}
+const cartProblems = () => cart.map(lineProblem).filter(Boolean);
+
 function lineView(l, actions = true) {
   const f = variationOf(l.variationId);
   if (!f) return null;
+  const problem = lineProblem(l);
   const opts = optionsOf(f.item, l.optionIds).map((o) => tidy(o.name));
   return h('div', { class: 'line' },
     h('div', { class: 'row' }, h('span', { class: 'grow strong', text: `${l.quantity} × ${f.item.name}${f.item.variations.length > 1 ? ` (${f.v.name})` : ''}` }), h('span', { text: money(linePrice(l)) })),
     [...f.item.notes, ...opts].length ? h('div', { class: 'mods', text: [...f.item.notes.map(tidy), ...opts].join(', ') }) : null,
+    problem ? h('div', { class: 'error small', role: 'alert', text: problem }) : null,
     actions ? h('div', { class: 'row', style: 'margin-top:6px; gap:16px' },
-      h('button', { class: 'link', text: 'Change', onclick: () => itemSheet(f.item, l) }),
+      f.item.soldOut ? null : h('button', { class: 'link', text: 'Change', onclick: () => itemSheet(f.item, l) }),
       h('button', { class: 'link', text: 'Remove', onclick: () => { cart = cart.filter((x) => x !== l); saveCart(); cart.length ? cartView() : menuView(); } })) : null);
 }
 
 /** `problem`: why the order couldn't go ahead (something just sold out), shown at the top. */
 function cartView(problem) {
   closeSheet();
+  view = 'cart';
   const fits = fitting(cartPizzas());
   show(header(), h('div', { class: 'wrap' },
     h('button', { class: 'link', style: 'margin-top:16px', text: '← Back to the menu', onclick: menuView }),
@@ -311,10 +330,13 @@ function cartView(problem) {
     typeof problem === 'string' ? h('p', { class: 'error', role: 'alert', text: problem }) : null,
     h('div', { class: 'card' }, cart.map((l) => lineView(l)), h('div', { class: 'totals' }, h('div', { class: 'total' }, h('span', { text: 'Subtotal' }), h('span', { text: money2(cartTotal()) })))),
     pickupLine(),
-    h('button', { class: 'btn dark wide', disabled: !fits.length ? true : undefined, text: 'Checkout', onclick: checkoutView })));
+    cartProblems().length ? h('p', { class: 'small muted', text: 'Change or remove what’s marked sold out to carry on.' }) : null,
+    h('button', { class: 'btn dark wide', disabled: !fits.length || cartProblems().length ? true : undefined, text: 'Checkout', onclick: checkoutView })));
 }
 
 function checkoutView() {
+  if (cartProblems().length) return cartView();
+  view = 'checkout';
   const pickup = pickupLine();
   const saved = store.get('customer') ?? {};
   const err = h('div', { class: 'error' });
@@ -389,6 +411,7 @@ async function loadSquare() {
 }
 
 async function payView(order) {
+  view = 'pay';
   const err = h('div', { class: 'error' });
   const pay = h('button', { class: 'btn dark wide', text: `Pay ${money2(order.total + order.tip)}`, disabled: true });
   const cardBox = h('div', { id: 'card-container' });
@@ -463,6 +486,7 @@ async function changeOrder() {
 }
 
 function doneView(order) {
+  view = 'done';
   show(header(), h('div', { class: 'wrap' },
     h('div', { class: 'done' },
       h('div', { class: 'big', text: 'Thank you' }),
@@ -479,13 +503,49 @@ function doneView(order) {
 
 // ------------------------------------------------------------------ start
 
+/** Loads the menu again. Anything no longer on it leaves the cart; what sold out stays, marked, until
+ *  the customer changes or removes it. Returns what left the cart. */
 async function refreshMenu() {
   const r = await api('GET', '/api/order/menu');
   if (!r.ok) throw new Error(r.data.error ?? 'The menu didn’t load.');
+  const names = new Map(cart.map((l) => [l, variationOf(l.variationId)?.item.name]));
   M = r.data;
-  // Drop anything no longer on the menu (or sold out) from a saved cart.
-  cart = cart.filter((l) => { const f = variationOf(l.variationId); return f && !f.item.soldOut; });
+  menuAt = Date.now();
+  const gone = cart.filter((l) => !variationOf(l.variationId));
+  cart = cart.filter((l) => !gone.includes(l));
   saveCart();
+  return gone.map((l) => (names.get(l) ? `Sorry, ${names.get(l)} isn’t on the menu any more, so it came out of your order.` : null)).filter(Boolean);
+}
+
+// While the page is open, the menu is read again every minute (and on coming back to the tab), so sold
+// out items and options show without reloading. The screen is redrawn only when something changed and
+// nothing is open on top of it; a cart item that just sold out gets a message.
+let view = null, menuAt = 0, liveBusy = false;
+async function liveRefresh() {
+  if (document.hidden || liveBusy || !M) return;
+  liveBusy = true;
+  try {
+    const was = JSON.stringify([M.items, M.open, M.paused, M.windows]);
+    const before = new Set(cart.filter(lineProblem));
+    const dropped = await refreshMenu();
+    const news = [...dropped, ...cart.filter((l) => !before.has(l)).map(lineProblem).filter(Boolean)];
+    const changed = was !== JSON.stringify([M.items, M.open, M.paused, M.windows]) || dropped.length;
+    if (changed && !document.querySelector('.sheet-bg')) {
+      if (view === 'menu') { const y = window.scrollY; menuView(); window.scrollTo(0, y); } else if (view === 'cart') cartView();
+    }
+    if (news.length) soldOutAlert(news);
+  } catch { /* offline for a moment: try again next time */ } finally { liveBusy = false; }
+}
+setInterval(liveRefresh, 60_000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - menuAt > 30_000) liveRefresh(); });
+
+function soldOutAlert(lines) {
+  document.querySelector('.added')?.remove();
+  const box = h('div', { class: 'added', role: 'alert' },
+    h('div', { class: 'row' }, h('span', { class: 'grow strong', text: 'Something in your order sold out' }), h('button', { class: 'link', text: 'Close', onclick: () => box.remove() })),
+    lines.map((t) => h('p', { class: 'small', style: 'margin:8px 0 0', text: t })),
+    view === 'cart' ? null : h('button', { class: 'btn dark wide', style: 'margin-top:12px', text: 'View order', onclick: () => { box.remove(); cartView(); } }));
+  document.body.append(box);
 }
 
 async function start() {
