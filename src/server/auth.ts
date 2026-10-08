@@ -110,7 +110,11 @@ export function canAdminister(who: Pick<SignedIn, 'access'>): boolean {
   return who.access === 'owner' || who.access === 'admin';
 }
 
-async function attempt(db: Db, row: StaffRow | undefined, secret: string, method: 'pin' | 'password', deviceId: string | null, now: Date): Promise<SignInResult> {
+/**
+ * Checks a PIN or password, counting wrong tries the same way everywhere (signing in, or confirming
+ * the current password before changing it): after 5 wrong the account waits a few minutes.
+ */
+async function checkSecret(db: Db, row: StaffRow | undefined, secret: string, method: 'pin' | 'password', now: Date): Promise<{ ok: true; row: StaffRow } | { ok: false; reason: 'wrong' } | { ok: false; reason: 'locked'; lockedUntil: Date }> {
   if (!row) {
     await verifySecret(secret, await DUMMY); // same time whether or not the account exists
     return { ok: false, reason: 'wrong' };
@@ -134,6 +138,13 @@ async function attempt(db: Db, row: StaffRow | undefined, secret: string, method
     return lockedUntil ? { ok: false, reason: 'locked', lockedUntil: new Date(lockedUntil) } : { ok: false, reason: 'wrong' };
   }
   await db.query('UPDATE staff SET failed_logins = 0, locked_until = NULL WHERE id = $1', [row.id]);
+  return { ok: true, row };
+}
+
+async function attempt(db: Db, row: StaffRow | undefined, secret: string, method: 'pin' | 'password', deviceId: string | null, now: Date): Promise<SignInResult> {
+  const checked = await checkSecret(db, row, secret, method, now);
+  if (!checked.ok) return checked;
+  row = checked.row;
   const { token, hash } = newToken();
   const expiresAt = new Date(now.getTime() + (method === 'pin' ? PIN_SESSION_HOURS * 3_600_000 : PASSWORD_SESSION_DAYS * 86_400_000));
   await db.query('INSERT INTO sessions (token_hash, restaurant_id, staff_id, device_id, method, expires_at) VALUES ($1, $2, $3, $4, $5, $6)', [hash, row.restaurant_id, row.id, deviceId, method, expiresAt]);
@@ -150,6 +161,29 @@ export async function signInWithPassword(db: Db, email: string, password: string
   // Email sign-in is for managers and up; staff sign in on a kitchen iPad.
   const { rows } = await db.query<StaffRow>(`${STAFF_SELECT} WHERE lower(s.email) = lower($1) AND s.active AND s.access <> 'staff'`, [email.trim()]);
   return attempt(db, rows[0], password, 'password', null, now);
+}
+
+export type PasswordChange = { ok: true } | { ok: false; reason: 'wrong' | 'weak' | 'noPassword'; error: string } | { ok: false; reason: 'locked'; lockedUntil: Date; error: string };
+
+/**
+ * A manager changing their own password: the current one first (wrong tries count toward the
+ * same lockout as signing in), then the new one. Every other password sign-in ends; the one
+ * they're using stays, so they aren't thrown out mid-change.
+ */
+export async function changePassword(db: Db, who: SignedIn, current: string, next: string, keepTokenHash: string | undefined, now = new Date()): Promise<PasswordChange> {
+  const { rows } = await db.query<StaffRow>(`${STAFF_SELECT} WHERE s.id = $1 AND s.restaurant_id = $2 AND s.active`, [who.staffId, who.restaurantId]);
+  const row = rows[0];
+  if (!row?.password_hash) return { ok: false, reason: 'noPassword', error: 'You don’t have a password yet. Ask the owner for an invite link.' };
+  const checked = await checkSecret(db, row, current, 'password', now);
+  if (!checked.ok) return checked.reason === 'locked'
+    ? { ok: false, reason: 'locked', lockedUntil: checked.lockedUntil, error: 'Too many wrong tries. Try again in a few minutes.' }
+    : { ok: false, reason: 'wrong', error: 'Your current password didn’t match.' };
+  const problem = passwordProblem(next);
+  if (problem) return { ok: false, reason: 'weak', error: problem };
+  if (next === current) return { ok: false, reason: 'weak', error: 'Pick a password different from the current one.' };
+  await db.query('UPDATE staff SET password_hash = $1 WHERE id = $2', [await hashSecret(next), row.id]);
+  await db.query("DELETE FROM sessions WHERE staff_id = $1 AND method = 'password' AND token_hash IS DISTINCT FROM $2", [row.id, keepTokenHash ?? null]);
+  return { ok: true };
 }
 
 export async function sessionFor(db: Db, token: string | undefined, now = new Date()): Promise<SignedIn | undefined> {

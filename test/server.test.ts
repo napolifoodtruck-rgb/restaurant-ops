@@ -237,7 +237,19 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   const accepted = await call('POST', `/api/invites/${inviteToken}`, { body: { password: 'marco makes the dough' } });
   assert.equal(accepted.json.me.name, 'Marco');
   assert.equal((await call('GET', `/api/invites/${inviteToken}`)).status, 410); // once only
-  assert.equal((await call('POST', '/api/login/password', { body: { email: 'marco@example.com', password: 'marco makes the dough' } })).status, 200);
+  const marcoElsewhere = await call('POST', '/api/login/password', { body: { email: 'marco@example.com', password: 'marco makes the dough' } });
+  assert.equal(marcoElsewhere.status, 200);
+
+  // Changing your own password: the current one first; other password sign-ins end, this one stays.
+  assert.deepEqual((await call('GET', '/api/me', { cookies: accepted.cookies })).json.account, { email: 'marco@example.com', hasPassword: true });
+  assert.equal((await call('POST', '/api/me/password', { body: { current: 'not my password', password: 'pizza all day long' }, cookies: accepted.cookies })).status, 403);
+  assert.equal((await call('POST', '/api/me/password', { body: { current: 'marco makes the dough', password: 'short' }, cookies: accepted.cookies })).status, 400);
+  assert.equal((await call('POST', '/api/me/password', { body: { current: 'marco makes the dough', password: 'pizza all day long' } })).status, 401);
+  assert.equal((await call('POST', '/api/me/password', { body: { current: 'marco makes the dough', password: 'pizza all day long' }, cookies: accepted.cookies })).status, 200);
+  assert.equal((await call('GET', '/api/me', { cookies: accepted.cookies })).status, 200);
+  assert.equal((await call('GET', '/api/me', { cookies: marcoElsewhere.cookies })).status, 401);
+  assert.equal((await call('POST', '/api/login/password', { body: { email: 'marco@example.com', password: 'marco makes the dough' } })).status, 401);
+  assert.equal((await call('POST', '/api/login/password', { body: { email: 'marco@example.com', password: 'pizza all day long' } })).status, 200);
 
   // Administrators: the owner makes one; they run the team but can't touch the owner.
   assert.equal((await call('POST', `/api/staff/${cookId}/access`, { body: { access: 'owner' }, cookies: ownerSession })).status, 400);
@@ -256,7 +268,7 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   // Back to staff: email sign-in ends, the PIN stays.
   assert.equal((await call('POST', `/api/staff/${cookId}/access`, { body: { access: 'staff' }, cookies: ownerSession })).status, 200);
   assert.equal((await call('GET', '/api/me', { cookies: adminSession })).status, 401);
-  assert.equal((await call('POST', '/api/login/password', { body: { email: 'marco@example.com', password: 'marco makes the dough' } })).status, 401);
+  assert.equal((await call('POST', '/api/login/password', { body: { email: 'marco@example.com', password: 'pizza all day long' } })).status, 401);
   assert.equal((await call('POST', '/api/login/pin', { body: { staffId: cookId, pin: '8024' }, cookies: device })).status, 200);
   // Ten wrong PINs sent at once still lock after five: no guess slips past the count.
   const burst = await Promise.all(Array.from({ length: 10 }, () => call('POST', '/api/login/pin', { body: { staffId: cookId, pin: '1357' }, cookies: device })));

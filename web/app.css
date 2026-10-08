@@ -1129,3 +1129,6 @@ button.donut-row { display: flex; min-width: 0; }
 .page-empty { aspect-ratio: 3 / 1; display: flex; align-items: center; justify-content: center; }
 .page-words { position: absolute; left: 0; right: 0; bottom: 0; padding: 32px 16px 12px; background: linear-gradient(transparent, rgba(0, 0, 0, .6)); color: #fff; font-size: 20px; font-weight: 600; }
 .online-find input[type=text] { flex: 1 1 220px; height: 40px; }
+
+.pass-form { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
+.pass-form input { width: 100%; }

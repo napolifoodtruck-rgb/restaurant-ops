@@ -13,6 +13,7 @@
  *   POST /api/login/pin          { staffId, pin } (enrolled iPad only)
  *   POST /api/logout
  *   GET  /api/me                 who's signed in, and this iPad's station if it has one
+ *   POST /api/me/password        { current, password }: change your own password
  *   POST /api/staff/:id/pin      { pin } yourself; a manager for staff; an admin for anyone but the owner
  *   GET  /api/staff              the team with access, PINs and email sign-in (manager or up)
  *   POST /api/staff/:id/access   { access: staff|manager|admin } (owner or admin; never the owner)
@@ -50,7 +51,7 @@ import { scanRoutes } from './invoiceScans.ts';
 import { ingredientRoutes } from './ingredients.ts';
 import { HttpError, body, cookie, cookies, send, str } from './http.ts';
 import {
-  ACCESS, atLeast, canAdminister, deviceFor, hashSecret, tokenHash, newToken, passwordProblem, pinProblem, sessionFor, signInWithPassword, signInWithPin, signOut,
+  ACCESS, atLeast, canAdminister, changePassword, deviceFor, hashSecret, tokenHash, newToken, passwordProblem, pinProblem, sessionFor, signInWithPassword, signInWithPin, signOut,
   type SignedIn, type SignInResult,
 } from './auth.ts';
 import { localDateHour, marginEdgeApiFrom, runSync, squareApiFrom, type SyncSettings } from './scheduler.ts';
@@ -337,7 +338,19 @@ export function createApp(config: AppConfig) {
       const device = await deviceFor(db, cookies(req)[DEVICE_COOKIE]);
       const here = device && device.restaurantId === me.restaurantId ? device : undefined;
       const station = here?.stationId ? (await db.query<{ name: string }>('SELECT name FROM stations WHERE id = $1 AND active', [here.stationId])).rows[0] : undefined;
-      return send(res, 200, { me, ...(here ? { device: { id: here.id, name: here.name, ...(station ? { stationId: here.stationId, station: station.name } : {}) } } : {}) });
+      const account = (await db.query<{ email: string | null; has_password: boolean }>('SELECT email, password_hash IS NOT NULL AS has_password FROM staff WHERE id = $1', [me.staffId])).rows[0];
+      return send(res, 200, { me, ...(account ? { account: { email: account.email, hasPassword: account.has_password } } : {}),
+        ...(here ? { device: { id: here.id, name: here.name, ...(station ? { stationId: here.stationId, station: station.name } : {}) } } : {}) });
+    }
+
+    // Your own password: the current one, then the new one. Other password sign-ins end.
+    if (method === 'POST' && path === '/api/me/password') {
+      const me = await signedIn(req);
+      const b = await body(req);
+      const token = cookies(req)[SESSION_COOKIE];
+      const r = await changePassword(db, me, str(b, 'current'), str(b, 'password'), me.method === 'password' && token ? tokenHash(token) : undefined);
+      if (!r.ok) return send(res, r.reason === 'locked' ? 423 : r.reason === 'wrong' ? 403 : 400, { error: r.error });
+      return send(res, 200, { ok: true });
     }
 
     const stationOf = async (restaurantId: string, b: Record<string, unknown>): Promise<string | null> => {

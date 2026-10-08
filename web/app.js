@@ -5713,7 +5713,7 @@ async function home(me) {
   const unitsCard = h('section', { class: 'card' }, h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: 'Units and containers' }), h('button', { class: 'btn small-btn', text: 'Open', onclick: () => unitsScreen(me, () => home(me)) })),
     h('div', { class: 'small muted', text: 'The fixed conversions, and the containers everyone shares (1/9 pan, deep 1/9 pan, deli quart, Cambros…).' }));
   const main = manager ? [await teamCard(me), unitsCard, await areasCard(), await deviceCard(), await importCard(), await prepImportCard()] : [h('div', { class: 'card small muted', text: 'Nothing to set up here yet.' })];
-  const side = [you, manager ? await syncCard('square') : null, manager ? await syncCard('marginedge') : null, ownPinCard(me), canAdminister(me) ? brandCard(me) : null];
+  const side = [you, manager ? await syncCard('square') : null, manager ? await syncCard('marginedge') : null, await passwordCard(me), ownPinCard(me), canAdminister(me) ? brandCard(me) : null];
   show(shell(me, 'settings', [header, page(main, side)]));
 }
 
@@ -5915,6 +5915,51 @@ function pinForm(container, person, onDone, onCancel) {
     input, h('button', { class: 'btn dark', type: 'submit', text: 'Save' }), h('button', { class: 'btn', type: 'button', onclick: onCancel, text: 'Cancel' }));
   fill(container, form);
   input.focus();
+}
+
+// Your own password, for signing in by email. The email rides along (hidden) so the browser's
+// password manager saves the new one under the right account.
+async function passwordCard(me) {
+  if (!atLeast(me.roleLevel, 'manager')) return null;
+  const r = await api('GET', '/api/me');
+  const account = r.ok ? r.data.account : undefined;
+  if (!account?.email) return null;
+  const box = h('section', { class: 'card', 'aria-label': 'Your password' });
+  if (!account.hasPassword) {
+    fill(box, h('h2', { text: 'Your password' }), h('div', { class: 'small muted', text: 'You don’t have a password yet. The owner can send you an invite link from Team.' }));
+    return box;
+  }
+  const draw = (note) => fill(box,
+    h('h2', { text: 'Your password' }),
+    h('div', { class: 'small muted', text: `For signing in with ${account.email} on a phone or computer.` }),
+    note ?? null,
+    h('div', { class: 'row' }, h('button', { class: 'btn', text: 'Change my password', onclick: openForm })));
+  const openForm = () => {
+    const err = h('div', { class: 'error', role: 'alert' });
+    const save = h('button', { class: 'btn dark', type: 'submit', text: 'Save new password' });
+    const form = h('form', { class: 'pass-form', onsubmit: async (e) => {
+        e.preventDefault();
+        const f = Object.fromEntries(new FormData(form));
+        err.textContent = '';
+        if (f.password !== f.again) return (err.textContent = 'The two new passwords don’t match.');
+        if (String(f.password).length < 10) return (err.textContent = 'Use at least 10 characters.');
+        save.disabled = true;
+        const s = await api('POST', '/api/me/password', { current: f.current, password: f.password });
+        save.disabled = false;
+        if (!s.ok) return (err.textContent = s.data.error ?? 'That didn’t work.');
+        draw(h('div', { class: 'small', role: 'status' }, h('span', { class: 'tag ok', text: 'Saved' }), ' Use it next time you sign in. Other phones and computers signed in with the old one are signed out.'));
+      } },
+      h('input', { type: 'email', name: 'username', value: account.email, autocomplete: 'username', readonly: true, hidden: true, tabindex: '-1', 'aria-hidden': 'true' }),
+      h('label', {}, 'Current password', h('input', { type: 'password', name: 'current', required: true, autocomplete: 'current-password' })),
+      h('label', {}, 'New password (10 characters or more)', h('input', { type: 'password', name: 'password', required: true, minlength: '10', autocomplete: 'new-password' })),
+      h('label', {}, 'New password again', h('input', { type: 'password', name: 'again', required: true, minlength: '10', autocomplete: 'new-password' })),
+      err,
+      h('div', { class: 'row wrap' }, save, h('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => draw() })));
+    fill(box, h('h2', { text: 'Your password' }), form);
+    form.querySelector('input[name=current]').focus();
+  };
+  draw();
+  return box;
 }
 
 function ownPinCard(me) {
