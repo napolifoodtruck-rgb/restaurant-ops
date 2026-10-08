@@ -1011,3 +1011,9 @@ button.donut-row { display: flex; min-width: 0; }
 }
 .alertlist:empty { display: none; }
 .alertlist:empty + .rstale { border-top: 0; margin-top: 2px; padding-top: 0; }
+
+/* Counting: the tally and Done follow along down a long list; Full is one tap for "at par". */
+@media (min-width: 1001px) { .page.sticky-side > .page-side { position: sticky; top: 16px; align-self: start; } }
+.tap.full { border-color: var(--green); color: var(--green); font-weight: 700; padding-left: 14px; padding-right: 14px; }
+.tap.full.on { background: var(--green); color: #fff; }
+.count-end { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); align-items: center; }

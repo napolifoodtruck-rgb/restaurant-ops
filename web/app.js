@@ -173,7 +173,7 @@ function page(main, side, opts = {}) {
   const boxes = [side].flat(Infinity).filter((x) => x !== null && x !== undefined && x !== false);
   const middle = h('div', { class: 'page-main' }, main);
   if (!boxes.length) return h('div', { class: 'page solo' }, middle);
-  return h('div', { class: `page${opts.sideFirst ? ' side-first' : ''}` }, middle,
+  return h('div', { class: `page${opts.sideFirst ? ' side-first' : ''}${opts.sticky ? ' sticky-side' : ''}` }, middle,
     h('aside', { class: 'page-side', 'aria-label': opts.label ?? 'At a glance' }, boxes));
 }
 /** A box for the right column: a small heading, then what it holds. */
@@ -1317,8 +1317,8 @@ async function prepCount(me, stationId, date) {
   const countable = v.lines.filter((l) => l.kind === 'count' || l.kind === 'batch');
   const toCount = countable.length;
   // How many are counted, kept up to date as each is tapped.
-  const tallyBar = h('div'), tallyText = h('div', { class: 'small' });
-  const tally = () => { const n = countable.filter((l) => l.counted !== undefined).length; fill(tallyBar, progress(n, toCount)); tallyText.textContent = `${n} of ${toCount}`; };
+  const tallyBar = h('div'), tallyText = h('div', { class: 'small' }), endTally = h('span', { class: 'small muted' });
+  const tally = () => { const n = countable.filter((l) => l.counted !== undefined).length; fill(tallyBar, progress(n, toCount)); tallyText.textContent = `${n} of ${toCount}`; endTally.textContent = `${n} of ${toCount} counted`; };
   tally();
   // A count is a tap: buttons sized to the item's par (halves when it's small), "other" for anything else.
   // The app's estimate sits beside them, never picked for the cook: they look, then tap.
@@ -1333,8 +1333,12 @@ async function prepCount(me, stationId, date) {
     const vals = choices(l);
     const box = h('div', { class: 'taps', role: 'group', 'aria-label': `${l.name} on hand` });
     let other = null;
+    // Full: at par, nothing to make. One tap, no counting (counted as the day's par).
+    const par = l.dayPar ?? l.par;
+    const isFull = () => par !== undefined && l.counted !== undefined && l.counted >= par;
     const draw = () => fill(box,
-      (vals ?? []).map((v) => h('button', { class: `tap${l.counted === v ? ' on' : ''}`, 'aria-pressed': String(l.counted === v), text: v === 0 ? '0' : nice(v), onclick: async () => { l.counted = v; draw(); await save(v); } })),
+      par !== undefined && par > 0 ? h('button', { class: `tap full${isFull() ? ' on' : ''}`, 'aria-pressed': String(isFull()), title: `At par (${qty(par)}): nothing to make`, text: 'Full', onclick: async () => { l.counted = par; draw(); await save(par); } }) : null,
+      (vals ?? []).map((v) => h('button', { class: `tap${l.counted === v && !isFull() ? ' on' : ''}`, 'aria-pressed': String(l.counted === v), text: v === 0 ? '0' : nice(v), onclick: async () => { l.counted = v; draw(); await save(v); } })),
       other ?? h('button', { class: `tap other${l.counted !== undefined && !(vals ?? []).includes(l.counted) ? ' on' : ''}`, text: l.counted !== undefined && !(vals ?? []).includes(l.counted) ? nice(l.counted) : 'other', onclick: () => {
         other = stepper(l.counted, 0.5, async (v) => { l.counted = v ?? undefined; await save(v); }, `${l.name} on hand`); draw(); other.querySelector('input')?.focus();
       } }));
@@ -1380,12 +1384,14 @@ async function prepCount(me, stationId, date) {
   const left = countable.filter((l) => l.counted === undefined && (l.kind === 'count' || l.bulkUnit));
   show(shell(me, 'prep', [
     prepHeader(me, v, 'Count', v.status === 'approved' ? 'Already approved for tomorrow. A chef can reopen it to change counts.' : 'How much is left of each, in the station’s units.'),
-    page(h('section', { class: 'card' }, h('div', { class: 'list' }, rows)), [
+    page(h('section', { class: 'card' }, h('div', { class: 'list' }, rows),
+      // The end of the list has its own way out, so nobody scrolls back up to finish.
+      h('div', { class: 'row wrap count-end' }, endTally, h('div', { class: 'grow' }), h('button', { class: 'btn dark', text: 'Done counting', onclick: () => prepHome(me) }))), [
       sideBox('Counted', tallyBar, tallyText,
         sideActions(h('button', { class: 'btn dark', text: 'Done counting', onclick: () => prepHome(me) }))),
       left.length && left.length < toCount ? sideBox('Not counted yet', h('div', { class: 'small', text: left.map((l) => l.name).join(' · ') })) : null,
-      sideBox('Tips', h('div', { class: 'small muted', text: 'Counts save as you go. Bulk items are optional: count them when you know, and the suggestion for what fills from them gets sharper.' })),
-    ]),
+      sideBox('Tips', h('div', { class: 'small muted', text: 'Counts save as you go. Full means it’s at par: nothing to make, no need to count it. Bulk items are optional: count them when you know, and the suggestion for what fills from them gets sharper.' })),
+    ], { sticky: true }),
   ]));
 }
 
