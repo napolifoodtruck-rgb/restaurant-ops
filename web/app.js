@@ -2468,7 +2468,7 @@ function foodCostPanel(title, share, weeks, values, goal) {
   for (const t of ticks) svg.append(el('line', { x1: L, x2: W - R, y1: y(t), y2: y(t), class: 'grid' }), el('text', { x: L - 6, y: y(t) + 4, 'text-anchor': 'end', class: 'tick' }, `${Math.round(t * 100)}%`));
   // A range is shaded between its ends; a single goal is one dashed line.
   if (goal?.low) svg.append(el('rect', { x: L, width: W - L - R, y: y(goal.high), height: y(goal.low) - y(goal.high), class: 'fc-band' }));
-  if (goal) svg.append(el('line', { x1: L, x2: W - R, y1: y(goal.high), y2: y(goal.high), class: 'fc-goal' }), el('text', { x: L + 4, y: y(goal.high) - 5, class: 'fc-goal-label' }, `Goal ${goalText(goal)}`));
+  if (goal) svg.append(el('line', { x1: L, x2: W - R, y1: y(goal.high), y2: y(goal.high), class: 'fc-goal' }), el('text', { x: L + 4, y: goal.low ? y(goal.low) - 5 : y(goal.high) - 5, class: 'fc-goal-label' }, `Goal ${goalText(goal)}`));
   for (const i of [0, Math.floor((values.length - 1) / 2), values.length - 1]) svg.append(el('text', { x: x(i), y: H - 6, 'text-anchor': i === 0 ? 'start' : i === values.length - 1 ? 'end' : 'middle', class: 'tick' }, shortDate(weeks[i])));
   // Runs of weeks with sales; a week with none breaks the line.
   let run = [];
