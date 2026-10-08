@@ -116,13 +116,22 @@ export const WHY_PARTIAL_DEFAULT = [
 ].join('\n');
 export const WHY_PARTIAL_MAX = 2000;
 
-/** The order page's own content, as customers get it: the header photo's address (null: none), the notice and the "why" panel. */
-export async function loadOrderPage(db: Db, restaurantId: string): Promise<{ headerImage: string | null; notice: string; noticeChanged: boolean; whyPartial: string; whyPartialChanged: boolean }> {
-  const r = (await db.query<{ notice_text: string | null; why_partial_text: string | null; has_image: boolean; image_at: Date | null }>('SELECT notice_text, why_partial_text, header_image IS NOT NULL AS has_image, header_image_updated_at AS image_at FROM online_page WHERE restaurant_id = $1', [restaurantId])).rows[0];
+/** The "Do you have gluten-free?" panel, until a manager writes their own. A blank line starts a paragraph. */
+export const GLUTEN_FREE_DEFAULT = [
+  'We make a gluten-sensitive crust, but it isn’t sold online.',
+  '',
+  'Come by or call to order it in person, usually under 8 minutes.',
+].join('\n');
+export const GLUTEN_FREE_MAX = 2000;
+
+/** The order page's own content, as customers get it: the header photo's address (null: none), the notice, the "why" and "gluten-free" panels. */
+export async function loadOrderPage(db: Db, restaurantId: string): Promise<{ headerImage: string | null; notice: string; noticeChanged: boolean; whyPartial: string; whyPartialChanged: boolean; glutenFree: string; glutenFreeChanged: boolean }> {
+  const r = (await db.query<{ notice_text: string | null; why_partial_text: string | null; gluten_free_text: string | null; has_image: boolean; image_at: Date | null }>('SELECT notice_text, why_partial_text, gluten_free_text, header_image IS NOT NULL AS has_image, header_image_updated_at AS image_at FROM online_page WHERE restaurant_id = $1', [restaurantId])).rows[0];
   return {
     headerImage: r?.has_image ? `/api/order/header-image?v=${r.image_at ? new Date(r.image_at).getTime() : 0}` : null,
     notice: r?.notice_text ?? NOTICE_DEFAULT, noticeChanged: r?.notice_text != null,
     whyPartial: r?.why_partial_text ?? WHY_PARTIAL_DEFAULT, whyPartialChanged: r?.why_partial_text != null,
+    glutenFree: r?.gluten_free_text ?? GLUTEN_FREE_DEFAULT, glutenFreeChanged: r?.gluten_free_text != null,
   };
 }
 
@@ -198,7 +207,7 @@ export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResp
     return send(res, 200, { ok: true }), true;
   }
 
-  // The order page: a header photo (a JPEG, PNG or WebP under 3 MB; null takes it off), the notice, and the "Why partially cooked?" text (null or '': back to the usual words).
+  // The order page: a header photo (a JPEG, PNG or WebP under 3 MB; null takes it off), the notice, and the "Why partially cooked?" and "Do you have gluten-free?" texts (null or '': back to the usual words).
   if (path === '/api/online/page') {
     if (method === 'POST') {
       const b = await body(req, 5 * 1024 * 1024);
@@ -214,6 +223,12 @@ export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResp
         const text = typeof b.whyPartial === 'string' ? tidyWords(b.whyPartial) : '';
         if (text.length > WHY_PARTIAL_MAX) throw new HttpError(400, `Keep the "why partially cooked" text under ${WHY_PARTIAL_MAX} characters.`);
         await db.query('UPDATE online_page SET why_partial_text = $2, updated_at = now(), updated_by = $3 WHERE restaurant_id = $1', [who.restaurantId, text && text !== WHY_PARTIAL_DEFAULT ? text : null, who.staffId]);
+      }
+      if (b.glutenFree !== undefined) {
+        if (b.glutenFree !== null && typeof b.glutenFree !== 'string') throw new HttpError(400, 'The "gluten-free" text is words, or nothing.');
+        const text = typeof b.glutenFree === 'string' ? tidyWords(b.glutenFree) : '';
+        if (text.length > GLUTEN_FREE_MAX) throw new HttpError(400, `Keep the "gluten-free" text under ${GLUTEN_FREE_MAX} characters.`);
+        await db.query('UPDATE online_page SET gluten_free_text = $2, updated_at = now(), updated_by = $3 WHERE restaurant_id = $1', [who.restaurantId, text && text !== GLUTEN_FREE_DEFAULT ? text : null, who.staffId]);
       }
       if (b.headerImage !== undefined) {
         if (b.headerImage === null) await db.query('UPDATE online_page SET header_image = NULL, header_image_type = NULL, header_image_updated_at = now(), updated_at = now(), updated_by = $2 WHERE restaurant_id = $1', [who.restaurantId, who.staffId]);
