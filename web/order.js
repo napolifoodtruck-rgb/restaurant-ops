@@ -90,7 +90,7 @@ function header({ wide = false, cart: withCart = true } = {}) {
   const links = NAV.filter((n) => n.href);
   const link = (n) => h('a', { href: n.href, target: '_blank', rel: 'noopener', text: n.label });
   const bag = withCart ? h('button', { type: 'button', class: 'bag', 'aria-label': `Your order, ${cartCount()} item${cartCount() === 1 ? '' : 's'}`, onclick: () => (cart.length ? cartView() : menuView()) }) : null;
-  if (bag) { const icon = h('span', { class: 'icon' }); icon.innerHTML = BAG; bag.append(icon, cartCount() ? h('span', { class: 'count', text: String(cartCount()) }) : null); }
+  if (bag) { const icon = h('span', { class: 'icon' }); icon.innerHTML = BAG; bag.append(icon); if (cartCount()) bag.append(h('span', { class: 'count', text: String(cartCount()) })); }
   return [
     h('header', { class: 'top' },
       h('div', { class: `top-in${wide ? ' wide' : ''}` },
