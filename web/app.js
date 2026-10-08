@@ -1112,81 +1112,101 @@ function legend(items, onToggle) {
 }
 
 /**
- * Each dish as a dot: how often it sells (plates per open day it was on the menu) against what
- * one plate earns after food. The lines are the category's averages, splitting it four ways:
- * popular and earning, earning but quiet, popular but earning less, and neither. (Menu
- * engineering, Kasavana and Smith, 1982; the words here are the app's own.)
+ * Each dish as a bubble: how often it sells (plates per open day it was on the menu) across,
+ * and up the side one of three measures, picked with a switch: food cost (low at the top),
+ * profit per plate, or total profit. A bubble's size is its total gross profit, so a cheap dish
+ * that carries the menu still reads as big. The dashed lines are the category's averages,
+ * splitting it four ways. (Menu engineering after Kasavana and Smith, 1982, and Miller's
+ * food-cost version, 1980; the words here are the app's own.)
  */
-function menuMatrix(cat, m) {
+const MATRIX_Y = {
+  cost: { label: 'Food cost', short: 'Food cost %', axis: 'Lower food cost ↑', value: (d) => d.foodCostShare, invert: true, fmt: (v) => `${Math.round(v * 100)}%`,
+    corners: ['Low cost, sells less: feature it', 'Sells, low cost: keep it up', 'Sells less, higher cost: rethink', 'Popular, higher cost: watch portions and price'] },
+  plate: { label: 'Profit per plate', short: 'Profit per plate', axis: 'Profit per plate ↑', value: (d) => d.leftPerPlate, fmt: (v) => `$${Math.round(v)}`,
+    corners: ['Earns well, sells less: feature it', 'Sells and earns: keep it up', 'Sells less, earns less: rethink', 'Popular, lower per plate: your volume'] },
+  total: { label: 'Total profit', short: 'Total profit', axis: 'Gross profit in the period ↑', value: (d) => d.leftTotal, fmt: (v) => (v >= 1000 ? `$${Math.round(v / 100) / 10}k` : `$${Math.round(v)}`),
+    corners: ['Earns well for what it sells', 'Carries the menu', 'A small part of the menu', 'Busy for what it earns'] },
+};
+function menuMatrix(cat, m, state, again) {
   const ns = 'http://www.w3.org/2000/svg';
   const el = (tag, attrs, text) => { const e = document.createElementNS(ns, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text !== undefined) e.textContent = text; return e; };
-  const dishes = cat.dishes.filter((d) => !d.offSince && d.sold > 0).map((d) => ({ ...d, x: d.soldPerDay ?? d.sold / Math.max(1, m.openDays), y: d.leftPerPlate }));
-  if (dishes.length < 3) return null;
-  const W = 720, H = 380, L = 56, R = 24, T = 20, B = 40;
-  // Profit per plate isn't a total, so the scale fits the dishes rather than starting at zero.
-  const ys = dishes.map((d) => d.y), spread = Math.max(1, Math.max(...ys) - Math.min(...ys));
-  const step = spread > 12 ? 5 : spread > 5 ? 2 : 1;
-  const yLo = Math.floor((Math.min(...ys) - spread * 0.15) / step) * step, yHi = Math.ceil((Math.max(...ys) + spread * 0.15) / step) * step;
-  const xMax = Math.max(...dishes.map((d) => d.x)) * 1.08;
-  const x = (v) => L + (v / xMax) * (W - L - R), y = (v) => T + (1 - (v - yLo) / (yHi - yLo)) * (H - T - B);
+  const bar = m.area === 'bar';
+  const key = MATRIX_Y[state.matrixY] ? state.matrixY : 'cost';
+  const mode = MATRIX_Y[key];
+  const label = (t) => (bar ? t.replace(/food cost/gi, (w) => (w[0] === 'F' ? 'Pour cost' : 'pour cost')).replace(/plate/g, 'drink') : t);
+  const dishes = cat.dishes.filter((d) => !d.offSince && d.sold > 0 && mode.value(d) !== null && mode.value(d) !== undefined)
+    .map((d) => ({ ...d, x: d.soldPerDay ?? d.sold / Math.max(1, m.openDays), y: mode.value(d) }));
+  const pick = h('div', { class: 'seg', role: 'group', 'aria-label': 'Up the side' }, Object.entries(MATRIX_Y).map(([k, v]) =>
+    h('button', { class: k === key ? 'on' : '', 'aria-pressed': String(k === key), text: label(v.short), onclick: () => again({ matrixY: k }) })));
+  const card = (...body) => h('section', { class: 'card' }, h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: `${cat.name}: what sells against what it earns` }), pick), ...body);
+  if (dishes.length < 3) return card(h('p', { class: 'muted', text: 'Needs at least three dishes with sales and costs.' }));
+
+  const W = 720, H = 400, L = 60, R = 24, T = 22, B = 42;
+  // Scales fit the dishes (none of these is a total that needs zero), with nice round steps.
+  const ys = dishes.map((d) => d.y), lo = Math.min(...ys), hi = Math.max(...ys), spread = Math.max(hi - lo, Math.abs(hi) * 0.05, 1e-6);
+  const raw = spread / 5, mag = 10 ** Math.floor(Math.log10(raw)), step = [1, 2, 2.5, 5, 10].map((k) => k * mag).find((v) => v >= raw) ?? raw;
+  const y0 = Math.max(lo >= 0 ? 0 : -Infinity, Math.floor((lo - spread * 0.12) / step) * step), y1 = Math.ceil((hi + spread * 0.12) / step) * step;
+  const xMax = Math.max(...dishes.map((d) => d.x)) * 1.1;
+  const x = (v) => L + (v / xMax) * (W - L - R);
+  const y = (v) => { const f = (v - y0) / (y1 - y0); return T + (mode.invert ? f : 1 - f) * (H - T - B); };
+  const maxTotal = Math.max(...dishes.map((d) => Math.max(0, d.leftTotal)), 1);
+  const rOf = (d) => 5 + 15 * Math.sqrt(Math.max(0, d.leftTotal) / maxTotal);
   const xAvg = dishes.reduce((a, d) => a + d.x, 0) / dishes.length;
-  const yAvg = dishes.reduce((a, d) => a + d.leftTotal, 0) / Math.max(1, dishes.reduce((a, d) => a + d.sold, 0));
-  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', class: 'matrix-chart', 'aria-label': `${cat.name}: plates a day against profit per plate. ${dishes.map((d) => `${d.name} ${d.x.toFixed(1)} a day, ${dollars(d.y, { cents: true })} a plate`).join('; ')}` });
-  // Quadrant names, in the corners, quiet.
+  const sold = dishes.reduce((a, d) => a + d.sold, 0), left = dishes.reduce((a, d) => a + d.leftTotal, 0);
+  const yAvg = key === 'cost' ? cat.foodCostShare : key === 'plate' ? left / Math.max(1, sold) : left / dishes.length;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', class: 'matrix-chart', 'aria-label': `${cat.name}: plates a day against ${label(mode.label).toLowerCase()}. ${dishes.map((d) => `${d.name} ${d.x.toFixed(1)} a day, ${mode.fmt(d.y)}, ${dollars(d.leftTotal)} profit`).join('; ')}` });
+  const [tl, tr, bl, br] = mode.corners.map(label);
   const corner = (text, cx, cy, anchor) => svg.append(el('text', { x: cx, y: cy, 'text-anchor': anchor, class: 'mx-quad' }, text));
-  corner('Earns well, sells less: feature it', L + 8, T + 14, 'start');
-  corner('Sells and earns: keep it up', W - R - 8, T + 14, 'end');
-  corner('Sells less, earns less: rethink', L + 8, H - B - 8, 'start');
-  corner('Sells, earns less: check price or cost', W - R - 8, H - B - 8, 'end');
-  // Axes and the two average lines.
-  for (let v = yLo; v <= yHi + 1e-9; v += step) {
-    svg.append(el('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: 'grid' }), el('text', { x: L - 8, y: y(v) + 4, 'text-anchor': 'end', class: 'tick' }, `$${v}`));
-  }
+  corner(tl, L + 8, T + 14, 'start'); corner(tr, W - R - 8, T + 14, 'end'); corner(bl, L + 8, H - B - 8, 'start'); corner(br, W - R - 8, H - B - 8, 'end');
+  for (let v = y0; v <= y1 + step / 1000; v += step) svg.append(el('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: 'grid' }), el('text', { x: L - 8, y: y(v) + 4, 'text-anchor': 'end', class: 'tick' }, mode.fmt(v)));
   const xStep = xMax > 40 ? 10 : xMax > 16 ? 5 : xMax > 6 ? 2 : xMax > 3 ? 1 : 0.5;
   for (let v = 0; v <= xMax; v += xStep) svg.append(el('text', { x: x(v), y: H - B + 18, 'text-anchor': 'middle', class: 'tick' }, String(v)));
-  svg.append(el('text', { x: (L + W - R) / 2, y: H - 4, 'text-anchor': 'middle', class: 'mx-axis' }, 'Plates a day it was on the menu →'));
-  svg.append(el('text', { x: 14, y: (T + H - B) / 2, 'text-anchor': 'middle', class: 'mx-axis', transform: `rotate(-90 14 ${(T + H - B) / 2})` }, 'Profit per plate →'));
+  svg.append(el('text', { x: (L + W - R) / 2, y: H - 4, 'text-anchor': 'middle', class: 'mx-axis' }, `${bar ? 'Sold' : 'Plates'} a day it was on the menu →`));
+  svg.append(el('text', { x: 14, y: (T + H - B) / 2, 'text-anchor': 'middle', class: 'mx-axis', transform: `rotate(-90 14 ${(T + H - B) / 2})` }, label(mode.axis)));
   svg.append(el('line', { x1: x(xAvg), x2: x(xAvg), y1: T, y2: H - B, class: 'mx-avg' }), el('line', { x1: L, x2: W - R, y1: y(yAvg), y2: y(yAvg), class: 'mx-avg' }));
-  // The dishes, each named beside its dot.
-  const tip = el('g', { class: 'hover', visibility: 'hidden' }), box = el('rect', { width: 190, height: 52, rx: 3, class: 'hover-box' }), t1 = el('text', { class: 'hover-cost' }), t2 = el('text', { class: 'hover-date' }), t3 = el('text', { class: 'hover-date' });
-  tip.append(box, t1, t2, t3);
-  // Names placed so they don't sit on each other or on a dot: right of the dot, else left, else nudged up or down.
-  const taken = dishes.map((d) => ({ x0: x(d.x) - 7, x1: x(d.x) + 7, y0: y(d.y) - 7, y1: y(d.y) + 7 }));
+
+  // Names placed clear of each other and of the bubbles: right, else left, else nudged up or down.
+  const taken = dishes.map((d) => { const r = rOf(d); return { x0: x(d.x) - r, x1: x(d.x) + r, y0: y(d.y) - r, y1: y(d.y) + r }; });
   const hits = (b) => taken.some((t) => b.x0 < t.x1 && b.x1 > t.x0 && b.y0 < t.y1 && b.y1 > t.y0);
-  const place = (cx, cy, text) => {
+  const place = (cx, cy, r, text) => {
     const w = text.length * 7 + 4;
     for (const dy of [0, -14, 14, -28, 28, -42, 42]) {
       for (const side of [1, -1]) {
-        const lx = side > 0 ? cx + 10 : cx - 10 - w;
+        const lx = side > 0 ? cx + r + 4 : cx - r - 4 - w;
         const box = { x0: lx, x1: lx + w, y0: cy + dy - 9, y1: cy + dy + 5 };
         if (lx < L || lx + w > W - R || hits(box)) continue;
         taken.push(box);
-        return { x: side > 0 ? cx + 10 : cx - 10, y: cy + dy + 4, anchor: side > 0 ? 'start' : 'end', moved: dy !== 0 };
+        return { x: side > 0 ? lx : lx + w, y: cy + dy + 4, anchor: side > 0 ? 'start' : 'end', moved: dy !== 0 };
       }
     }
-    return { x: cx + 10, y: cy + 4, anchor: 'start', moved: false };
+    return { x: cx + r + 4, y: cy + 4, anchor: 'start', moved: false };
   };
+  const tip = el('g', { class: 'hover', visibility: 'hidden' }), box = el('rect', { width: 210, height: 52, rx: 3, class: 'hover-box' }), t1 = el('text', { class: 'hover-cost' }), t2 = el('text', { class: 'hover-date' }), t3 = el('text', { class: 'hover-date' });
+  tip.append(box, t1, t2, t3);
+  const bubbles = el('g', {}), names = el('g', {});
+  // Biggest drawn first, so small bubbles sit on top and stay reachable.
   for (const d of [...dishes].sort((a, b) => b.leftTotal - a.leftTotal)) {
-    const cx = x(d.x), cy = y(d.y), at = place(cx, cy, d.name);
+    const cx = x(d.x), cy = y(d.y), r = rOf(d), at = place(cx, cy, r, d.name);
     const g = el('g', { class: 'mx-dish', tabindex: '0' });
-    if (at.moved) g.append(el('line', { x1: cx, y1: cy, x2: at.anchor === 'start' ? at.x - 2 : at.x + 2, y2: at.y - 4, class: 'mx-leader' }));
-    g.append(el('circle', { cx, cy, r: 6, class: 'mx-dot' }), el('text', { x: at.x, y: at.y, 'text-anchor': at.anchor, class: 'mx-label' }, d.name));
+    g.append(el('circle', { cx, cy, r, class: 'mx-dot' }));
     const show = () => {
       tip.setAttribute('visibility', 'visible');
-      const bx = Math.min(cx + 12, W - R - 192), by = Math.max(T, cy - 60);
+      const bx = Math.min(cx + r + 6, W - R - 212), by = Math.max(T, cy - r - 56);
       box.setAttribute('x', bx); box.setAttribute('y', by);
       t1.setAttribute('x', bx + 10); t1.setAttribute('y', by + 17); t1.textContent = d.name;
-      t2.setAttribute('x', bx + 10); t2.setAttribute('y', by + 32); t2.textContent = `${d.x.toFixed(1)} plates a day · ${dollars(d.y, { cents: true })} a plate`;
+      t2.setAttribute('x', bx + 10); t2.setAttribute('y', by + 32); t2.textContent = `${d.x.toFixed(1)} a day · ${pct(d.foodCostShare)} ${bar ? 'pour' : 'food'} · ${dollars(d.leftPerPlate, { cents: true })} each`;
       t3.setAttribute('x', bx + 10); t3.setAttribute('y', by + 46); t3.textContent = `${dollars(d.leftTotal)} gross profit in the period`;
     };
     g.addEventListener('pointerenter', show); g.addEventListener('focus', show);
     g.addEventListener('pointerleave', () => tip.setAttribute('visibility', 'hidden')); g.addEventListener('blur', () => tip.setAttribute('visibility', 'hidden'));
-    svg.append(g);
+    bubbles.append(g);
+    if (at.moved) names.append(el('line', { x1: cx, y1: cy, x2: at.anchor === 'start' ? at.x - 2 : at.x + 2, y2: at.y - 4, class: 'mx-leader' }));
+    names.append(el('text', { x: at.x, y: at.y, 'text-anchor': at.anchor, class: 'mx-label' }, d.name));
   }
-  svg.append(tip);
-  return h('section', { class: 'card' },
-    h('h2', { text: `${cat.name}: what sells against what it earns` }),
-    h('div', { class: 'small muted', text: `Each dot is a ${m.area === 'bar' ? 'drink' : 'dish'}: ${m.area === 'bar' ? 'sold' : 'plates'} a day across, profit per ${m.area === 'bar' ? 'drink after pour cost' : 'plate after food'} up. The dashed lines are ${cat.name.toLowerCase()}’s averages (${xAvg.toFixed(1)} a day, ${dollars(yAvg, { cents: true })} a plate). Hover a dot for its numbers.` }),
+  svg.append(bubbles, names, tip);
+  const avgText = key === 'cost' ? `${pct(yAvg)} ${bar ? 'pour' : 'food'} cost` : key === 'plate' ? `${dollars(yAvg, { cents: true })} a ${bar ? 'drink' : 'plate'}` : `${dollars(yAvg)} each`;
+  return card(
+    h('div', { class: 'small muted', text: `Each bubble is a ${bar ? 'drink' : 'dish'}, sized by the gross profit it brought in. Across: how many sold a day; up: ${label(mode.label).toLowerCase()}${mode.invert ? ', lowest at the top' : ''}. Dashed lines are ${cat.name.toLowerCase()}’s averages (${xAvg.toFixed(1)} a day, ${avgText}). Hover a bubble for its numbers.` }),
     h('div', { class: 'chart-wrap' }, svg));
 }
 
@@ -1221,7 +1241,7 @@ function chartsView(state, cat, m, again) {
     stackedBars({ weeks: m.weeks, series: stack, format: money }));
 
   // Food cost week by week is in the side column, with Expand for a large view.
-  return [menuMatrix(cat, m), plates, leftBars];
+  return [menuMatrix(cat, m, state, again), plates, leftBars];
 }
 
 // ------------------------------------------------------------------ prep lists

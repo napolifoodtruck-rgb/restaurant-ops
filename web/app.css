@@ -1076,8 +1076,8 @@ button.donut-row { display: flex; min-width: 0; }
 .matrix-chart .mx-axis { font-size: 12px; fill: var(--muted); font-weight: 600; }
 .matrix-chart .mx-avg { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 4 4; opacity: .45; }
 .matrix-chart .mx-quad { font-size: 12px; fill: var(--muted); font-style: italic; }
-.matrix-chart .mx-dot { fill: var(--blue); stroke: var(--card); stroke-width: 2; }
-.matrix-chart .mx-dish:hover .mx-dot, .matrix-chart .mx-dish:focus .mx-dot { fill: var(--accent); }
+.matrix-chart .mx-dot { fill: var(--blue); fill-opacity: .55; stroke: var(--blue); stroke-width: 1.5; }
+.matrix-chart .mx-dish:hover .mx-dot, .matrix-chart .mx-dish:focus .mx-dot { fill: var(--accent); stroke: var(--accent); fill-opacity: .7; }
 .matrix-chart .mx-dish { cursor: default; outline: none; }
 .matrix-chart .mx-label { font-size: 12px; fill: var(--ink); font-weight: 600; paint-order: stroke; stroke: var(--card); stroke-width: 3px; }
 .matrix-chart .hover-box { fill: var(--card); stroke: var(--line); } .matrix-chart .hover-date { font-size: 11px; fill: var(--muted); } .matrix-chart .hover-cost { font-size: 13px; font-weight: 600; fill: var(--ink); }
