@@ -328,6 +328,13 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.equal((await call('POST', '/api/online/pause', { tonight: true })).json.paused.tonight, true);
   menu = (await customer('GET', '/api/order/menu')).json;
   assert.deepEqual([menu.open, menu.paused.until], [false, null]);
+  // Turned off: stays off (no end time) until someone turns it back on.
+  const off = (await call('POST', '/api/online/pause', { off: true })).json.paused;
+  assert.deepEqual([off.off, off.tonight], [true, true]);
+  menu = (await customer('GET', '/api/order/menu')).json;
+  assert.deepEqual([menu.open, menu.paused], [false, { until: null, off: true }]);
+  const whileOff = await customer('POST', '/api/order/checkout', { ...order, window: '18:00', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
+  assert.deepEqual([whileOff.status, /not taking online orders right now/.test(whileOff.json.error)], [409, true]);
   assert.equal((await call('POST', '/api/online/pause', { resume: true })).json.paused, null);
   menu = (await customer('GET', '/api/order/menu')).json;
   assert.deepEqual([menu.open, menu.paused], [true, null]);

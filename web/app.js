@@ -4108,7 +4108,8 @@ async function todayScreen(me, filter = 'all') {
 
 /**
  * Pause online orders, on Today for everyone on shift: the cooks see the slam coming. Shows only on
- * nights online ordering is taking orders, or while it's paused.
+ * nights online ordering is taking orders, or while it's paused. "Rest of tonight" comes back on by
+ * itself at midnight, for the next day's orders; Turn off stays off until someone turns it back on.
  */
 function onlinePauseBar() {
   const box = h('section', { class: 'card online-pause', hidden: true, 'aria-label': 'Online orders' });
@@ -4120,17 +4121,20 @@ function onlinePauseBar() {
       if (!r.ok) { busy(btn, false); return box.append(h('div', { class: 'error small', text: r.data.error ?? 'That didn’t save.' })); }
       draw(r.data);
     };
-    const button = (text, body, cls = '') => h('button', { class: `btn small-btn ${cls}`, text, onclick: (e) => save(e.currentTarget, body) });
+    const button = (text, body, cls = '', ask) => h('button', { class: `btn small-btn ${cls}`, text, onclick: (e) => (!ask || confirmText(ask)) && save(e.currentTarget, body) });
     if (p.paused) {
       fill(box, h('div', { class: 'grow' },
-        h('div', { class: 'strong', text: p.paused.tonight ? 'Online orders are paused for tonight' : `Online orders are paused until ${clock12(p.paused.untilTime)}` }),
-        h('div', { class: 'small muted', text: 'Customers can’t start new orders. Orders already placed still come through.' })),
-        h('div', { class: 'row wrap' }, button('Resume online orders', { resume: true }, 'dark')));
+        h('div', { class: 'strong', text: p.paused.off ? 'Online orders are turned off' : p.paused.tonight ? 'Online orders are paused for tonight' : `Online orders are paused until ${clock12(p.paused.untilTime)}` }),
+        h('div', { class: 'small muted', text: `Customers can’t start new orders. Orders already placed still come through.${p.paused.off ? ' They stay off until you turn them back on.' : p.paused.tonight ? ' They turn back on by themselves at midnight, for tomorrow.' : ''}` })),
+        h('div', { class: 'row wrap' }, button(p.paused.off ? 'Turn online orders on' : 'Resume online orders', { resume: true }, 'dark'),
+          p.paused.off ? null : button('Turn off', { off: true }, '', 'Turn online orders off? They stay off, tonight and the days after, until someone turns them back on here.')));
     } else {
       fill(box, h('div', { class: 'grow' },
         h('div', { class: 'strong', text: 'Online orders are on' }),
         h('div', { class: 'small muted', text: 'Slammed? Pause new online orders for a while.' })),
-        h('div', { class: 'row wrap' }, [15, 30, 60].map((m) => button(`Pause ${m} min`, { minutes: m })), button('Rest of tonight', { tonight: true })));
+        h('div', { class: 'row wrap' }, [15, 30, 60].map((m) => button(`Pause ${m} min`, { minutes: m })),
+          button('Rest of tonight', { tonight: true }, '', 'Pause online orders for the rest of tonight? They turn back on by themselves at midnight, so customers can order for tomorrow. To keep them off, use Turn off.'),
+          button('Turn off', { off: true }, '', 'Turn online orders off? They stay off, tonight and the days after, until someone turns them back on here.')));
     }
   };
   api('GET', '/api/online/pause').then((r) => { if (r.ok) draw(r.data); });
