@@ -1139,3 +1139,4 @@ button.donut-row { display: flex; min-width: 0; }
 .history-detail:empty { display: none; }
 .history-detail { display: flex; flex-direction: column; gap: 6px; padding: 8px 0 4px; }
 .history-lines { margin: 0; padding-left: 18px; }
+.history-row > .link { align-self: flex-start; }

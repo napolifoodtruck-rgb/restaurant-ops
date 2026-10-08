@@ -149,11 +149,12 @@ CREATE TABLE ingredient_aliases (
 CREATE TABLE confirmed_portions (
   restaurant_id   uuid NOT NULL REFERENCES restaurants ON DELETE CASCADE,
   recipe_id       uuid NOT NULL,
-  ingredient_id   text NOT NULL,
+  ingredient_name text NOT NULL,                       -- as answered
+  ingredient_id   text,                                -- once it's on the ingredient list
   amount          numeric NOT NULL CHECK (amount > 0),
   unit            text NOT NULL,
   source          text,
-  PRIMARY KEY (restaurant_id, recipe_id, ingredient_id),
+  PRIMARY KEY (restaurant_id, recipe_id, ingredient_name),
   FOREIGN KEY (restaurant_id, recipe_id) REFERENCES recipes (restaurant_id, id) ON DELETE CASCADE
 );
 

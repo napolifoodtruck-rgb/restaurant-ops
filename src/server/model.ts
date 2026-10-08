@@ -26,7 +26,7 @@ import { storedItemSales, storedModifierSales } from './squareSync.ts';
 import { ingredientsStamp, loadIngredients } from './ingredients.ts';
 import { loadStore, storeStamp, type InvoiceSource } from './invoiceStore.ts';
 import { ensureMarginEdgeImported } from './meImport.ts';
-import { bookStamp, loadBook, onBookChange, recipeCardsOn, saveBook } from './book.ts';
+import { bookStamp, loadBook, recipeCardsOn, saveBook } from './book.ts';
 
 export { loadBook, saveBook };
 
@@ -228,7 +228,6 @@ const cache = new Map<string, { stamp: string; model: Promise<Model> }>();
 export function invalidate(restaurantId: string): void {
   for (const key of cache.keys()) if (key.startsWith(`${restaurantId}|`)) cache.delete(key);
 }
-onBookChange(invalidate);
 
 function minusDays(day: string, n: number): string {
   const d = new Date(`${day}T12:00:00Z`);

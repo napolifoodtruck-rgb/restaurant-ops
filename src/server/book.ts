@@ -27,10 +27,11 @@
 import { randomUUID } from 'node:crypto';
 import type { Db } from './db.ts';
 import { inTurn } from './turns.ts';
+import { ensureMarginEdgeImported } from './meImport.ts';
 import { buildRecipes, FREE_PRODUCTS, normalizeName, recipeId as legacyId, type CardIngredient, type RecipeCard } from '../core/recipeCards.ts';
 import type { ModifierAnswers } from '../core/modifiers.ts';
 import type { PurchasedProduct } from '../core/purchasing.ts';
-import type { BookKey, KitchenBook, LinkAnswers, PilotImportAnswers } from './model.ts';
+import { invalidate, type BookKey, type KitchenBook, type LinkAnswers, type PilotImportAnswers } from './model.ts';
 
 // ---------------------------------------------------------------- small helpers
 
@@ -55,9 +56,8 @@ const sameKey = (a: string, b: string) => keyOf(a) === keyOf(b);
 /** The old name-made ids ("me-pizza-dough") still in saved answers and to-do keys. */
 const LEGACY_ID = /(?<![a-z0-9])me-[a-z0-9]+(?:-[a-z0-9]+)*/g;
 
-let onChange: (restaurantId: string) => void = () => {};
-/** Called whenever the book changes (the model drops its cache). */
-export function onBookChange(fn: (restaurantId: string) => void): void { onChange = fn; }
+/** The book changed: the model drops what it built from it. */
+const onChange = (restaurantId: string) => invalidate(restaurantId);
 
 // ---------------------------------------------------------------- matching names
 
@@ -261,7 +261,7 @@ async function readTables(db: Db, restaurantId: string): Promise<Partial<Kitchen
   // Import answers.
   const answers = await q<{ ingredient_id: string; conversions: unknown; manual_price: unknown; exclusive: boolean; partly_grown: unknown }>('SELECT ingredient_id, conversions, manual_price, exclusive, partly_grown FROM ingredient_answers WHERE restaurant_id = $1 ORDER BY ingredient_id');
   const aliasRows = await q<{ name: string; ingredient_id: string }>('SELECT name, ingredient_id FROM ingredient_aliases WHERE restaurant_id = $1 ORDER BY name_key');
-  const portions = await q<{ recipe_id: string; ingredient_id: string; amount: unknown; unit: string; source: string | null }>('SELECT recipe_id, ingredient_id, amount, unit, source FROM confirmed_portions WHERE restaurant_id = $1 ORDER BY recipe_id, ingredient_id');
+  const portions = await q<{ recipe_id: string; ingredient_name: string; ingredient_id: string | null; amount: unknown; unit: string; source: string | null }>('SELECT recipe_id, ingredient_name, ingredient_id, amount, unit, source FROM confirmed_portions WHERE restaurant_id = $1 ORDER BY recipe_id, ingredient_name');
   const importer = (await q<{ answers: unknown }>("SELECT answers FROM importer_answers WHERE restaurant_id = $1 AND source = 'marginedge'"))[0];
   const me = importer ? js<{ packs?: PilotImportAnswers['packs']; merges?: PilotImportAnswers['merges'] }>(importer.answers) : {};
   const importAnswers: PilotImportAnswers = {};
@@ -272,7 +272,8 @@ async function readTables(db: Db, restaurantId: string): Promise<Partial<Kitchen
   if (aliasRows.length) importAnswers.ingredientProducts = Object.fromEntries(aliasRows.map((a) => [a.name, a.ingredient_id]));
   const prices = answers.filter((a) => a.manual_price);
   if (prices.length) importAnswers.manualPrices = Object.fromEntries(prices.map((a) => [a.ingredient_id, js(a.manual_price)]));
-  if (portions.length) importAnswers.portions = portions.map((p) => ({ recipe: recipeName.get(p.recipe_id) ?? '', ingredient: productName.get(p.ingredient_id) ?? p.ingredient_id, amount: Number(p.amount), unit: p.unit, ...(p.source ? { source: p.source } : {}), recipeId: p.recipe_id, productId: p.ingredient_id }));
+  if (portions.length) importAnswers.portions = portions.map((p) => ({ recipe: recipeName.get(p.recipe_id) ?? '', ingredient: (p.ingredient_id ? productName.get(p.ingredient_id) : undefined) ?? p.ingredient_name, amount: Number(p.amount), unit: p.unit,
+    ...(p.source ? { source: p.source } : {}), recipeId: p.recipe_id, ...(p.ingredient_id ? { productId: p.ingredient_id } : {}) }));
   const exclusive = answers.filter((a) => a.exclusive);
   if (exclusive.length) importAnswers.exclusive = exclusive.map((a) => productName.get(a.ingredient_id) ?? a.ingredient_id);
   const grown = answers.filter((a) => a.partly_grown);
@@ -536,8 +537,8 @@ export async function saveImportAnswers(db: Db, restaurantId: string, a: PilotIm
   const portions = [...new Map((a.portions ?? []).map((p) => {
     const q = p as typeof p & { recipeId?: string; productId?: string };
     const recipe = q.recipeId && recipeIds.has(q.recipeId) && (recipeByName.get(p.recipe) ?? q.recipeId) === q.recipeId ? q.recipeId : recipeByName.get(p.recipe);
-    const product = productByName.get(p.ingredient) ?? q.productId;
-    return [`${recipe}|${product}`, recipe && product ? { recipe_id: recipe, ingredient_id: product, amount: p.amount, unit: p.unit, source: p.source ?? null } : undefined];
+    const product = productByName.get(p.ingredient) ?? q.productId ?? null;
+    return [`${recipe}|${p.ingredient}`, recipe ? { recipe_id: recipe, ingredient_name: p.ingredient, ingredient_id: product, amount: p.amount, unit: p.unit, source: p.source ?? null } : undefined];
   })).values()].filter(Boolean);
   const importer = { ...(a.packs?.length ? { packs: a.packs } : {}), ...(a.merges?.length ? { merges: a.merges } : {}) };
   const rid = text(restaurantId);
@@ -548,7 +549,7 @@ export async function saveImportAnswers(db: Db, restaurantId: string, a: PilotIm
     `DELETE FROM ingredient_aliases WHERE restaurant_id = ${rid};`,
     aliasRows.length ? `INSERT INTO ingredient_aliases (restaurant_id, name_key, name, ingredient_id) SELECT ${rid}, x.name_key, x.name, x.ingredient_id FROM jsonb_to_recordset(${lit(aliasRows)}) AS x(name_key text, name text, ingredient_id text);` : '',
     `DELETE FROM confirmed_portions WHERE restaurant_id = ${rid};`,
-    portions.length ? `INSERT INTO confirmed_portions (restaurant_id, recipe_id, ingredient_id, amount, unit, source) SELECT ${rid}, x.recipe_id, x.ingredient_id, x.amount, x.unit, x.source FROM jsonb_to_recordset(${lit(portions)}) AS x(recipe_id uuid, ingredient_id text, amount numeric, unit text, source text);` : '',
+    portions.length ? `INSERT INTO confirmed_portions (restaurant_id, recipe_id, ingredient_name, ingredient_id, amount, unit, source) SELECT ${rid}, x.recipe_id, x.ingredient_name, x.ingredient_id, x.amount, x.unit, x.source FROM jsonb_to_recordset(${lit(portions)}) AS x(recipe_id uuid, ingredient_name text, ingredient_id text, amount numeric, unit text, source text);` : '',
     Object.keys(importer).length ? `INSERT INTO importer_answers (restaurant_id, source, answers) VALUES (${rid}, 'marginedge', ${lit(importer)}) ON CONFLICT (restaurant_id, source) DO UPDATE SET answers = EXCLUDED.answers;`
       : `DELETE FROM importer_answers WHERE restaurant_id = ${rid} AND source = 'marginedge';`,
     touch(restaurantId, 'importAnswers', staffId),
@@ -645,6 +646,8 @@ async function clearTables(db: Db, restaurantId: string): Promise<void> {
  */
 async function moveFromDocument(db: Db, restaurantId: string): Promise<void> {
   const doc = await loadDocument(db, restaurantId);
+  // Recipe lines and answers are matched against the ingredient list: brought up to date first.
+  await ensureMarginEdgeImported(db, restaurantId, doc.importAnswers ?? {});
   const savedAt = (await db.query<{ at: string | null }>(`SELECT ${iso('updated_at')} AS at FROM kitchen_book WHERE restaurant_id = $1 AND key = 'recipeCards'`, [restaurantId])).rows[0]?.at ?? undefined;
   await clearTables(db, restaurantId);
   try {

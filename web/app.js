@@ -2940,7 +2940,8 @@ async function treeRecipe(me, node, trail, down, reload) {
       h('button', { class: 'btn small-btn', text: 'Edit recipe', onclick: async () => { const cd = (await api('GET', '/api/cards')).data; const c = cd.cards.find((x) => x.name === recipeName); if (c) cardEditor(me, cd, c, { back: { label: recipeName, go: () => { costCache.clear(); reload(); }, rail: 'recipes' } }); } })));
   // A dish: its variations and modifiers, loaded after the page shows (one click away from the menu).
   const extras = dish ? itemExtras(me, node.id, d.name, d.lines.filter((l) => l.kind === 'product' || l.kind === 'recipe'), null) : null;
-  return [[head, lines, extras], [needsALook(me, d.markers, d.stale, () => { costCache.clear(); reload(); }), moved, actions]];
+  const history = recipeHistoryBox({ id: node.id, name: d.name }, () => { costCache.clear(); reload(); });
+  return [[head, lines, extras], [needsALook(me, d.markers, d.stale, () => { costCache.clear(); reload(); }), moved, actions, history]];
 }
 async function treeProduct(me, node, trail, down, reload) {
   const q = node.amount ? `?amount=${node.amount}&unit=${encodeURIComponent(node.unit)}` : '';
@@ -3250,7 +3251,7 @@ function recipeView(me, r, opts) {
         r.usedBy.length ? sideBox('Used in', h('div', { class: 'small' }, usedIn())) : null,
         r.linked ? soldAsBox(r, opts.reload) : null,
         cost ? sideBox('Cost · managers only', h('div', { class: 'big', text: money2(r.cost * scale) }), h('div', { class: 'small muted', text: `${prep ? `for ${nice(y.amount * scale)} ${UNIT_LABEL(y.unit)}` : r.kind === 'drink' ? 'a drink' : 'a plate'}${r.complete ? '' : ' · some lines have no price yet'}` })) : null,
-        r.canEdit && r.id ? (history ??= recipeHistoryBox(me, r, opts)) : null);
+        r.canEdit && r.id ? (history ??= recipeHistoryBox(r, (name) => recipePage(me, name, opts))) : null);
       return;
     }
     fill(body,
@@ -3270,7 +3271,7 @@ function recipeView(me, r, opts) {
 const VERSION_CHANGE = { created: 'Written', edited: 'Changed', renamed: 'Renamed', removed: 'Taken out', restored: 'Put back', imported: 'Brought into the app' };
 
 /** Every saved version of a recipe (managers): who changed it and when; an earlier one can be seen and put back. */
-function recipeHistoryBox(me, r, opts) {
+function recipeHistoryBox(r, onRestored) {
   const list = h('div', { class: 'history' }, h('div', { class: 'small muted', text: 'Loading…' }));
   const box = sideBox('History', list);
   (async () => {
@@ -3295,7 +3296,7 @@ function recipeHistoryBox(me, r, opts) {
             back.disabled = true;
             const done = await api('POST', '/api/cards/restore', { version: v.id });
             if (!done.ok) { back.disabled = false; return (err.textContent = done.data.error ?? 'Couldn’t put it back.'); }
-            recipePage(me, done.data.name ?? r.name, opts);
+            onRestored(done.data.name ?? r.name);
           } });
           fill(detail,
             c.name !== r.name ? h('div', { class: 'small strong', text: `Called ${c.name} then` }) : null,
