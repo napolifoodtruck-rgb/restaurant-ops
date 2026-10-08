@@ -125,7 +125,8 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.equal(menu.page.noticeChanged, false);
   assert.match(menu.page.whyPartial, /^Neapolitan pizza is soft/);
   assert.equal(menu.page.whyPartialChanged, false);
-  const usual = menu.page.notice, usualWhy = menu.page.whyPartial;
+  const usual = menu.page.notice, usualWhy = menu.page.whyPartial, usualGf = menu.page.glutenFree;
+  assert.match(usualGf, /gluten-sensitive crust/);
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
   assert.equal((await call('POST', '/api/online/page', { headerImage: 'data:image/gif;base64,R0lGOD' })).status, 400);
   assert.equal((await call('POST', '/api/online/page', { notice: 'x'.repeat(601) })).status, 400);
@@ -137,12 +138,17 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.deepEqual((await customer('GET', '/api/order/menu')).json.page, page);
   const photo = await fetch(base + page.headerImage);
   assert.deepEqual([photo.status, photo.headers.get('content-type'), Buffer.from(await photo.arrayBuffer()).toString('base64')], [200, 'image/png', png]);
-  assert.deepEqual((await call('POST', '/api/online/page', { headerImage: null, notice: '' })).json, { headerImage: null, notice: usual, noticeChanged: false, whyPartial: usualWhy, whyPartialChanged: false });
+  assert.deepEqual((await call('POST', '/api/online/page', { headerImage: null, notice: '' })).json, { headerImage: null, notice: usual, noticeChanged: false, whyPartial: usualWhy, whyPartialChanged: false, glutenFree: usualGf, glutenFreeChanged: false });
   assert.equal((await call('POST', '/api/online/page', { whyPartial: 'x'.repeat(2001) })).status, 400);
   const why = (await call('POST', '/api/online/page', { whyPartial: ' It steams in the box. \n\n\n Finish it at home. ' })).json;
   assert.deepEqual([why.whyPartial, why.whyPartialChanged, why.notice], ['It steams in the box.\n\nFinish it at home.', true, usual]);
   assert.equal((await customer('GET', '/api/order/menu')).json.page.whyPartial, why.whyPartial);
   assert.equal((await call('POST', '/api/online/page', { whyPartial: null })).json.whyPartial, usualWhy);
+  const gf = (await call('POST', '/api/online/page', { glutenFree: ' Not online. \n\n\n Call us. ' })).json;
+  assert.deepEqual([gf.glutenFree, gf.glutenFreeChanged, gf.whyPartial], ['Not online.\n\nCall us.', true, usualWhy]);
+  assert.equal((await customer('GET', '/api/order/menu')).json.page.glutenFree, gf.glutenFree);
+  assert.equal((await call('POST', '/api/online/page', { glutenFree: 'x'.repeat(2001) })).status, 400);
+  assert.equal((await call('POST', '/api/online/page', { glutenFree: '' })).json.glutenFreeChanged, false);
   assert.equal((await fetch(base + '/api/order/header-image')).status, 404);
 
   menu = (await customer('GET', '/api/order/menu')).json;

@@ -108,18 +108,26 @@ function partialNotice() {
   return h('div', { class: 'notice' }, h('b', { text: title }), lines.length ? ` ${lines.join(' ')}` : '',
     rest.map((p) => h('div', { class: 'small', style: 'margin-top:8px', text: p.split('\n').join(' ') })));
 }
-/** The "Why partially cooked?" panel: the words set in Online settings, then how to finish it at home. */
-function whySheet() {
+/** A panel of words set in Online settings, opened from a button beside the menu sections; extra goes under the words. */
+function infoSheet(title, words, extra) {
   const bg = h('div', { class: 'sheet-bg', onclick: (e) => e.target === bg && closeSheet() },
-    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Why partially cooked?' },
+    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
       h('button', { class: 'sheet-close', 'aria-label': 'Close', text: '×', onclick: closeSheet }),
       h('div', { class: 'sheet-body why-body' },
-        h('h3', { text: 'Why partially cooked?' }),
-        M.page.whyPartial.split(/\n\s*\n/).map((p) => h('p', { text: p.split('\n').join(' ') })),
-        finishSteps()),
+        h('h3', { text: title }),
+        words.split(/\n\s*\n/).map((p) => h('p', { text: p.split('\n').join(' ') })),
+        extra),
       h('div', { class: 'sheet-foot' }, h('button', { class: 'btn dark wide', text: 'Got it', onclick: closeSheet }))));
   document.body.append(bg);
   document.body.classList.add('locked');
+}
+/** The two questions people ask before ordering, as buttons: "Why partially cooked?" and "Do you have gluten-free?". */
+function askButtons(where) {
+  const asks = [
+    M.page?.whyPartial ? h('button', { type: 'button', class: 'why', text: 'Why partially cooked?', onclick: () => infoSheet('Why partially cooked?', M.page.whyPartial, finishSteps()) }) : null,
+    M.page?.glutenFree ? h('button', { type: 'button', class: 'why', text: 'Do you have gluten-free?', onclick: () => infoSheet('Do you have gluten-free?', M.page.glutenFree) }) : null,
+  ].filter(Boolean);
+  return asks.length ? h('div', { class: `asks ${where}` }, asks) : null;
 }
 function finishSteps() {
   return h('div', { class: 'card finish' }, h('div', { class: 'strong', text: 'Finishing at home' }), h('ol', {}, FINISH_STEPS.map((t) => h('li', { text: t }))));
@@ -178,8 +186,8 @@ function menuView() {
   show(header({ wide: true }), h('div', { class: 'wrap menu' },
     partialNotice(),
     pickupLine(),
-    h('nav', { class: 'cats', 'aria-label': 'Menu sections' }, cats.length > 1 ? cats.map((c) => h('a', { href: `#${slug(c)}`, text: c })) : null,
-      M.page?.whyPartial ? h('button', { type: 'button', class: 'why', text: 'Why partially cooked?', onclick: whySheet }) : null),
+    askButtons('on-top'),
+    h('nav', { class: 'cats', 'aria-label': 'Menu sections' }, cats.length > 1 ? cats.map((c) => h('a', { href: `#${slug(c)}`, text: c })) : null, askButtons('in-bar')),
     M.items.length ? cats.map((c) => [h('h2', { id: slug(c), text: c }), h('div', { class: 'items' }, M.items.filter((x) => x.category === c).map(itemCard))])
       : h('p', { class: 'muted', text: 'The online menu isn’t up yet.' })));
   followSections();
