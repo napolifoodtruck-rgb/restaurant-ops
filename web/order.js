@@ -360,7 +360,8 @@ function checkoutView() {
   const lastName = h('input', { type: 'text', autocomplete: 'family-name', value: savedLast.join(' '), required: true });
   const phone = h('input', { type: 'tel', autocomplete: 'tel', inputmode: 'tel', value: saved.phone ?? '', required: true });
   const email = h('input', { type: 'email', autocomplete: 'email', value: saved.email ?? '', placeholder: 'Your confirmation goes here', required: true });
-  let tipPct = 0;
+  // Starts on the tip picked in Online settings; the customer can change it.
+  let tipPct = TIPS.includes(M.page?.defaultTip) ? M.page.defaultTip : 0;
   const tipRow = h('div', { class: 'tips' });
   const subtotal = cartTotal();
   const drawTips = () => tipRow.replaceChildren(...TIPS.map((p) => h('button', { type: 'button', class: p === tipPct ? 'on' : '', 'aria-pressed': String(p === tipPct), onclick: () => { tipPct = p; drawTips(); } },

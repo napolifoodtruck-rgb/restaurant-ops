@@ -124,14 +124,18 @@ export const GLUTEN_FREE_DEFAULT = [
 ].join('\n');
 export const GLUTEN_FREE_MAX = 2000;
 
+/** The tip choices at checkout, in percent; the order page's own list in web/order.js must match. */
+export const TIP_CHOICES = [0, 10, 15, 20];
+
 /** The order page's own content, as customers get it: the header photo's address (null: none), the notice, the "why" and "gluten-free" panels. */
-export async function loadOrderPage(db: Db, restaurantId: string): Promise<{ headerImage: string | null; notice: string; noticeChanged: boolean; whyPartial: string; whyPartialChanged: boolean; glutenFree: string; glutenFreeChanged: boolean }> {
-  const r = (await db.query<{ notice_text: string | null; why_partial_text: string | null; gluten_free_text: string | null; has_image: boolean; image_at: Date | null }>('SELECT notice_text, why_partial_text, gluten_free_text, header_image IS NOT NULL AS has_image, header_image_updated_at AS image_at FROM online_page WHERE restaurant_id = $1', [restaurantId])).rows[0];
+export async function loadOrderPage(db: Db, restaurantId: string): Promise<{ headerImage: string | null; notice: string; noticeChanged: boolean; whyPartial: string; whyPartialChanged: boolean; glutenFree: string; glutenFreeChanged: boolean; defaultTip: number }> {
+  const r = (await db.query<{ notice_text: string | null; why_partial_text: string | null; gluten_free_text: string | null; default_tip: number | null; has_image: boolean; image_at: Date | null }>('SELECT notice_text, why_partial_text, gluten_free_text, default_tip, header_image IS NOT NULL AS has_image, header_image_updated_at AS image_at FROM online_page WHERE restaurant_id = $1', [restaurantId])).rows[0];
   return {
     headerImage: r?.has_image ? `/api/order/header-image?v=${r.image_at ? new Date(r.image_at).getTime() : 0}` : null,
     notice: r?.notice_text ?? NOTICE_DEFAULT, noticeChanged: r?.notice_text != null,
     whyPartial: r?.why_partial_text ?? WHY_PARTIAL_DEFAULT, whyPartialChanged: r?.why_partial_text != null,
     glutenFree: r?.gluten_free_text ?? GLUTEN_FREE_DEFAULT, glutenFreeChanged: r?.gluten_free_text != null,
+    defaultTip: r?.default_tip ?? 0,
   };
 }
 
@@ -207,7 +211,7 @@ export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResp
     return send(res, 200, { ok: true }), true;
   }
 
-  // The order page: a header photo (a JPEG, PNG or WebP under 3 MB; null takes it off), the notice, and the "Why partially cooked?" and "Do you have gluten-free?" texts (null or '': back to the usual words).
+  // The order page: a header photo (a JPEG, PNG or WebP under 3 MB; null takes it off), the notice, and the "Why partially cooked?" and "Do you have gluten-free?" texts (null or '': back to the usual words), and the tip picked to start with at checkout.
   if (path === '/api/online/page') {
     if (method === 'POST') {
       const b = await body(req, 5 * 1024 * 1024);
@@ -229,6 +233,10 @@ export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResp
         const text = typeof b.glutenFree === 'string' ? tidyWords(b.glutenFree) : '';
         if (text.length > GLUTEN_FREE_MAX) throw new HttpError(400, `Keep the "gluten-free" text under ${GLUTEN_FREE_MAX} characters.`);
         await db.query('UPDATE online_page SET gluten_free_text = $2, updated_at = now(), updated_by = $3 WHERE restaurant_id = $1', [who.restaurantId, text && text !== GLUTEN_FREE_DEFAULT ? text : null, who.staffId]);
+      }
+      if (b.defaultTip !== undefined) {
+        if (typeof b.defaultTip !== 'number' || !TIP_CHOICES.includes(b.defaultTip)) throw new HttpError(400, `The default tip is one of ${TIP_CHOICES.join(', ')} percent.`);
+        await db.query('UPDATE online_page SET default_tip = $2, updated_at = now(), updated_by = $3 WHERE restaurant_id = $1', [who.restaurantId, b.defaultTip, who.staffId]);
       }
       if (b.headerImage !== undefined) {
         if (b.headerImage === null) await db.query('UPDATE online_page SET header_image = NULL, header_image_type = NULL, header_image_updated_at = now(), updated_at = now(), updated_by = $2 WHERE restaurant_id = $1', [who.restaurantId, who.staffId]);
