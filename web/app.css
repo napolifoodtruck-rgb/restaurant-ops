@@ -1035,3 +1035,15 @@ button.donut-row { display: flex; min-width: 0; }
 .mod-edit input.short { width: 80px; } .mod-edit .grow-in { flex: 1 1 220px; min-width: 180px; height: 40px; }
 .rt-row.vars { grid-template-columns: minmax(0, 1.6fr) 70px 80px 90px 100px; cursor: default; }
 .rt-row.vars:hover { background: none; }
+
+/* Food cost against the goal (Performance, top right): green under, amber near, red over. */
+:root { --fc-good: #2E7D4F; --fc-near: #B7791F; --fc-bad: #B42318; }
+.fc-under { color: var(--fc-good); } .fc-near { color: #8A5A00; } .fc-over { color: var(--fc-bad); }
+.fc-chart .fc-line { fill: none; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.fc-chart .fc-dot { fill: var(--blue); stroke: var(--card); stroke-width: 1.5; }
+.fc-chart .fc-dot.fc-under { fill: var(--fc-good); } .fc-chart .fc-dot.fc-near { fill: var(--fc-near); } .fc-chart .fc-dot.fc-over { fill: var(--fc-bad); }
+.fc-chart .fc-goal { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 4 3; opacity: .55; }
+.fc-chart .fc-goal-label { font-size: 11px; font-weight: 600; fill: var(--ink); opacity: .7; }
+.fc-panel { margin: 6px 0 2px; padding-top: 10px; border-top: 1px solid var(--line); }
+.fc-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.fc-pct { font-size: 20px; }

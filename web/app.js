@@ -771,8 +771,9 @@ function renderMargins(me, state, m) {
   const catLeft = cat.dishes.reduce((a, d) => a + d.leftTotal, 0);
   const fc = (cat.weeklyFoodCost ?? []).map((v) => (v === null ? null : v));
   const summary = statBox(`${cat.name} · estimated gross profit`, dollars(catLeft),
-    h('div', { class: 'small muted', text: `${bar ? 'Pour' : 'Food'} cost ${pct(cat.foodCostShare)} · ${cat.dishes.length} ${bar ? 'drinks' : 'dishes'} · ${days} days` }),
-    fc.some((v) => v !== null) ? h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: `${bar ? 'Pour' : 'Food'} cost by week` }), sparkline(fc, 'flat')) : null,
+    h('div', { class: 'small muted', text: `${cat.dishes.length} ${bar ? 'drinks' : 'dishes'} · ${days} days` }),
+    // The kitchen's goal colours it; the bar has no pour-cost goal set yet, so it's plain.
+    foodCostPanel(`${bar ? 'Pour' : 'Food'} cost by week`, cat.foodCostShare, m.weeks, fc, bar ? undefined : FOOD_COST_GOAL),
     h('div', { class: 'small muted', text: `Whole ${sideOf(me)} menu: ${dollars(m.totals.leftOver)} estimated gross profit, ${pct(m.totals.foodCostShare)} ${bar ? 'pour' : 'food'} cost.` }),
     h('div', { class: 'small muted', text: `Sales minus each recipe’s ${bar ? 'pour' : 'food'} cost at today’s invoice prices. Waste, comps and labor aren’t in it.` }));
   const noCard = cat.noCard.length ? sideBox(`Selling with no recipe · ${dollars(cat.noCardSales)} not counted`,
@@ -2422,6 +2423,76 @@ function costChart(points, label) {
   svg.addEventListener('pointermove', at); svg.addEventListener('pointerdown', at);
   svg.addEventListener('pointerleave', () => hover.setAttribute('visibility', 'hidden'));
   return h('div', { class: 'chart-wrap' }, svg);
+}
+/** The kitchen's food-cost goal: under 23% of sales. */
+const FOOD_COST_GOAL = 0.23;
+/** Where a food cost sits against the goal: well under is green, near it amber, over it red. */
+function foodCostStatus(share, goal = FOOD_COST_GOAL) {
+  if (share === null || share === undefined) return { cls: '', label: '' };
+  if (share > goal) return { cls: 'fc-over', label: `▲ Over the ${Math.round(goal * 100)}% goal` };
+  if (share > goal - 0.03) return { cls: 'fc-near', label: `● Near the ${Math.round(goal * 100)}% goal` };
+  return { cls: 'fc-under', label: `✓ Under the ${Math.round(goal * 100)}% goal` };
+}
+/**
+ * A category's food cost, under its gross profit at the top of Performance: the period's share,
+ * coloured against the goal, and week by week as a line that runs green to red as it climbs,
+ * with the goal dashed.
+ */
+function foodCostPanel(title, share, weeks, values, goal) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const st = goal ? foodCostStatus(share, goal) : { cls: '', label: '' };
+  const pts = values.map((v, i) => ({ v, i, week: weeks[i] })).filter((p) => p.v !== null && p.v !== undefined);
+  const head = h('div', { class: 'fc-head' }, h('span', { class: 'small muted strong', text: title }), h('span', { class: 'grow' }),
+    h('b', { class: `fc-pct ${st.cls}`, text: pct(share) }), st.label ? h('span', { class: `small strong ${st.cls}`, text: st.label }) : null);
+  if (pts.length < 2) return h('div', { class: 'fc-panel' }, head);
+  const W = 320, H = 150, L = 38, R = 10, T = 10, B = 22;
+  const all = [...pts.map((p) => p.v), ...(goal ? [goal] : [])];
+  const y0 = Math.max(0, Math.floor((Math.min(...all) - 0.02) * 50) / 50), y1 = Math.ceil((Math.max(...all) + 0.02) * 50) / 50;
+  const x = (i) => L + (i / Math.max(1, values.length - 1)) * (W - L - R), y = (v) => T + (1 - (v - y0) / (y1 - y0)) * (H - T - B);
+  const el = (tag, attrs, text) => { const e = document.createElementNS(ns, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text !== undefined) e.textContent = text; return e; };
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', class: 'cost-chart fc-chart', 'aria-label': `${title}: ${pts.map((p) => `week of ${shortDate(p.week)} ${pct(p.v)}`).join(', ')}` });
+  // The line's colour follows its height: green under the goal, amber close to it, red over it.
+  const gid = `fcg${Math.random().toString(36).slice(2, 8)}`;
+  const grad = el('linearGradient', { id: gid, gradientUnits: 'userSpaceOnUse', x1: 0, x2: 0, y1: y(y0), y2: y(y1) });
+  const at = (v) => `${Math.max(0, Math.min(100, ((v - y0) / (y1 - y0)) * 100)).toFixed(1)}%`;
+  if (goal) for (const [v, c] of [[goal - 0.05, 'var(--fc-good)'], [goal - 0.02, 'var(--fc-near)'], [goal, 'var(--fc-near)'], [goal + 0.02, 'var(--fc-bad)']]) grad.append(el('stop', { offset: at(v), 'stop-color': c }));
+  else grad.append(el('stop', { offset: '0%', 'stop-color': 'var(--blue)' }));
+  svg.append(el('defs', {}));
+  svg.firstChild.append(grad);
+  const ticks = [];
+  const step = y1 - y0 > 0.12 ? 0.05 : 0.02;
+  for (let t = Math.ceil(y0 / step - 1e-9) * step; t <= y1 + 1e-9; t += step) ticks.push(t);
+  for (const t of ticks) svg.append(el('line', { x1: L, x2: W - R, y1: y(t), y2: y(t), class: 'grid' }), el('text', { x: L - 6, y: y(t) + 4, 'text-anchor': 'end', class: 'tick' }, `${Math.round(t * 100)}%`));
+  if (goal) svg.append(el('line', { x1: L, x2: W - R, y1: y(goal), y2: y(goal), class: 'fc-goal' }), el('text', { x: L + 4, y: y(goal) - 5, class: 'fc-goal-label' }, `Goal ${Math.round(goal * 100)}%`));
+  for (const i of [0, Math.floor((values.length - 1) / 2), values.length - 1]) svg.append(el('text', { x: x(i), y: H - 6, 'text-anchor': i === 0 ? 'start' : i === values.length - 1 ? 'end' : 'middle', class: 'tick' }, shortDate(weeks[i])));
+  // Runs of weeks with sales; a week with none breaks the line.
+  let run = [];
+  const flush = () => { if (run.length > 1) svg.append(el('polyline', { points: run.join(' '), class: 'fc-line', stroke: `url(#${gid})` })); run = []; };
+  values.forEach((v, i) => { if (v === null || v === undefined) flush(); else run.push(`${x(i)},${y(v)}`); });
+  flush();
+  const dotClass = (v) => (goal ? foodCostStatus(v, goal).cls : '');
+  for (const p of pts) svg.append(el('circle', { cx: x(p.i), cy: y(p.v), r: 3, class: `fc-dot ${dotClass(p.v)}` }));
+  // The readout: the nearest week, its food cost and where it sits against the goal.
+  const hover = el('g', { class: 'hover', visibility: 'hidden' });
+  const vline = el('line', { y1: T, y2: H - B, class: 'hover-line' }), hdot = el('circle', { r: 5, class: 'fc-dot' });
+  const box = el('rect', { width: 112, height: 36, rx: 3, class: 'hover-box' }), t1 = el('text', { class: 'hover-date' }), t2 = el('text', { class: 'hover-cost' });
+  hover.append(vline, hdot, box, t1, t2);
+  svg.append(hover, el('rect', { x: L, y: T, width: W - L - R, height: H - T - B, fill: 'transparent', class: 'hit' }));
+  const show = (e) => {
+    const r = svg.getBoundingClientRect(), px = ((e.clientX - r.left) / r.width) * W;
+    const want = ((px - L) / (W - L - R)) * (values.length - 1);
+    const p = pts.reduce((a, b) => (Math.abs(b.i - want) < Math.abs(a.i - want) ? b : a));
+    hover.setAttribute('visibility', 'visible');
+    vline.setAttribute('x1', x(p.i)); vline.setAttribute('x2', x(p.i));
+    hdot.setAttribute('cx', x(p.i)); hdot.setAttribute('cy', y(p.v)); hdot.setAttribute('class', `fc-dot ${dotClass(p.v)}`);
+    const bx = x(p.i) + 8 + 112 > W ? x(p.i) - 120 : x(p.i) + 8, by = Math.max(T, Math.min(H - B - 36, y(p.v) - 44));
+    box.setAttribute('x', bx); box.setAttribute('y', by);
+    t1.setAttribute('x', bx + 8); t1.setAttribute('y', by + 15); t1.textContent = `Week of ${shortDate(p.week)}`;
+    t2.setAttribute('x', bx + 8); t2.setAttribute('y', by + 30); t2.textContent = pct(p.v);
+  };
+  svg.addEventListener('pointermove', show); svg.addEventListener('pointerdown', show);
+  svg.addEventListener('pointerleave', () => hover.setAttribute('visibility', 'hidden'));
+  return h('div', { class: 'fc-panel' }, head, h('div', { class: 'chart-wrap' }, svg));
 }
 /** Where a line's price comes from, with its age as a colour (yellow past 3 months, red past 6). */
 function sourceBox(src, kind) {
