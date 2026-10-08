@@ -147,6 +147,28 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
     }
   }
 
+  // Orders that got to payment and were never paid are cancelled in Square: open there, the POS counts their pizzas as
+  // committed and can mark an item sold out early. A hold more than half an hour past is given up first, so it can't be paid
+  // into a cancelled order. Each pass does a few; a failed one is tried again next time.
+  let unpaidClosedAt = -Infinity;
+  async function closeUnpaid(restaurantId: string) {
+    if (!ready || Date.now() - unpaidClosedAt < (settings.refundCheckMs ?? REFUND_CHECK_MS)) return;
+    unpaidClosedAt = Date.now();
+    await db.query(`UPDATE online_orders SET status = 'released' WHERE restaurant_id = $1 AND status IN ('held', 'expired') AND hold_until < now() - interval '30 minutes'
+      AND (paying_since IS NULL OR paying_since < now() - make_interval(mins => $2::int))`, [restaurantId, PAYING_MINUTES]);
+    const open = (await db.query<{ id: string; square_order_id: string }>(`SELECT id, square_order_id FROM online_orders WHERE restaurant_id = $1 AND status IN ('released', 'failed')
+      AND square_order_id IS NOT NULL AND square_closed_at IS NULL AND created_at > now() - interval '7 days' ORDER BY created_at LIMIT 10`, [restaurantId])).rows;
+    for (const o of open) {
+      try {
+        const done = await ready.square.cancelUnpaid(o.square_order_id, `cancel-${o.id}`);
+        if (done === 'paid') console.error(`online order ${o.id}: paid in Square though given up here; left open in Square`);
+        await db.query('UPDATE online_orders SET square_closed_at = now() WHERE id = $1', [o.id]);
+      } catch (err) {
+        console.error(`online order ${o.id}: couldn’t cancel it in Square: ${(err as Error).message}`);
+      }
+    }
+  }
+
   // The published items and their options as they are in Square now, so a price change or a "sold out" shows within a minute.
   let fresh: { at: number; objects: CatalogObject[] } | undefined;
   async function menuNow(restaurantId: string, today: string, now = false) {
@@ -220,6 +242,7 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       const now = nowIn(r.timezone);
       const { menu } = await menuNow(r.id, now.date);
       await noticeRefunds(r.id, now.date);
+      await closeUnpaid(r.id);
       const windows = await loadWindows(db, r.id, now.date);
       const fit = fitOrder(windows, 1, now.time);
       const pause = await loadPause(db, r.id, r.timezone);
