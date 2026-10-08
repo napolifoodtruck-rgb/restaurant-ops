@@ -17,12 +17,12 @@ import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, invalidate } from './model.ts';
-import type { ImportedProduct } from '../connectors/marginedge.ts';
+import type { PurchasedProduct } from '../core/purchasing.ts';
 import { withPackSize, packSize } from '../core/packSizes.ts';
 import { convert } from '../core/units.ts';
 
 /** How much of a product's base unit one of `unit` is, or undefined when they don't convert. */
-export function baseOf(product: ImportedProduct, unit: string): number | undefined {
+export function baseOf(product: PurchasedProduct, unit: string): number | undefined {
   if (!product.baseUnit) return undefined;
   try {
     const n = convert({ amount: 1, unit }, product.baseUnit, withPackSize(product.conversions, product.baseUnit, packSize(product.name, product.categoryType, product.baseUnit)));
@@ -132,7 +132,7 @@ function cleanLines(model: Awaited<ReturnType<typeof getModel>>, raw: unknown, f
   const lines = Array.isArray(raw) ? (raw as any[]) : [];
   if (!lines.length) throw new HttpError(400, 'Add at least one line.');
   return lines.map((l, i) => {
-    const product = model.imported.products.find((p) => p.externalId === String(l?.productId ?? '')) ?? undefined;
+    const product = model.purchasing.products.find((p) => p.externalId === String(l?.productId ?? '')) ?? undefined;
     const quantity = Number(l?.quantity), total = free ? 0 : Number(l?.total), unit = String(l?.unit ?? '').trim();
     if (!product) throw new HttpError(400, `Line ${i + 1}: pick the ingredient from the list.`);
     if (!(quantity > 0)) throw new HttpError(400, `Line ${i + 1}: how much came in?`);

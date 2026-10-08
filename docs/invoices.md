@@ -10,7 +10,7 @@ One store for every invoice, whatever brought it in (migration 0031):
 | `vendors` | our vendors; `kind = 'garden'` for the garden; `me_vendor_id` while MarginEdge runs |
 | `supplier_invoices` | every invoice: `source` is `photo`, `typed`, `garden` or `marginedge`; tax, delivery, other charges, total |
 | `supplier_invoice_lines` | what was printed (code, description, quantity, unit price, total) and what it means (ingredient, `per_amount per_unit` one purchased unit holds, `per_base` when the importer worked it out, `priced`) |
-| `vendor_item_matches` | this vendor's item → ingredient and how much one holds, learned from every confirmed line |
+| `vendor_item_matches` | this vendor's item → ingredient and how much one holds, learned from every confirmed line; keyed by the vendor's id, so a rename keeps it |
 | `invoice_scans`, `invoice_scan_pages` | photos and what was read from them |
 | `invoice_comparisons` | ours against MarginEdge's reading of the same invoice, line by line |
 

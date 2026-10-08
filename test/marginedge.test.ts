@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { blendedPrices, importMarginEdge, latestPrices, type MarginEdgeExport } from '../src/connectors/marginedge.ts';
+import { importMarginEdge, type MarginEdgeExport } from '../src/connectors/marginedge.ts';
+import { blendedPrices, latestPrices } from '../src/core/purchasing.ts';
 import { packNameStructure, parseReportUnit, readPack, sizeInItemName, sizeInPackName, unitWord } from '../src/connectors/marginedgeUnits.ts';
 import { RecipeBook } from '../src/core/recipes.ts';
 import { convert } from '../src/core/units.ts';

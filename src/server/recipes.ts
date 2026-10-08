@@ -21,7 +21,7 @@ import { loadAreas } from './areas.ts';
 import { coverageOf } from './views.ts';
 import { cardView, kindOf, lineState, linkedItems, yieldConversions } from './cards.ts';
 import { tryConvert } from '../core/units.ts';
-import { normalizeName as cardKey, recipeId as recipeIdOf } from '../connectors/marginedgeRecipes.ts';
+import { normalizeName as cardKey, recipeId as recipeIdOf } from '../core/recipeCards.ts';
 
 const PREP_SECTION = { kitchen: 'Prepared Items', bar: 'Prepared Items' };
 

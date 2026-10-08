@@ -263,15 +263,3 @@ const DENSITIES: [RegExp, number][] = [
 export function typicalDensity(name: string): number | undefined {
   return DENSITIES.find(([pattern]) => pattern.test(name))?.[1];
 }
-
-/** Merges facts without overwriting ones already known. */
-export function mergeConversions(target: ItemConversions, extra: ItemConversions): ItemConversions {
-  const merged: ItemConversions = { ...target, customUnits: { ...(target.customUnits ?? {}) } };
-  if (merged.gramsPerEach === undefined && extra.gramsPerEach && Number.isFinite(extra.gramsPerEach)) merged.gramsPerEach = extra.gramsPerEach;
-  if (merged.gramsPerMl === undefined && extra.gramsPerMl) merged.gramsPerMl = extra.gramsPerMl;
-  for (const [name, size] of Object.entries(extra.customUnits ?? {})) {
-    if (!(name in merged.customUnits!)) merged.customUnits![name] = size;
-  }
-  if (Object.keys(merged.customUnits!).length === 0) delete merged.customUnits;
-  return merged;
-}

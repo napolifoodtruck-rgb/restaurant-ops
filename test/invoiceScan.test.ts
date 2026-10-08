@@ -58,7 +58,7 @@ test('lines matched by history, pack, name and unit; checks flagged', () => {
   assert.deepEqual([mystery!.how, mystery!.flags], ['none', ['unsure', 'noProduct']]);
   assert.equal(m.totalDifference, 6); // 80 printed, 74 in lines
   // A learned answer wins over history, and a jump in price is flagged.
-  const learned = matchInvoice(base({ learned: new Map([['produce|#1001', { productId: 'p-basil', per: 0.5 }]]) }));
+  const learned = matchInvoice(base({ learned: new Map([['v-produce|#1001', { productId: 'p-basil', per: 0.5 }]]) }));
   assert.deepEqual([learned.lines[0]!.how, learned.lines[0]!.baseQuantity, learned.lines[0]!.perBase, learned.lines[0]!.flags], ['learned', 1, 24, ['priceJump']]);
 });
 

@@ -35,11 +35,11 @@ async function orderingData(db: Db, who: SignedIn, today: string) {
   const model = await getModel(db, who.restaurantId, today);
   const settings = new Map((await db.query<SettingsRow>('SELECT * FROM vendor_settings WHERE restaurant_id = $1', [who.restaurantId])).rows.map((r) => [r.vendor_id, r]));
   const since = addDays(today, -120);
-  const invoices = model.imported.invoices.filter((i) => i.vendorExternalId && i.invoiceDate && !i.isCredit && i.invoiceDate.slice(0, 10) > since);
+  const invoices = model.purchasing.invoices.filter((i) => i.vendorExternalId && i.invoiceDate && !i.isCredit && i.invoiceDate.slice(0, 10) > since);
   const learned = new Map(inferDeliveryDays(invoices.map((i) => ({ vendorId: i.vendorExternalId!, date: i.invoiceDate!.slice(0, 10) }))).map((s) => [s.vendorId, s]));
-  const products = new Map(model.imported.products.map((p) => [p.externalId, p]));
+  const products = new Map(model.purchasing.products.map((p) => [p.externalId, p]));
   // Purchases in each product's base unit: the pack's size is its price over the price per base unit.
-  const purchases = model.imported.prices.filter((p) => p.perBaseUnit > 0 && p.quantity > 0).map((p) => ({ ...p, packSize: p.price / p.perBaseUnit, date: p.date.slice(0, 10) }));
+  const purchases = model.purchasing.prices.filter((p) => p.perBaseUnit > 0 && p.quantity > 0).map((p) => ({ ...p, packSize: p.price / p.perBaseUnit, date: p.date.slice(0, 10) }));
   const rates = purchaseRates(purchases.map((p) => ({ productId: p.productExternalId, date: p.date, amount: p.quantity * p.packSize })), today);
   const daily = (await db.query<{ day: string; net: string }>('SELECT day::text AS day, sum(net_sales) AS net FROM pos_item_sales_daily WHERE restaurant_id = $1 AND day >= $2 AND day < $3 GROUP BY day', [who.restaurantId, addDays(today, -56), today])).rows;
   const weights = weekdayWeights(daily.map((d) => ({ date: d.day, netSales: Number(d.net) })));
@@ -73,7 +73,7 @@ function catalogOf(data: Data, vendorId: string) {
 }
 
 function vendorName(data: Data, vendorId: string) {
-  return data.model.imported.vendors.find((v) => v.externalId === vendorId)?.name ?? data.invoices.find((i) => i.vendorExternalId === vendorId)?.vendorName ?? vendorId;
+  return data.model.purchasing.vendors.find((v) => v.externalId === vendorId)?.name ?? data.invoices.find((i) => i.vendorExternalId === vendorId)?.vendorName ?? vendorId;
 }
 
 /** Which side orders from a vendor: the bar when most of the spend is wine, beer, liquor or drinks. */

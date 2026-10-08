@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { buildRecipes, parseRecipeCardText, recipeId, yieldsToConversions } from '../src/connectors/marginedgeRecipes.ts';
-import type { ImportedProduct } from '../src/connectors/marginedge.ts';
+import { parseRecipeCardText } from '../src/connectors/marginedgeRecipes.ts';
+import { buildRecipes, recipeId, yieldsToConversions } from '../src/core/recipeCards.ts';
+import type { PurchasedProduct } from '../src/core/purchasing.ts';
 import { RecipeBook } from '../src/core/recipes.ts';
 
 const close = (actual: number | undefined, expected: number, tolerance = 1e-9) =>
@@ -79,7 +80,7 @@ test('reads fractions, wrapped names, methods and later pages', () => {
   assert.equal(card.method, 'Mix flour and water.\nRest 20 minutes.\nBall at 280 g.');
 });
 
-const product = (id: string, name: string, baseUnit: string, conversions = {}): ImportedProduct => ({ externalId: id, name, baseUnit, conversions });
+const product = (id: string, name: string, baseUnit: string, conversions = {}): PurchasedProduct => ({ externalId: id, name, baseUnit, conversions });
 const products = [
   product('flour', 'Flour, Pizza', 'lb'),
   product('mozz', 'Cheese, Mozzarella', 'lb'),

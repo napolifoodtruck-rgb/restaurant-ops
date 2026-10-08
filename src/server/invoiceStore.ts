@@ -8,15 +8,15 @@
  */
 
 import type { Db } from './db.ts';
-import type { ImportedInvoice, ImportedProduct, ImportedVendor, PricePoint } from '../connectors/marginedge.ts';
+import type { SupplierInvoice, PurchasedProduct, Supplier, PricePoint } from '../core/purchasing.ts';
 import { withPackSize, packSize } from '../core/packSizes.ts';
 import { convert, type Quantity } from '../core/units.ts';
 
 export type InvoiceSource = 'typed' | 'garden' | 'photo' | 'marginedge';
 
 export interface Store {
-  vendors: ImportedVendor[];
-  invoices: ImportedInvoice[];
+  vendors: Supplier[];
+  invoices: SupplierInvoice[];
   prices: PricePoint[];
   /** Vendor keys that are the restaurant's own garden. */
   garden: Set<string>;
@@ -25,7 +25,7 @@ export interface Store {
 }
 
 /** Base units in `per` of a product, or undefined when they don't convert. */
-export function baseIn(product: ImportedProduct, per: Quantity): number | undefined {
+export function baseIn(product: PurchasedProduct, per: Quantity): number | undefined {
   if (!product.baseUnit) return undefined;
   try {
     const n = convert(per, product.baseUnit, withPackSize(product.conversions, product.baseUnit, packSize(product.name, product.categoryType, product.baseUnit)));
@@ -41,7 +41,7 @@ export async function storeStamp(db: Db, restaurantId: string): Promise<string> 
 
 const mathChecks = (quantity: number, unitPrice: number | null, total: number) => unitPrice === null || Math.abs(quantity * unitPrice - total) <= Math.max(0.02, Math.abs(total) * 0.005);
 
-export async function loadStore(db: Db, restaurantId: string, products: readonly ImportedProduct[]): Promise<Store> {
+export async function loadStore(db: Db, restaurantId: string, products: readonly PurchasedProduct[]): Promise<Store> {
   const vendorRows = (await db.query<{ id: string; name: string; kind: string; me_vendor_id: string | null }>(
     'SELECT id, name, kind, me_vendor_id FROM vendors WHERE restaurant_id = $1', [restaurantId])).rows;
   const keyOf = new Map(vendorRows.map((v) => [v.id, v.me_vendor_id ?? v.id]));
@@ -60,7 +60,7 @@ export async function loadStore(db: Db, restaurantId: string, products: readonly
   for (const l of lineRows) linesOf.set(l.invoice_id, [...(linesOf.get(l.invoice_id) ?? []), l]);
   const byId = new Map(products.map((p) => [p.externalId, p]));
 
-  const invoices: ImportedInvoice[] = [];
+  const invoices: SupplierInvoice[] = [];
   const prices: PricePoint[] = [];
   const sources = new Map<string, InvoiceSource>();
   for (const i of invoiceRows) {

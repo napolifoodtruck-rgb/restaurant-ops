@@ -4,7 +4,7 @@
  * total, or on one side only. Lines MarginEdge didn't tie to an ingredient (supplies, fees)
  * aren't scored.
  */
-import type { ImportedInvoice, ImportedProduct, PricePoint } from '../connectors/marginedge.ts';
+import type { SupplierInvoice, PurchasedProduct, PricePoint } from './purchasing.ts';
 import { tryConvert } from './units.ts';
 
 export interface OurLine { productId?: string; description: string; quantity: number; unit: string; total: number }
@@ -19,7 +19,7 @@ export interface Comparison { lines: ComparedLine[]; oursTotal: number; theirsTo
 
 const close = (a: number, b: number, tolerance: number) => Math.abs(a - b) <= Math.max(0.01, Math.abs(b) * tolerance);
 
-export function compareInvoices(ours: readonly OurLine[], theirs: ImportedInvoice, pointOf: Map<string, PricePoint>, products: Map<string, ImportedProduct>): Comparison {
+export function compareInvoices(ours: readonly OurLine[], theirs: SupplierInvoice, pointOf: Map<string, PricePoint>, products: Map<string, PurchasedProduct>): Comparison {
   const left = [...ours];
   const lines: ComparedLine[] = [];
   for (const l of theirs.lines) {

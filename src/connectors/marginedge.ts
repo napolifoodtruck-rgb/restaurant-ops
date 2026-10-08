@@ -14,7 +14,9 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { dimensionOf, tryConvert, type ItemConversions, type Quantity } from '../core/units.ts';
-import { gramsPerEachFrom, mergeConversions, parseReportUnit, readPack, sizeInItemName, typicalDensity } from './marginedgeUnits.ts';
+import { mergeConversions } from '../core/units.ts';
+import type { PurchasedProduct, Purchasing, PricePoint, SupplierInvoice, SupplierInvoiceLine } from '../core/purchasing.ts';
+import { gramsPerEachFrom, parseReportUnit, readPack, sizeInItemName, typicalDensity } from './marginedgeUnits.ts';
 
 // ---------------------------------------------------------------- MarginEdge shapes (export files)
 
@@ -89,74 +91,6 @@ export interface MarginEdgeExport {
   invoices: MeInvoice[];
 }
 
-// ---------------------------------------------------------------- our shapes
-
-export interface ImportedVendor {
-  externalId: string;
-  name: string;
-}
-
-export interface ImportedProduct {
-  externalId: string;
-  name: string;
-  /** Our unit, or undefined when MarginEdge's unit couldn't be read. */
-  baseUnit?: string;
-  rawUnit?: string;
-  conversions: ItemConversions;
-  category?: string;
-  /** FOOD, WINE, BEER, LIQUOR, NA_BEVERAGES or OTHER (supplies, repairs...). */
-  categoryType?: string;
-  /** MarginEdge's latest price per one baseUnit, used as a sanity reference. */
-  referencePrice?: number;
-}
-
-export interface ImportedInvoiceLine {
-  lineNumber: number;
-  vendorItemCode?: string;
-  description: string;
-  quantity: number;
-  unitPrice: number;
-  lineTotal: number;
-  productExternalId?: string;
-  /** False when quantity × unit price doesn't match the line total. */
-  mathChecks: boolean;
-}
-
-export interface ImportedInvoice {
-  externalId: string;
-  vendorExternalId?: string;
-  vendorName?: string;
-  invoiceNumber?: string;
-  invoiceDate?: string;
-  total: number;
-  isCredit: boolean;
-  lines: ImportedInvoiceLine[];
-  /** Invoice total minus (lines + tax + delivery + other charges − credits). */
-  unexplainedDifference: number;
-  /** What's on it besides the lines. */
-  charges?: { tax: number; delivery: number; other: number; credit: number };
-}
-
-export interface PricePoint {
-  productExternalId: string;
-  vendorExternalId?: string;
-  invoiceExternalId: string;
-  lineNumber: number;
-  date: string;
-  /** Price paid for one purchased unit. */
-  price: number;
-  /** What that purchased unit holds. */
-  per: Quantity;
-  /** Price per one of the product's base units. */
-  perBaseUnit: number;
-  /** Purchased units on the line, for blending prices by what was bought. */
-  quantity: number;
-  /** Base units in one purchased unit, when the price can't tell it (a $0 garden harvest). */
-  perBase?: number;
-  /** How the pack size was worked out ('manager': told by a manager). */
-  source: 'manager' | 'pack' | 'calibrated' | 'itemName' | 'productUnit';
-}
-
 export type ImportFlag =
   | { type: 'lineMath'; invoiceExternalId: string; lineNumber: number; description: string; expected: number; actual: number }
   | { type: 'invoiceTotal'; invoiceExternalId: string; invoiceNumber?: string; vendorName?: string; difference: number }
@@ -165,11 +99,8 @@ export type ImportFlag =
   | { type: 'missingDetail'; invoiceExternalId: string; reason: string }
   | { type: 'mergeUnit'; productExternalId: string; into: string; unit: string };
 
-export interface ImportResult {
-  vendors: ImportedVendor[];
-  products: ImportedProduct[];
-  invoices: ImportedInvoice[];
-  prices: PricePoint[];
+/** What an export reads as: the purchasing data, plus what didn't add up. */
+export interface ImportResult extends Purchasing {
   flags: ImportFlag[];
 }
 
@@ -235,7 +166,7 @@ export function importMarginEdge(data: MarginEdgeExport, answers: ImportAnswers 
     }
   }
 
-  const products = new Map<string, ImportedProduct>();
+  const products = new Map<string, PurchasedProduct>();
   for (const p of data.products) {
     const externalId = String(p.companyConceptProductId);
     const report = parseReportUnit(p.reportByUnit);
@@ -315,7 +246,7 @@ export function importMarginEdge(data: MarginEdgeExport, answers: ImportAnswers 
     }
   }
 
-  const invoices: ImportedInvoice[] = [];
+  const invoices: SupplierInvoice[] = [];
   const prices: PricePoint[] = [];
 
   for (const invoice of data.invoices) {
@@ -326,7 +257,7 @@ export function importMarginEdge(data: MarginEdgeExport, answers: ImportAnswers 
     }
     const invoiceDate = invoice.invoiceDate ?? invoice.createdDate;
 
-    const lines: ImportedInvoiceLine[] = invoice.lineItems.map((line, index) => {
+    const lines: SupplierInvoiceLine[] = invoice.lineItems.map((line, index) => {
       const lineNumber = index + 1;
       const quantity = money(line.quantity);
       const unitPrice = money(line.unitPrice);
@@ -424,7 +355,7 @@ export function importMarginEdge(data: MarginEdgeExport, answers: ImportAnswers 
    * record, a pack size calibrated against MarginEdge's price, a size in the item's name, then
    * one product unit. The first reading that converts and lands near MarginEdge's own price is used.
    */
-  function pricePoint(product: ImportedProduct, line: MeLineItem, description: string, unitPrice: number, vendorId: Id | undefined):
+  function pricePoint(product: PurchasedProduct, line: MeLineItem, description: string, unitPrice: number, vendorId: Id | undefined):
     | { ok: true; per: Quantity; perBaseUnit: number; source: PricePoint['source'] }
     | { ok: false; impliedPerUnit?: number } {
     const baseUnit = product.baseUnit!;
@@ -461,7 +392,7 @@ export function importMarginEdge(data: MarginEdgeExport, answers: ImportAnswers 
    * changed (a 250 ml bottle, now 750 ml), MarginEdge's price may be per the old size, so
    * each past size is tried too.
    */
-  function plausible(product: ImportedProduct, perBaseUnit: number): boolean {
+  function plausible(product: PurchasedProduct, perBaseUnit: number): boolean {
     const reference = product.referencePrice;
     if (!reference) return true;
     const near = (ref: number) => perBaseUnit >= ref * PLAUSIBLE.low && perBaseUnit <= ref * PLAUSIBLE.high;
@@ -502,45 +433,4 @@ export async function readMarginEdgeExport(folder: string): Promise<MarginEdgeEx
     vendorItems: await load<MeVendorItem[]>('vendor-items.json'),
     invoices: await load<MeInvoice[]>('invoices.json'),
   };
-}
-
-/** Latest price per product, for costing recipes. */
-/**
- * Price per base unit blended over recent purchases, weighted by how much was bought: an
- * ingredient bought from two vendors costs what the mix you actually buy costs. Products
- * not bought in the window fall back to their latest purchase.
- */
-/** Base units in one purchased unit: given, or worked out from the price. */
-export const packBaseOf = (p: PricePoint): number => p.perBase ?? (p.perBaseUnit > 0 ? p.price / p.perBaseUnit : 0);
-
-export function blendedPrices(prices: readonly PricePoint[], asOf: string, days = 60): Map<string, number> {
-  const since = new Date(Date.parse(`${asOf.slice(0, 10)}T12:00:00Z`) - days * 86400000).toISOString().slice(0, 10);
-  const spend = new Map<string, { money: number; base: number }>();
-  const latest = new Map<string, PricePoint>();
-  for (const p of prices) {
-    if (p.date.slice(0, 10) > asOf.slice(0, 10)) continue;
-    const current = latest.get(p.productExternalId);
-    if (!current || p.date >= current.date) latest.set(p.productExternalId, p);
-    // Free lines (the garden) count too: they bring the average down by what they supplied.
-    if (p.date.slice(0, 10) <= since || !(packBaseOf(p) > 0) || p.perBaseUnit < 0) continue;
-    const s = spend.get(p.productExternalId) ?? { money: 0, base: 0 };
-    s.money += p.price * p.quantity;
-    s.base += packBaseOf(p) * p.quantity;
-    spend.set(p.productExternalId, s);
-  }
-  const out = new Map<string, number>();
-  for (const [productId, point] of latest) {
-    const s = spend.get(productId);
-    out.set(productId, s && s.base > 0 ? s.money / s.base : point.perBaseUnit);
-  }
-  return out;
-}
-
-export function latestPrices(prices: PricePoint[]): Map<string, PricePoint> {
-  const latest = new Map<string, PricePoint>();
-  for (const point of prices) {
-    const current = latest.get(point.productExternalId);
-    if (!current || point.date >= current.date) latest.set(point.productExternalId, point);
-  }
-  return latest;
 }

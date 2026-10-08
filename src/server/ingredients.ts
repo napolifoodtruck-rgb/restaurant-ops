@@ -12,13 +12,13 @@ import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { invalidate } from './model.ts';
 import { insertMany } from './squareSync.ts';
-import type { ImportedProduct } from '../connectors/marginedge.ts';
+import type { PurchasedProduct } from '../core/purchasing.ts';
 import { dimensionOf, normalizeUnit, type ItemConversions } from '../core/units.ts';
-import { mergeConversions } from '../connectors/marginedgeUnits.ts';
+import { mergeConversions } from '../core/units.ts';
 
 interface Row { id: string; name: string; base_unit: string | null; raw_unit: string | null; conversions: any; category: string | null; category_type: string | null; reference_price: string | null; source: string; active: boolean }
 
-const asProduct = (r: Row): ImportedProduct => ({
+const asProduct = (r: Row): PurchasedProduct => ({
   externalId: r.id, name: r.name, conversions: typeof r.conversions === 'string' ? JSON.parse(r.conversions) : (r.conversions ?? {}),
   ...(r.base_unit ? { baseUnit: r.base_unit } : {}), ...(r.raw_unit ? { rawUnit: r.raw_unit } : {}), ...(r.category ? { category: r.category } : {}),
   ...(r.category_type ? { categoryType: r.category_type } : {}), ...(r.reference_price !== null && r.reference_price !== undefined ? { referencePrice: Number(r.reference_price) } : {}),
@@ -27,7 +27,7 @@ const asProduct = (r: Row): ImportedProduct => ({
 const canon = (v: unknown): string => (v && typeof v === 'object' && !Array.isArray(v)
   ? `{${Object.keys(v as object).sort().filter((k) => (v as any)[k] !== undefined).map((k) => `${JSON.stringify(k)}:${canon((v as any)[k])}`).join(',')}}`
   : Array.isArray(v) ? `[${v.map(canon).join(',')}]` : JSON.stringify(v ?? null));
-const same = (a: ImportedProduct, b: ImportedProduct) => canon([a.name, a.baseUnit ?? null, a.rawUnit ?? null, a.conversions ?? {}, a.category ?? null, a.categoryType ?? null, a.referencePrice ?? null])
+const same = (a: PurchasedProduct, b: PurchasedProduct) => canon([a.name, a.baseUnit ?? null, a.rawUnit ?? null, a.conversions ?? {}, a.category ?? null, a.categoryType ?? null, a.referencePrice ?? null])
   === canon([b.name, b.baseUnit ?? null, b.rawUnit ?? null, b.conversions ?? {}, b.category ?? null, b.categoryType ?? null, b.referencePrice ?? null]);
 
 /** A stamp that changes whenever the list does, for the model's cache. */
@@ -41,10 +41,10 @@ export async function ingredientsStamp(db: Db, restaurantId: string): Promise<st
  * of ones that came from MarginEdge refreshed, ones merged into another taken off. Ingredients
  * made in the app (and those from an earlier answer, offInvoiceProducts) are added if missing.
  */
-export async function syncIngredients(db: Db, restaurantId: string, fromMe: readonly ImportedProduct[], madeHere: readonly ImportedProduct[] = [], mergedAway: ReadonlySet<string> = new Set()): Promise<void> {
+export async function syncIngredients(db: Db, restaurantId: string, fromMe: readonly PurchasedProduct[], madeHere: readonly PurchasedProduct[] = [], mergedAway: ReadonlySet<string> = new Set()): Promise<void> {
   const rows = (await db.query<Row>('SELECT id, name, base_unit, raw_unit, conversions, category, category_type, reference_price, source, active FROM ingredients WHERE restaurant_id = $1', [restaurantId])).rows;
   const have = new Map(rows.map((r) => [r.id, r]));
-  const write = async (p: ImportedProduct, source: 'marginedge' | 'app') => db.query(
+  const write = async (p: PurchasedProduct, source: 'marginedge' | 'app') => db.query(
     `INSERT INTO ingredients (restaurant_id, id, name, base_unit, raw_unit, conversions, category, category_type, reference_price, source) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (restaurant_id, id) DO UPDATE SET name = EXCLUDED.name, base_unit = EXCLUDED.base_unit, raw_unit = EXCLUDED.raw_unit, conversions = EXCLUDED.conversions, category = EXCLUDED.category,
        category_type = EXCLUDED.category_type, reference_price = EXCLUDED.reference_price, active = true, updated_at = now()`,
@@ -62,7 +62,7 @@ export async function syncIngredients(db: Db, restaurantId: string, fromMe: read
 }
 
 /** The list as the app uses it: every active ingredient, with what managers told about its units on top. */
-export async function loadIngredients(db: Db, restaurantId: string, told: Record<string, ItemConversions> = {}): Promise<ImportedProduct[]> {
+export async function loadIngredients(db: Db, restaurantId: string, told: Record<string, ItemConversions> = {}): Promise<PurchasedProduct[]> {
   const rows = (await db.query<Row>('SELECT id, name, base_unit, raw_unit, conversions, category, category_type, reference_price, source, active FROM ingredients WHERE restaurant_id = $1 AND active ORDER BY name', [restaurantId])).rows;
   return rows.map((r) => { const p = asProduct(r); return told[p.externalId] ? { ...p, conversions: mergeConversions(told[p.externalId]!, p.conversions) } : p; });
 }

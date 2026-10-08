@@ -28,7 +28,9 @@ Back-of-house foundation:
 | `src/core/stationPrep.ts` | Prep by station, live: line cooks see their station, sous chefs and up see every station with work left and projected finish against service. Learns task times from check-offs (start taps or gaps, batch check-offs left out), shows suggested vs actual order and per-cook pace on the same task. |
 | `src/core/prepChecks.ts` | Surplus-special suggestions for batches that won't sell through before their use-by, and the daily prep check ranked by dollar value. |
 | `src/connectors/marginedge.ts` | Reads a MarginEdge export into vendors, products, pack sizes, invoices and price history, and runs the invoice self-checks (line math, invoice totals, unknown units, missing pack sizes). |
-| `src/connectors/marginedgeRecipes.ts` | Reads MarginEdge recipe cards and recipe costing PDFs (text, or OCR when the PDF fonts are garbled) into nested recipes, with yield %, several yields and shelf life. |
+| `src/core/purchasing.ts` | What the restaurant buys, in the app's own terms: suppliers, purchased products (the ingredient list), invoices with lines, price points, and recent prices blended by what was bought. Every way an invoice comes in lands in these shapes. |
+| `src/core/recipeCards.ts` | Recipe cards (how the kitchen book holds a recipe) and how a set of them links up into nested, costed recipes, with yield %, several yields and shelf life. |
+| `src/connectors/marginedgeRecipes.ts` | Reads MarginEdge's printed recipe cards and costing PDFs (text, or OCR when the PDF fonts are garbled) into recipe cards. |
 | `src/connectors/square.ts` | Square's catalog (one menu item per variation, staff-meal buttons spotted) and Reporting API item sales, in the neutral shapes above. |
 | `scripts/marginedge-export.mjs` | One-off export from MarginEdge's read-only API, run on the restaurant's own computer. The API key is typed at a hidden prompt and never saved. |
 | `src/server/db.ts` | Database interface (driver kept at the edge: `pg` in production) and the migration runner over `db/migrations`. |

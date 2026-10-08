@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { blendedPrices, importMarginEdge, type MarginEdgeExport } from '../src/connectors/marginedge.ts';
+import { importMarginEdge, type MarginEdgeExport } from '../src/connectors/marginedge.ts';
+import { blendedPrices } from '../src/core/purchasing.ts';
 import { migrate } from '../src/server/db.ts';
 import { getModel, invalidate } from '../src/server/model.ts';
 import { startTestDb } from './support/psqlDb.ts';
@@ -69,9 +70,9 @@ test('one invoice store: MarginEdge imported once, ours compared, the garden cou
   assert.equal(Number((await db!.query<{ n: string }>('SELECT count(*)::text AS n FROM ingredients WHERE restaurant_id = $1', [rid])).rows[0]!.n), before.products.length);
   assert.deepEqual((await db!.query<{ me_vendor_id: string }>('SELECT me_vendor_id FROM vendors WHERE restaurant_id = $1 ORDER BY me_vendor_id', [rid])).rows.map((r) => r.me_vendor_id), ['1', '2']);
   assert.equal(Number((await db!.query<{ n: string }>("SELECT count(*)::text AS n FROM supplier_invoices WHERE restaurant_id = $1 AND source = 'marginedge'", [rid])).rows[0]!.n), before.invoices.length);
-  const old = blendedPrices(before.prices, '2026-10-05'), now = blendedPrices(m1.imported.prices, '2026-10-05');
+  const old = blendedPrices(before.prices, '2026-10-05'), now = blendedPrices(m1.purchasing.prices, '2026-10-05');
   for (const [id, p] of old) assert.ok(Math.abs((now.get(id) ?? NaN) - p) < 1e-9, `${id}: ${now.get(id)} vs ${p}`);
-  assert.equal(m1.imported.prices.length, before.prices.length);
+  assert.equal(m1.purchasing.prices.length, before.prices.length);
 
   // A photo of BS-2, saved in the app: MarginEdge's copy is compared with it, and only ours counts.
   const blueSky = (await db!.query<{ id: string }>("SELECT id FROM vendors WHERE restaurant_id = $1 AND me_vendor_id = '1'", [rid])).rows[0]!.id;
@@ -83,7 +84,7 @@ test('one invoice store: MarginEdge imported once, ours compared, the garden cou
   assert.deepEqual(cmp.map((c) => [c.invoice_id, c.lines, c.matching, c.totals_match]), [[ours, 2, 1, false]]);
   const result = typeof cmp[0]!.result === 'string' ? JSON.parse(cmp[0]!.result) : cmp[0]!.result;
   assert.deepEqual(result.lines.map((l: any) => [l.productId, l.match]), [['basil', 'same'], ['garlic', 'total']]);
-  assert.equal(m2.imported.invoices.filter((i) => i.invoiceNumber === 'BS-2').length, 1);
+  assert.equal(m2.purchasing.invoices.filter((i) => i.invoiceNumber === 'BS-2').length, 1);
   assert.equal(m2.invoiceSources.get(ours), 'photo');
 
   // The garden: free basil beside bought basil brings its price down.
@@ -92,13 +93,13 @@ test('one invoice store: MarginEdge imported once, ours compared, the garden cou
   await db!.query("INSERT INTO supplier_invoice_lines (invoice_id, line_number, product_id, description, quantity, unit, total, per_amount, per_unit) VALUES ($1, 1, 'basil', 'Basil', 2, 'lb', 0, 1, 'lb')", [harvest]);
   invalidate(rid); // what saving one in the app does
   const m3 = await getModel(db!, rid, '2026-10-05');
-  assert.equal(blendedPrices(m3.imported.prices, '2026-10-05').get('basil'), 6);
+  assert.equal(blendedPrices(m3.purchasing.prices, '2026-10-05').get('basil'), 6);
   assert.ok(m3.gardenVendors.has(garden));
 
   // Without MarginEdge: its sync gone, its data gone; everything stays (ingredients, vendors, invoices).
   await db!.query('DELETE FROM marginedge_data WHERE restaurant_id = $1', [rid]);
   await db!.query("INSERT INTO sync_runs (restaurant_id, source, status, finished_at) VALUES ($1, 'square', 'ok', now())", [rid]);
   const m4 = await getModel(db!, rid, '2026-10-05');
-  assert.equal(m4.imported.products.length, before.products.length);
-  assert.equal(blendedPrices(m4.imported.prices, '2026-10-05').get('basil'), 6);
+  assert.equal(m4.purchasing.products.length, before.products.length);
+  assert.equal(blendedPrices(m4.purchasing.prices, '2026-10-05').get('basil'), 6);
 });

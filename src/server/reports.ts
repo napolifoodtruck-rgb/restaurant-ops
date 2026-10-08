@@ -35,9 +35,9 @@ async function load(db: Db, restaurantId: string, from: string, to: string): Pro
 
 /** What was bought, line by line from the invoices, sorted into food, bar and everything else. */
 export function purchasesOf(model: Model, from: string, to: string): Purchase[] {
-  const kindOf = new Map(model.imported.products.map((p) => [p.externalId, purchaseKind(p.categoryType)]));
+  const kindOf = new Map(model.purchasing.products.map((p) => [p.externalId, purchaseKind(p.categoryType)]));
   const out: Purchase[] = [];
-  for (const inv of model.imported.invoices) {
+  for (const inv of model.purchasing.invoices) {
     if (!inv.invoiceDate || inv.invoiceDate < from || inv.invoiceDate > to) continue;
     // Lines with no product take the kind most of the invoice's lines have (a vendor sells one sort of thing).
     const kinds = inv.lines.map((l) => (l.productExternalId ? kindOf.get(l.productExternalId) : undefined)).filter((k): k is PurchaseKind => Boolean(k));
@@ -64,7 +64,7 @@ async function costReports(db: Db, res: ServerResponse, url: URL, who: SignedIn,
     const now = await load(from, to);
     const prev = previousRange(from, to), ly = lastYearRange(from, to);
     const firsts = (await db.query<{ orders: string | null; labor: string | null }>('SELECT (SELECT min(day)::text FROM pos_orders WHERE restaurant_id = $1) AS orders, (SELECT min(day)::text FROM pos_timecards WHERE restaurant_id = $1) AS labor', [who.restaurantId])).rows[0]!;
-    const invoicesFrom = model.imported.invoices.map((i) => i.invoiceDate).filter(Boolean).sort()[0];
+    const invoicesFrom = model.purchasing.invoices.map((i) => i.invoiceDate).filter(Boolean).sort()[0];
     const covered = (f: string) => Boolean(firsts.orders && firsts.labor && invoicesFrom && f >= firsts.orders && f >= firsts.labor && f >= invoicesFrom);
     return send(res, 200, {
       from, to, previous: prev, lastYear: ly, weekStart: weekStart(from),
@@ -86,7 +86,7 @@ async function costReports(db: Db, res: ServerResponse, url: URL, who: SignedIn,
   // Usage: each dish sold × its recipe at today's prices, against what was bought, one side at a time.
   const area = areaFor(who, url.searchParams.get('area'));
   const areaOf = await loadAreas(db, who.restaurantId);
-  const invoicesFrom = model.imported.invoices.map((i) => i.invoiceDate).filter(Boolean).sort()[0];
+  const invoicesFrom = model.purchasing.invoices.map((i) => i.invoiceDate).filter(Boolean).sort()[0];
   const noRecipe = model.margins.unlinked.filter((u) => areaOf(u.category) === area && u.netSales > 0).reduce((a, u) => a + u.netSales, 0);
   return send(res, 200, { from, to, area, ...(invoicesFrom ? { invoicesFrom } : {}), days: Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1, noRecipeSales: Math.round(noRecipe), ...usageFor(model, area, areaOf, from, to) }), true;
 }
@@ -97,8 +97,8 @@ export function usageFor(model: Model, area: 'kitchen' | 'bar', areaOf: (categor
     .flatMap((d) => d.cost.lines.filter((l) => l.cost !== undefined).map((l) => ({ productId: l.productId, name: l.productName, dollars: l.cost! * d.quantity })));
   const want: PurchaseKind = area === 'bar' ? 'bar' : 'food';
   const purchases = purchasesOf(model, from, to).filter((p) => p.kind === want);
-  const names = new Map(model.imported.products.map((p) => [p.externalId, p.name]));
-  const kinds = new Map(model.imported.products.map((p) => [p.externalId, purchaseKind(p.categoryType)]));
+  const names = new Map(model.purchasing.products.map((p) => [p.externalId, p.name]));
+  const kinds = new Map(model.purchasing.products.map((p) => [p.externalId, purchaseKind(p.categoryType)]));
   return usageGaps(expected, purchases, names, kinds);
 }
 

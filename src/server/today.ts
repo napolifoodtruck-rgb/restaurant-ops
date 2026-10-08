@@ -22,7 +22,7 @@ import { coverageOf, inArea, menuView, posItemOf, type AreaView } from './views.
 import { guessArea, loadAreas } from './areas.ts';
 import { ordersDue } from './orders.ts';
 import { view as stationDay } from './prep.ts';
-import { blendedPrices } from '../connectors/marginedge.ts';
+import { blendedPrices } from '../core/purchasing.ts';
 import { notBoughtKey, quietVendorKey, recipeChecks } from './recipeChecks.ts';
 
 export interface TodayItem {
@@ -141,10 +141,10 @@ async function prepItems(db: Db, who: SignedIn, stations: { id: string; name: st
  * or more that change food cost by $5 a week or more.
  */
 export function priceMoves(model: Model, today: string, include: (category: string) => boolean = () => true) {
-  const now = blendedPrices(model.imported.prices, today);
-  const before = blendedPrices(model.imported.prices, addDays(today, -90));
-  const recent = new Set(model.imported.prices.filter((p) => p.date.slice(0, 10) > addDays(today, -60)).map((p) => p.productExternalId));
-  const old = new Set(model.imported.prices.filter((p) => p.date.slice(0, 10) <= addDays(today, -90)).map((p) => p.productExternalId));
+  const now = blendedPrices(model.purchasing.prices, today);
+  const before = blendedPrices(model.purchasing.prices, addDays(today, -90));
+  const recent = new Set(model.purchasing.prices.filter((p) => p.date.slice(0, 10) > addDays(today, -60)).map((p) => p.productExternalId));
+  const old = new Set(model.purchasing.prices.filter((p) => p.date.slice(0, 10) <= addDays(today, -90)).map((p) => p.productExternalId));
   const days = Math.max(1, (Date.parse(`${today}T12:00:00Z`) - Date.parse(`${model.from}T12:00:00Z`)) / 86_400_000 + 1);
   const use = new Map<string, { amount: number; dishes: Map<string, number> }>();
   for (const d of model.margins.dishes) {

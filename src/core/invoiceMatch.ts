@@ -4,7 +4,7 @@
  *
  * Which ingredient, in order:
  *   learned   a manager confirmed this vendor's line before (vendor_item_matches)
- *   history   the same vendor's item code or description on a past MarginEdge invoice
+ *   history   the same vendor's item code or description on a past invoice
  *   guess     the closest ingredient by name, for the manager to confirm
  * How much: what one "quantity" held last time (learned or history), else the pack printed on the
  * line ("6/5 LB" is 30 lb), else the unit itself when it's a weight or volume (catch weight).
@@ -25,14 +25,14 @@ export interface MatchInput {
   read: ReadInvoice;
   vendors: KnownVendor[];
   history: PastLine[];
-  /** By `${vendor name, lower-cased}|${itemKey}`. */
+  /** By `${vendor key}|${itemKey}`: what a manager confirmed for that vendor's line. */
   learned: Map<string, Learned>;
   products: MatchProduct[];
   /** Base units in one of `unit` for a product, or undefined when they don't convert. */
   baseOf: (productId: string, unit: string) => number | undefined;
   /** Today's price per base unit, for spotting a jump. */
   priceNow: (productId: string) => number | undefined;
-  /** Invoices already in (MarginEdge's), so the same one isn't counted twice. */
+  /** Invoices already in (saved here, or brought in by an importer), so the same one isn't counted twice. */
   invoices: PastInvoice[];
 }
 
@@ -89,7 +89,6 @@ export function matchInvoice(input: MatchInput): MatchedInvoice {
   const vk = vendorKey(read.vendor);
   const known = input.vendors.map((v) => ({ v, score: vendorKey(v.name) === vk ? 1 : nameLikeness(v.name, read.vendor) })).sort((a, b) => b.score - a.score)[0];
   const vendor = known && known.score >= 0.5 ? { key: known.v.key, name: known.v.name, how: 'known' as const } : { name: read.vendor || 'Unknown vendor', how: 'new' as const };
-  const vendorLearnKey = vendorKey(vendor.name);
   const past = vendor.key ? input.history.filter((h) => h.vendorKey === vendor.key).sort((a, b) => (a.date < b.date ? 1 : -1)) : [];
   const product = new Map(input.products.map((p) => [p.id, p]));
 
@@ -102,7 +101,7 @@ export function matchInvoice(input: MatchInput): MatchedInvoice {
     if (l.unitPrice !== undefined && Math.abs(l.unitPrice * l.quantity - l.total) > Math.max(0.05, Math.abs(l.total) * 0.01)) flags.push('math');
     let how: MatchedLine['how'] = 'none', productId: string | undefined, perQuantity: number | undefined, perFrom: MatchedLine['perFrom'];
     let candidates: MatchedLine['candidates'];
-    const learned = input.learned.get(`${vendorLearnKey}|${key}`);
+    const learned = vendor.key ? input.learned.get(`${vendor.key}|${key}`) : undefined;
     const seen = past.find((h) => (l.code && h.code && itemKey(h) === key) || itemKey({ description: h.description }) === itemKey({ description: l.description }));
     if (learned && product.has(learned.productId)) { how = 'learned'; productId = learned.productId; perQuantity = learned.per; perFrom = 'learned'; }
     else if (seen && product.has(seen.productId)) { how = 'history'; productId = seen.productId; perQuantity = seen.perQuantity; perFrom = 'history'; }

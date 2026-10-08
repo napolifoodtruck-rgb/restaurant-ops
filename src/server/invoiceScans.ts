@@ -23,7 +23,7 @@ import { appendAppInvoiceLines, baseOf, createAppInvoice } from './appInvoices.t
 import { replaceMarginEdgeCopy } from './meImport.ts';
 import { readInvoice, ReaderError, type ReadInvoice, type ReadPage } from '../connectors/claudeInvoices.ts';
 import { itemKey, matchInvoice, vendorKey, type Learned, type PastLine } from '../core/invoiceMatch.ts';
-import { packBaseOf } from '../connectors/marginedge.ts';
+import { packBaseOf } from '../core/purchasing.ts';
 
 /** Where the reader's key and model come from; tests swap in a pretend fetch. */
 export const scanSettings = {
@@ -49,7 +49,7 @@ export async function readScan(db: Db, restaurantId: string, scanId: string): Pr
     if (!apiKey) throw new ReaderError('The invoice reader isn’t connected yet (ANTHROPIC_API_KEY in Render).');
     const pages = (await db.query<{ media_type: ReadPage['mediaType']; data: Buffer }>('SELECT media_type, data FROM invoice_scan_pages WHERE scan_id = $1 ORDER BY page', [scanId])).rows;
     const model = await getModel(db, restaurantId, new Date().toISOString().slice(0, 10)).catch(() => undefined);
-    const vendors = [...new Set([...(model?.imported.vendors ?? []).map((v) => v.name), ...(await ourVendors(db, restaurantId)).map((v) => v.name)])].slice(0, 200);
+    const vendors = [...new Set([...(model?.purchasing.vendors ?? []).map((v) => v.name), ...(await ourVendors(db, restaurantId)).map((v) => v.name)])].slice(0, 200);
     const model_ = scanSettings.model(), baseUrl = scanSettings.baseUrl();
     const r = await readInvoice(pages.map((p) => ({ mediaType: p.media_type, data: bytes(p.data) })), { apiKey, vendors, fetch: scanSettings.fetch as typeof fetch, ...(model_ ? { model: model_ } : {}), ...(baseUrl ? { baseUrl } : {}) });
     await db.query("UPDATE invoice_scans SET status = 'read', result = $2, usage = $3, error = NULL, updated_at = now() WHERE id = $1", [scanId, JSON.stringify(r.invoice), JSON.stringify({ ...r.usage, model: r.model })]);
@@ -62,10 +62,10 @@ export async function readScan(db: Db, restaurantId: string, scanId: string): Pr
 
 /** What the reader saw, matched against what we know: vendors, past lines, learned answers, prices. */
 async function matched(db: Db, restaurantId: string, model: Model, read: ReadInvoice) {
-  const vendors = model.imported.vendors.map((v) => ({ key: v.externalId, name: v.name }));
-  const perOf = new Map(model.imported.prices.map((p) => [`${p.invoiceExternalId}|${p.lineNumber}`, packBaseOf(p)]));
+  const vendors = model.purchasing.vendors.map((v) => ({ key: v.externalId, name: v.name }));
+  const perOf = new Map(model.purchasing.prices.map((p) => [`${p.invoiceExternalId}|${p.lineNumber}`, packBaseOf(p)]));
   const history: PastLine[] = [];
-  for (const inv of model.imported.invoices) {
+  for (const inv of model.purchasing.invoices) {
     if (!inv.vendorExternalId) continue;
     for (const l of inv.lines) {
       const per = perOf.get(`${inv.externalId}|${l.lineNumber}`);
@@ -73,9 +73,12 @@ async function matched(db: Db, restaurantId: string, model: Model, read: ReadInv
       history.push({ vendorKey: inv.vendorExternalId, ...(l.vendorItemCode ? { code: l.vendorItemCode } : {}), description: l.description, productId: l.productExternalId, perQuantity: per, unitPrice: l.unitPrice, date: inv.invoiceDate ?? '' });
     }
   }
+  // Learned per vendor, under the same key the vendors above carry.
   const learned = new Map<string, Learned>((await db.query<{ vendor_key: string; item_key: string; product_id: string; per: string }>(
-    'SELECT vendor_key, item_key, product_id, per FROM vendor_item_matches WHERE restaurant_id = $1', [restaurantId])).rows.map((r) => [`${r.vendor_key}|${r.item_key}`, { productId: r.product_id, per: Number(r.per) }]));
-  const products = model.imported.products.filter((p) => p.baseUnit);
+    `SELECT coalesce(v.me_vendor_id, v.id::text) AS vendor_key, m.item_key, m.product_id, m.per
+       FROM vendor_item_matches m JOIN vendors v ON v.id = m.vendor_id WHERE m.restaurant_id = $1`, [restaurantId])).rows
+    .map((r) => [`${r.vendor_key}|${r.item_key}`, { productId: r.product_id, per: Number(r.per) }]));
+  const products = model.purchasing.products.filter((p) => p.baseUnit);
   const byId = new Map(products.map((p) => [p.externalId, p]));
   const m = matchInvoice({
     read, vendors, history, learned,
@@ -83,7 +86,7 @@ async function matched(db: Db, restaurantId: string, model: Model, read: ReadInv
     baseOf: (id, unit) => { const p = byId.get(id); return p ? baseOf(p, unit) : undefined; },
     priceNow: (id) => model.book.unitCost(id),
     // Already in, from MarginEdge or saved here before (the same photo taken twice).
-    invoices: model.imported.invoices.map((i) => {
+    invoices: model.purchasing.invoices.map((i) => {
       const source = model.invoiceSources.get(i.externalId) === 'marginedge' ? 'marginedge' as const : 'app' as const;
       return { externalId: i.externalId, source, ...(i.vendorExternalId ? { vendorKey: i.vendorExternalId } : {}), ...(i.invoiceNumber ? { number: i.invoiceNumber } : {}), ...(i.invoiceDate ? { date: i.invoiceDate } : {}), total: i.total,
         ...(source === 'app' ? { lines: i.lines.map((l) => ({ description: l.description, total: l.lineTotal })) } : {}) };
@@ -188,24 +191,19 @@ export async function scanRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     } else {
       invoiceId = await createAppInvoice(db, who, model, today, b, scan.id);
       // MarginEdge has it too: the two are compared, and ours (checked) is the one that counts.
-      const theirs = check.duplicateOf ? model.imported.invoices.find((i) => i.externalId === check.duplicateOf!.externalId) : undefined;
+      const theirs = check.duplicateOf ? model.purchasing.invoices.find((i) => i.externalId === check.duplicateOf!.externalId) : undefined;
       if (theirs) await replaceMarginEdgeCopy(db, who.restaurantId, invoiceId, theirs.externalId, theirs,
-        new Map(model.imported.prices.map((p) => [`${p.invoiceExternalId}|${p.lineNumber}`, p])), new Map(model.imported.products.map((p) => [p.externalId, p])));
+        new Map(model.purchasing.prices.map((p) => [`${p.invoiceExternalId}|${p.lineNumber}`, p])), new Map(model.purchasing.products.map((p) => [p.externalId, p])));
     }
     // Learn each confirmed line: this vendor's item is this ingredient, one of them holds this much.
-    const vName = String((b.vendor as any)?.name ?? '') || (await (async () => {
-      const v = b.vendor as any;
-      if (v?.id) return (await db.query<{ name: string }>('SELECT name FROM vendors WHERE id = $1', [v.id])).rows[0]?.name ?? '';
-      if (v?.meId) return model.imported.vendors.find((x) => x.externalId === v.meId)?.name ?? '';
-      return result.vendor;
-    })());
-    for (const l of Array.isArray(b.lines) ? (b.lines as any[]) : []) {
+    const vendorId = (await db.query<{ vendor_id: string | null }>('SELECT vendor_id FROM supplier_invoices WHERE id = $1', [invoiceId])).rows[0]?.vendor_id;
+    for (const l of vendorId && Array.isArray(b.lines) ? (b.lines as any[]) : []) {
       const key = typeof l?.itemKey === 'string' && l.itemKey ? l.itemKey : itemKey({ description: String(l?.description ?? '') });
       const per = Number(l?.perQuantity);
       if (!l?.productId || !(per > 0) || !key) continue;
-      await db.query(`INSERT INTO vendor_item_matches (restaurant_id, vendor_key, item_key, product_id, unit, per) VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (restaurant_id, vendor_key, item_key) DO UPDATE SET product_id = EXCLUDED.product_id, unit = EXCLUDED.unit, per = EXCLUDED.per, confirmed_at = now()`,
-        [who.restaurantId, vendorKey(vName), key, String(l.productId), String(l.unit ?? ''), per]);
+      await db.query(`INSERT INTO vendor_item_matches (restaurant_id, vendor_id, item_key, product_id, unit, per) VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (restaurant_id, vendor_id, item_key) DO UPDATE SET product_id = EXCLUDED.product_id, unit = EXCLUDED.unit, per = EXCLUDED.per, confirmed_at = now()`,
+        [who.restaurantId, vendorId, key, String(l.productId), String(l.unit ?? ''), per]);
     }
     await db.query("UPDATE invoice_scans SET status = 'saved', invoice_id = $2, updated_at = now() WHERE id = $1", [scan.id, invoiceId]);
     invalidate(who.restaurantId);

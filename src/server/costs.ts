@@ -20,7 +20,7 @@ import { getModel, loadBook, type Model } from './model.ts';
 import { hasMarkers, treeAlerts, type Markers } from './treeAlerts.ts';
 import { recipeChecks } from './recipeChecks.ts';
 import { kindOf } from './cards.ts';
-import { recipeId as idOfName } from '../connectors/marginedgeRecipes.ts';
+import { recipeId as idOfName } from '../core/recipeCards.ts';
 import { priceHistory, purchaseKind } from '../core/costReports.ts';
 import { squareModifierSales } from '../connectors/square.ts';
 import { storedModifierSales } from './squareSync.ts';
@@ -37,8 +37,8 @@ function quantityAsked(url: URL) {
 
 /** Every purchase of a product: per base unit (so packs and vendors compare), with the vendor. */
 export function pricesOf(model: Model, productId: string) {
-  const vendors = new Map(model.imported.vendors.map((v) => [v.externalId, v.name]));
-  return model.imported.prices.filter((p) => p.productExternalId === productId).map((p) => ({
+  const vendors = new Map(model.purchasing.vendors.map((v) => [v.externalId, v.name]));
+  return model.purchasing.prices.filter((p) => p.productExternalId === productId).map((p) => ({
     date: p.date, ...(p.vendorExternalId && vendors.get(p.vendorExternalId) ? { vendor: vendors.get(p.vendorExternalId)! } : {}),
     perUnit: p.perBaseUnit, packPrice: p.price, pack: `${+p.per.amount.toFixed(3)} ${p.per.unit}`, quantity: p.quantity,
   }));
@@ -50,7 +50,7 @@ function pricePoints(model: Model): Map<string, PricePoint[]> {
   let m = pointsMemo.get(model);
   if (m) return m;
   m = new Map();
-  for (const p of model.imported.prices) if (p.perBaseUnit > 0) m.set(p.productExternalId, [...(m.get(p.productExternalId) ?? []), { date: p.date.slice(0, 10), perUnit: p.perBaseUnit }]);
+  for (const p of model.purchasing.prices) if (p.perBaseUnit > 0) m.set(p.productExternalId, [...(m.get(p.productExternalId) ?? []), { date: p.date.slice(0, 10), perUnit: p.perBaseUnit }]);
   for (const list of m.values()) list.sort((a, b) => a.date.localeCompare(b.date));
   pointsMemo.set(model, m);
   return m;
@@ -95,7 +95,7 @@ export async function costRoutes(db: Db, res: ServerResponse, url: URL, who: Sig
     const area = areaFor(who, url.searchParams.get('area'));
     const want = area === 'bar' ? 'bar' : 'food';
     const since = new Date(Date.parse(`${today}T12:00:00Z`) - 90 * 86_400_000).toISOString().slice(0, 10);
-    const rows = model.imported.products.filter((p) => purchaseKind(p.categoryType) === want).map((p) => {
+    const rows = model.purchasing.products.filter((p) => purchaseKind(p.categoryType) === want).map((p) => {
       const points = pricesOf(model, p.externalId);
       const h = priceHistory(points, today);
       const spent = points.filter((x) => x.date >= since).reduce((a, x) => a + x.packPrice * x.quantity, 0);
@@ -146,7 +146,7 @@ export async function costRoutes(db: Db, res: ServerResponse, url: URL, who: Sig
     const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 7), 365);
     const since = new Date(Date.parse(`${today}T12:00:00Z`) - (days - 1) * 86_400_000).toISOString().slice(0, 10);
     const want = (k: string) => (both ? k === 'food' || k === 'bar' : k === (area === 'bar' ? 'bar' : 'food'));
-    const names = new Map(model.imported.products.map((p) => [p.externalId, p.name]));
+    const names = new Map(model.purchasing.products.map((p) => [p.externalId, p.name]));
     const vendors = new Map<string, { vendor: string; spent: number; items: Map<string, { id?: string; name: string; spent: number }> }>();
     for (const p of purchasesOf(model, since, today)) {
       if (!want(p.kind)) continue;
@@ -288,7 +288,7 @@ export async function costRoutes(db: Db, res: ServerResponse, url: URL, who: Sig
       return line && d.quantity > 0 ? [{ id: d.recipeId, name: d.name, perPlate: line.amount, unit: product.baseUnit, costPerPlate: cents(line.cost ?? 0), plates: Math.round(d.quantity), share: d.cost.total > 0 ? (line.cost ?? 0) / d.cost.total : 0 }] : [];
     }).sort((a, b) => b.costPerPlate * b.plates - a.costPerPlate * a.plates);
     const usedIn = [...book.recipes.values()].filter((r) => r.ingredients.some((i) => i.item.kind === 'product' && i.item.id === id)).map((r) => ({ id: r.id, name: r.name }));
-    const imported = model.imported.products.find((p) => p.externalId === id);
+    const imported = model.purchasing.products.find((p) => p.externalId === id);
     return send(res, 200, {
       id, name: product.name, unit: product.baseUnit, ...(imported?.category ? { category: imported.category } : {}),
       ...(perUnit !== undefined ? { perUnit: Math.round(perUnit * 10000) / 10000 } : {}),

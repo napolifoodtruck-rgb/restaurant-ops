@@ -21,7 +21,7 @@ import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, loadBook, saveBook, withAnswer, type LinkAnswers, type Model, type PilotImportAnswers } from './model.ts';
 import { loadAreas, type AreaOf } from './areas.ts';
 import { posItemOf } from './views.ts';
-import { normalizeName as cardKey, recipeId, yieldsToConversions, type RecipeCard } from '../connectors/marginedgeRecipes.ts';
+import { normalizeName as cardKey, recipeId, yieldsToConversions, type RecipeCard } from '../core/recipeCards.ts';
 import { tryConvert } from '../core/units.ts';
 import { posName, type PosMenuItem } from '../core/menuLinks.ts';
 import { draftDrinkCards, type BarItem } from '../core/drinkCards.ts';
@@ -231,17 +231,17 @@ function issueText(i: any): string {
   return i.type;
 }
 
-// The product list only changes with invoices and their answers (which make a new `imported`).
+// The product list only changes with invoices and their answers (which make a new `purchasing`).
 const productsMemo = new WeakMap<object, ReturnType<typeof buildProductsView>>();
 function productsView(model: Model) {
-  let v = productsMemo.get(model.imported);
-  if (!v) { v = buildProductsView(model); productsMemo.set(model.imported, v); }
+  let v = productsMemo.get(model.purchasing);
+  if (!v) { v = buildProductsView(model); productsMemo.set(model.purchasing, v); }
   return v;
 }
 function buildProductsView(model: Model) {
-  const typeOf = new Map(model.imported.products.map((p) => [p.externalId, p.categoryType]));
+  const typeOf = new Map(model.purchasing.products.map((p) => [p.externalId, p.categoryType]));
   const lastBought = new Map<string, string>();
-  for (const p of model.imported.prices) if ((lastBought.get(p.productExternalId) ?? '') < p.date) lastBought.set(p.productExternalId, p.date.slice(0, 10));
+  for (const p of model.purchasing.prices) if ((lastBought.get(p.productExternalId) ?? '') < p.date) lastBought.set(p.productExternalId, p.date.slice(0, 10));
   return model.products.map((p) => ({
     id: p.id, name: p.name, unit: p.baseUnit, units: unitsFor(p.baseUnit, p.conversions), type: typeOf.get(p.id) ?? (p.id.startsWith('free-') ? 'FREE' : undefined),
     ...(model.book.unitCost(p.id) !== undefined ? { price: Math.round(model.book.unitCost(p.id)! * 10000) / 10000 } : {}),

@@ -8,8 +8,9 @@
 
 import { createHash } from 'node:crypto';
 import type { Db } from './db.ts';
-import { blendedPrices, packBaseOf, type ImportAnswers, type ImportedProduct, type ImportResult } from '../connectors/marginedge.ts';
-import { buildRecipes, FREE_PRODUCTS, recipeId, type RecipeCard } from '../connectors/marginedgeRecipes.ts';
+import type { ImportAnswers } from '../connectors/marginedge.ts';
+import { blendedPrices, packBaseOf, type PurchasedProduct, type Purchasing } from '../core/purchasing.ts';
+import { buildRecipes, FREE_PRODUCTS, recipeId, type RecipeCard } from '../core/recipeCards.ts';
 import { packSize, withPackSize } from '../core/packSizes.ts';
 import { squareItemSales, squareMenuItems, squareModifierSales, type SquareCatalogObject } from '../connectors/square.ts';
 import { applyLinks, confirmLink, emptyLinkState, linkLookup, markNewDish, matchMenu, posName, type LinkQuestion, type PosMenuItem, type SoldItem } from '../core/menuLinks.ts';
@@ -30,7 +31,7 @@ import { ensureMarginEdgeImported } from './meImport.ts';
 
 export interface PilotImportAnswers extends ImportAnswers {
   /** Products bought outside MarginEdge (salt from the store), with a price a manager gave. */
-  offInvoiceProducts?: ImportedProduct[];
+  offInvoiceProducts?: PurchasedProduct[];
   manualPrices?: Record<string, { price: number; per: Quantity; date?: string; note?: string }>;
   /** Card ingredient name → product id, when the name alone would match the wrong product. */
   ingredientProducts?: Record<string, string>;
@@ -212,7 +213,7 @@ export interface Model {
   book: RecipeBook;
   recipes: Recipe[];
   products: Product[];
-  imported: ImportResult;
+  purchasing: Purchasing;
   menuItems: PosMenuItem[];
   lookup: LinkLookup;
   sales: MarginSaleLine[];
@@ -282,7 +283,7 @@ export async function getModel(db: Db, restaurantId: string, today: string, rang
  */
 interface Base {
   /** Ingredients, vendors, invoices and prices, from the app's own tables. */
-  imported: ImportResult;
+  purchasing: Purchasing;
   /** Vendor keys that are the restaurant's own garden. */
   garden: Set<string>;
   /** Where each invoice came from, by its id. */
@@ -317,7 +318,7 @@ async function buildBase(db: Db, restaurantId: string, from: string, today: stri
   // The app's own ingredient list and invoices, whatever brought them in.
   const products = await loadIngredients(db, restaurantId, answers.conversions ?? {});
   const store = await loadStore(db, restaurantId, products);
-  const imported: ImportResult = { vendors: store.vendors, products, invoices: store.invoices, prices: store.prices, flags: [] };
+  const purchasing: Purchasing = { vendors: store.vendors, products, invoices: store.invoices, prices: store.prices };
   const catalogRows = (await db.query<{ data: any }>('SELECT data FROM pos_catalog WHERE restaurant_id = $1', [restaurantId])).rows;
   const catalog: SquareCatalogObject[] = catalogRows.map((r) => (typeof r.data === 'string' ? JSON.parse(r.data) : r.data));
   const categoryNames = Object.fromEntries(catalog.filter((o: any) => o.type === 'CATEGORY').map((o: any) => [o.id, o.category_data?.name ?? o.id]));
@@ -337,7 +338,7 @@ async function buildBase(db: Db, restaurantId: string, from: string, today: stri
   const rawRows = await storedItemSales(db, restaurantId, from, today);
   const modRows = await storedModifierSales(db, restaurantId, from, today);
   const dataFrom = (await db.query<{ day: string | null }>('SELECT min(day)::text AS day FROM pos_item_sales_daily WHERE restaurant_id = $1', [restaurantId])).rows[0]?.day ?? undefined;
-  return { imported, garden: store.garden, sources: store.sources, menuItems, images, rawRows, modRows, ...(dataFrom ? { dataFrom } : {}) };
+  return { purchasing, garden: store.garden, sources: store.sources, menuItems, images, rawRows, modRows, ...(dataFrom ? { dataFrom } : {}) };
 }
 
 async function buildModel(db: Db, restaurantId: string, from: string, today: string): Promise<Model> {
@@ -345,31 +346,31 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
   const bookData = await loadBook(db, restaurantId);
   const answers: PilotImportAnswers = bookData.importAnswers ?? {};
   const base = await getBase(db, restaurantId, from, today, answers);
-  const { imported, menuItems, images, rawRows, modRows, dataFrom } = base;
+  const { purchasing, menuItems, images, rawRows, modRows, dataFrom } = base;
   // No ingredients yet: nothing to cost with (named for the source most restaurants start from).
-  if (!imported.products.length) missing.push('marginedge');
+  if (!purchasing.products.length) missing.push('marginedge');
   if (!bookData.recipeCards?.length) missing.push('recipeCards');
 
   // Products and recipes.
   // Ingredients from an earlier answer are on the list now; kept here too in case one isn't yet.
-  const listed = new Set(imported.products.map((p) => p.externalId));
-  const allProducts = [...imported.products, ...(answers.offInvoiceProducts ?? []).filter((p) => !listed.has(p.externalId))];
+  const listed = new Set(purchasing.products.map((p) => p.externalId));
+  const allProducts = [...purchasing.products, ...(answers.offInvoiceProducts ?? []).filter((p) => !listed.has(p.externalId))];
   let recipes = buildRecipes(bookData.recipeCards ?? [], allProducts, { ingredientProducts: answers.ingredientProducts ?? {} }).recipes;
   for (const p of answers.portions ?? []) {
     const recipe = recipes.find((r) => r.name === p.recipe);
     const product = allProducts.find((x) => x.name === p.ingredient);
     if (recipe && product) recipes = withIngredientAmount(recipes, recipe.id, { kind: 'product', id: product.externalId }, { amount: p.amount, unit: p.unit });
   }
-  const blended = blendedPrices(imported.prices, today);
+  const blended = blendedPrices(purchasing.prices, today);
   // Where a price comes from: recent invoices first, then one entered in the app, then MarginEdge's
   // own last price (a product bought before the invoices we read, like a case of San Pellegrino).
   // Kept per product so a recipe line can show it: the vendor and date catch a wrong price early.
   const priceSource = new Map<string, PriceSource>();
-  const vendorName = new Map(imported.vendors.map((v) => [v.externalId, v.name]));
+  const vendorName = new Map(purchasing.vendors.map((v) => [v.externalId, v.name]));
   const since = minusDays(today, 60); // blendedPrices' window: invoices after this day are averaged
-  const lastPoint = new Map<string, (typeof imported.prices)[number]>();
+  const lastPoint = new Map<string, (typeof purchasing.prices)[number]>();
   const recentInvoices = new Map<string, Set<string>>();
-  for (const pt of imported.prices) {
+  for (const pt of purchasing.prices) {
     const day = pt.date.slice(0, 10);
     if (day > today) continue;
     const cur = lastPoint.get(pt.productExternalId);
@@ -493,5 +494,5 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     // A dish change already answered: a version on that button starts within a week of the suggested day.
     .filter((c) => !(c.kind === 'dishChanged' && c.catalogId && c.suggestedDate && [...linkAnswers.confirm, ...linkAnswers.newDish].some((v) => v.catalogId === c.catalogId && v.from && Math.abs(Date.parse(v.from) - Date.parse(c.suggestedDate!)) <= 7 * 86_400_000)));
 
-  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, imported, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded, menuStatus: linkAnswers.menuStatus ?? [], rough: new Set((bookData.recipeCards ?? []).filter((c) => c.status === 'rough').map((c) => recipeId(c.name))), priceSource, gardenVendors: base.garden, invoiceSources: base.sources };
+  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, purchasing, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded, menuStatus: linkAnswers.menuStatus ?? [], rough: new Set((bookData.recipeCards ?? []).filter((c) => c.status === 'rough').map((c) => recipeId(c.name))), priceSource, gardenVendors: base.garden, invoiceSources: base.sources };
 }

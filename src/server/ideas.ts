@@ -38,7 +38,7 @@ export async function workOutIdeas(db: Db, restaurantId: string, today: string, 
   const prevTo = shift(from, -1), prevFrom = shift(prevTo, -(days - 1));
   const now = await getModel(db, restaurantId, to, { from, to });
   const before = await getModel(db, restaurantId, prevTo, { from: prevFrom, to: prevTo });
-  const invoicesFrom = now.imported.invoices.map((i) => i.invoiceDate).filter(Boolean).sort()[0];
+  const invoicesFrom = now.purchasing.invoices.map((i) => i.invoiceDate).filter(Boolean).sort()[0];
   const hasBefore = Boolean(invoicesFrom && invoicesFrom <= prevFrom);
   for (const area of sides) {
     const u = usageFor(now, area, areaOf, from, to);
@@ -50,7 +50,7 @@ export async function workOutIdeas(db: Db, restaurantId: string, today: string, 
 
   // Prices and vendors: every product bought in the last 4 months.
   const model90 = await getModel(db, restaurantId, today);
-  const products: ProductPrices[] = model90.imported.products.filter((p) => purchaseKind(p.categoryType) !== 'other').flatMap((p) => {
+  const products: ProductPrices[] = model90.purchasing.products.filter((p) => purchaseKind(p.categoryType) !== 'other').flatMap((p) => {
     const points = pricesOf(model90, p.externalId);
     if (!points.some((x) => x.date >= shift(today, -120))) return [];
     const h = priceHistory(points, today);

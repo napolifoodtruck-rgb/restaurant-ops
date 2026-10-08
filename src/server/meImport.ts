@@ -15,7 +15,8 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import type { Db } from './db.ts';
-import { importMarginEdge, type ImportAnswers, type ImportedInvoice, type ImportedProduct, type PricePoint } from '../connectors/marginedge.ts';
+import { importMarginEdge, type ImportAnswers } from '../connectors/marginedge.ts';
+import type { SupplierInvoice, PurchasedProduct, PricePoint } from '../core/purchasing.ts';
 import { storedMarginEdge } from './marginedgeSync.ts';
 import { syncIngredients } from './ingredients.ts';
 import { insertMany } from './squareSync.ts';
@@ -32,7 +33,7 @@ export function sameInvoice(a: { vendorKey?: string; number?: string | null; dat
 }
 
 /** Runs the import if MarginEdge's data or the answers changed since the last one. */
-export async function ensureMarginEdgeImported(db: Db, restaurantId: string, answers: ImportAnswers & { offInvoiceProducts?: ImportedProduct[] }): Promise<void> {
+export async function ensureMarginEdgeImported(db: Db, restaurantId: string, answers: ImportAnswers & { offInvoiceProducts?: PurchasedProduct[] }): Promise<void> {
   return inTurn(`me-import:${restaurantId}`, async () => {
     const synced = (await db.query<{ stamp: string | null }>("SELECT max(finished_at)::text AS stamp FROM sync_runs WHERE restaurant_id = $1 AND source = 'marginedge' AND status = 'ok'", [restaurantId])).rows[0]?.stamp ?? '';
     const told = createHash('sha1').update(JSON.stringify([answers.packs ?? [], answers.conversions ?? {}, answers.merges ?? [], answers.offInvoiceProducts ?? []])).digest('hex');
@@ -46,7 +47,7 @@ export async function ensureMarginEdgeImported(db: Db, restaurantId: string, ans
   });
 }
 
-async function importInto(db: Db, restaurantId: string, read: ReturnType<typeof importMarginEdge>, answers: ImportAnswers & { offInvoiceProducts?: ImportedProduct[] }) {
+async function importInto(db: Db, restaurantId: string, read: ReturnType<typeof importMarginEdge>, answers: ImportAnswers & { offInvoiceProducts?: PurchasedProduct[] }) {
   // Ingredients: MarginEdge's join the list; merged-away ones come off it.
   const mergedAway = new Set((answers.merges ?? []).flatMap((m) => m.from.filter((f) => f !== m.into)));
   await syncIngredients(db, restaurantId, read.products, answers.offInvoiceProducts ?? [], mergedAway);
@@ -95,7 +96,7 @@ async function importInto(db: Db, restaurantId: string, read: ReturnType<typeof 
 }
 
 /** Ours against MarginEdge's reading of the same invoice, kept in invoice_comparisons. */
-async function compareWithOurs(db: Db, restaurantId: string, ourId: string, theirs: ImportedInvoice, pointOf: Map<string, PricePoint>, products: Map<string, ImportedProduct>) {
+async function compareWithOurs(db: Db, restaurantId: string, ourId: string, theirs: SupplierInvoice, pointOf: Map<string, PricePoint>, products: Map<string, PurchasedProduct>) {
   const ourLines: OurLine[] = (await db.query<{ product_id: string | null; description: string; quantity: string; unit: string; total: string; per_amount: string; per_unit: string | null }>(
     'SELECT product_id, description, quantity, unit, total, per_amount, per_unit FROM supplier_invoice_lines WHERE invoice_id = $1 ORDER BY line_number', [ourId])).rows
     .map((l) => ({ productId: l.product_id ?? undefined, description: l.description, quantity: Number(l.quantity) * Number(l.per_amount), unit: l.per_unit ?? l.unit, total: Number(l.total) }));
@@ -109,7 +110,7 @@ async function compareWithOurs(db: Db, restaurantId: string, ourId: string, thei
  * Just saved one of ours that MarginEdge already has: compare the two now, and take MarginEdge's
  * copy out so the invoice counts once (as ours).
  */
-export async function replaceMarginEdgeCopy(db: Db, restaurantId: string, ourId: string, meInvoiceId: string, theirs: ImportedInvoice, pointOf: Map<string, PricePoint>, products: Map<string, ImportedProduct>) {
+export async function replaceMarginEdgeCopy(db: Db, restaurantId: string, ourId: string, meInvoiceId: string, theirs: SupplierInvoice, pointOf: Map<string, PricePoint>, products: Map<string, PurchasedProduct>) {
   await compareWithOurs(db, restaurantId, ourId, theirs, pointOf, products);
   await db.query("DELETE FROM supplier_invoices WHERE restaurant_id = $1 AND source = 'marginedge' AND me_invoice_id = $2", [restaurantId, meInvoiceId]);
 }
