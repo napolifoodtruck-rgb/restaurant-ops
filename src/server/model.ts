@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import type { Db } from './db.ts';
 import type { ImportAnswers } from '../connectors/marginedge.ts';
 import { blendedPrices, packBaseOf, type PurchasedProduct, type Purchasing } from '../core/purchasing.ts';
-import { buildRecipes, cardId, FREE_PRODUCTS, type RecipeCard } from '../core/recipeCards.ts';
+import { buildRecipes, cardId, FREE_PRODUCTS, sameDishName, type RecipeCard } from '../core/recipeCards.ts';
 import { packSize, withPackSize } from '../core/packSizes.ts';
 import { squareItemSales, squareMenuItems, squareModifierSales, type SquareCatalogObject } from '../connectors/square.ts';
 import { applyLinks, confirmLink, emptyLinkState, linkLookup, markNewDish, matchMenu, nameKey, posName, type LinkQuestion, type PosMenuItem, type SoldItem } from '../core/menuLinks.ts';
@@ -459,7 +459,10 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
   // "Needs a recipe" until one by its name is written: then it's linked to it.
   for (const a of linkAnswers.newDish) {
     // (Not one taken off a recipe by hand: that button isn't that recipe, whatever its name.)
-    const named = a.note === 'unlinked in the app' ? undefined : recipes.find((x) => x.kind === 'dish' && nameKey(x.name) === nameKey(posName(a)));
+    // By its name, or one a letter or two off (the button misspelled at first: Khatadin for Katahdin), when only one fits.
+    const dishes = a.note === 'unlinked in the app' ? [] : recipes.filter((x) => x.kind === 'dish');
+    const alike = dishes.filter((x) => sameDishName(x.name, a.itemName));
+    const named = dishes.find((x) => nameKey(x.name) === nameKey(posName(a))) ?? (alike.length === 1 ? alike[0] : undefined);
     state = named ? confirmLink(state, a, named.id, undefined, a.from) : markNewDish(state, a, a.from);
   }
   for (const a of linkAnswers.notFood ?? []) state = confirmLink(state, a, null);

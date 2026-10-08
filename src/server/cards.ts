@@ -25,7 +25,7 @@ import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, loadBook, saveBook, withAnswer, type LinkAnswers, type Model, type PilotImportAnswers } from './model.ts';
 import { loadAreas, type AreaOf } from './areas.ts';
 import { posItemOf } from './views.ts';
-import { cardId, normalizeName as cardKey, yieldsToConversions, type RecipeCard } from '../core/recipeCards.ts';
+import { cardId, sameDishName, normalizeName as cardKey, yieldsToConversions, type RecipeCard } from '../core/recipeCards.ts';
 import { tryConvert } from '../core/units.ts';
 import { posName, type PosMenuItem } from '../core/menuLinks.ts';
 import { draftDrinkCards, type BarItem } from '../core/drinkCards.ts';
@@ -271,11 +271,12 @@ async function saveCards(db: Db, who: SignedIn, changes: { card: CardInput; prev
       cards = r.cards; links = r.links;
       importChanged ||= r.importChanged;
     }
-    for (const item of ch.link ?? []) links = withAnswer(links, { type: 'link', catalogId: item.catalogId, itemName: item.itemName, ...(item.variationName ? { variationName: item.variationName } : {}), recipe: stored.name });
+    // Stamped, so a button linked here counts over an earlier "recipe to come" or "not food".
+    for (const item of ch.link ?? []) links = withAnswer(links, { type: 'link', catalogId: item.catalogId, itemName: item.itemName, ...(item.variationName ? { variationName: item.variationName } : {}), recipe: stored.name }, { at: new Date().toISOString(), by: who.staffId });
     for (const item of ch.unlink ?? []) {
       const same = (x: PosMenuItem) => x.catalogId === item.catalogId && x.itemName === item.itemName && (x.variationName ?? '') === (item.variationName ?? '');
       // Unlinked by hand: it goes back to "selling without a card" (not to an automatic name match).
-      links = { ...links, confirm: links.confirm.filter((x) => !same(x)), newDish: [...links.newDish.filter((x) => !same(x)), { catalogId: item.catalogId, itemName: item.itemName, ...(item.variationName ? { variationName: item.variationName } : {}), note: 'unlinked in the app' }] };
+      links = { ...links, confirm: links.confirm.filter((x) => !same(x)), newDish: [...links.newDish.filter((x) => !same(x)), { catalogId: item.catalogId, itemName: item.itemName, ...(item.variationName ? { variationName: item.variationName } : {}), note: 'unlinked in the app', at: new Date().toISOString(), by: who.staffId }] };
     }
   }
   // A real change from today (not a fix): past periods keep the recipe as it was.
@@ -300,29 +301,9 @@ async function followRename(db: Db, who: SignedIn, state: { cards: RecipeCard[];
   return { cards, links, importChanged };
 }
 
-/** Words that don't tell two dishes apart: "Katahdin Pizza" is the Katahdin. */
-const FILLER = new Set(['pizza', 'pie', 'the', 'a', 'special', 'new', 'recipe', 'draft']);
-const simple = (name: string) => cardKey(name).split(/[^a-z0-9]+/).filter((w) => w && !FILLER.has(w)).join(' ');
-function editDistance(a: string, b: string): number {
-  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)] as number[]);
-  for (let j = 1; j <= b.length; j++) d[0]![j] = j;
-  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i]![j] = Math.min(d[i - 1]![j]! + 1, d[i]![j - 1]! + 1, d[i - 1]![j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
-  return d[a.length]![b.length]!;
-}
-/**
- * Other recipes that look like the same dish: the same name but for "pizza", or a letter or two off
- * (a misspelling: Khatadin, Katahdin). Same kind only (a dish with dishes).
- */
 export function sameDishAs(card: RecipeCard, cards: readonly RecipeCard[]): string[] {
-  const mine = simple(card.name), kind = kindOf(card);
-  if (!mine) return [];
-  return cards.filter((c) => c !== card && cardKey(c.name) !== cardKey(card.name) && kindOf(c) === kind).filter((c) => {
-    const theirs = simple(c.name);
-    if (!theirs) return false;
-    if (theirs === mine) return true;
-    const short = Math.min(theirs.length, mine.length);
-    return short >= 5 && editDistance(theirs, mine) <= (short >= 8 ? 2 : 1);
-  }).map((c) => c.name);
+  const kind = kindOf(card);
+  return cards.filter((c) => c !== card && cardKey(c.name) !== cardKey(card.name) && kindOf(c) === kind && sameDishName(c.name, card.name)).map((c) => c.name);
 }
 
 const SMALL_WORDS = new Set(['a', 'an', 'and', 'or', 'of', 'with', 'in', 'on', 'the', 'to', 'for', 'de', 'di', 'del', 'della', 'al', 'alla', 'e', 'la', 'le']);
@@ -607,7 +588,7 @@ export async function cardRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     const b = await body(req);
     const book = await loadBook(db, who.restaurantId);
     let links: LinkAnswers = book.linkAnswers ?? { confirm: [], newDish: [] };
-    for (const item of posItemArg(b.items)) links = withAnswer(links, { type: 'notFood', ...item });
+    for (const item of posItemArg(b.items)) links = withAnswer(links, { type: 'notFood', ...item }, { at: new Date().toISOString(), by: who.staffId });
     await saveBook(db, who.restaurantId, 'linkAnswers', links, who.staffId);
     return send(res, 200, { ok: true }), true;
   }

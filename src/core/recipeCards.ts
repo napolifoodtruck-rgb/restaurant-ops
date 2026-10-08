@@ -207,3 +207,21 @@ function closestNames(name: string, candidates: string[]): string[] {
     .slice(0, 3)
     .map((c) => c.candidate);
 }
+
+/** Words that don't tell two dishes apart: "Katahdin Pizza" is the Katahdin. */
+const FILLER = new Set(['pizza', 'pie', 'the', 'a', 'special', 'new', 'recipe', 'draft']);
+const simpleName = (name: string) => normalizeName(name).split(/[^a-z0-9]+/).filter((w) => w && !FILLER.has(w)).join(' ');
+function editDistance(a: string, b: string): number {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)] as number[]);
+  for (let j = 1; j <= b.length; j++) d[0]![j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i]![j] = Math.min(d[i - 1]![j]! + 1, d[i]![j - 1]! + 1, d[i - 1]![j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[a.length]![b.length]!;
+}
+/** The same dish by name: the same but for "pizza", or a letter or two off (Khatadin, Katahdin). */
+export function sameDishName(a: string, b: string): boolean {
+  const x = simpleName(a), y = simpleName(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const short = Math.min(x.length, y.length);
+  return short >= 5 && editDistance(x, y) <= (short >= 8 ? 2 : 1);
+}
