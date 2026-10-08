@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { migrate } from '../src/server/db.ts';
 import { createApp } from '../src/server/app.ts';
 import { localNow } from '../src/server/online.ts';
+import { LAST_WINDOW_ENDS } from '../src/core/pickupWindows.ts';
 import type { Fetch } from '../src/connectors/squareApi.ts';
 import { startTestDb } from './support/psqlDb.ts';
 
@@ -290,11 +291,14 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   assert.deepEqual((await call('GET', '/api/online/pause')).json.paused, null);
   assert.equal((await call('POST', '/api/online/pause', { minutes: 7 })).status, 400);
   const paused = (await call('POST', '/api/online/pause', { minutes: 30 })).json.paused;
-  assert.equal(paused.tonight, false);
+  // The pause runs on the real clock: 30 minutes from late evening reaches past the last window, which is the rest of tonight.
+  const pauseEnds = localNow('America/New_York', new Date(Date.now() + 30 * 60_000));
+  const pastLastWindow = pauseEnds.date !== localNow('America/New_York').date || pauseEnds.time >= LAST_WINDOW_ENDS;
+  assert.equal(paused.tonight, pastLastWindow);
   menu = (await customer('GET', '/api/order/menu')).json;
-  assert.deepEqual([menu.open, Boolean(menu.paused.until.label)], [false, true]);
+  assert.deepEqual([menu.open, Boolean(menu.paused.until?.label)], [false, !pastLastWindow]);
   const whilePaused = await customer('POST', '/api/order/checkout', { ...order, window: '18:00', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 });
-  assert.deepEqual([whilePaused.status, /very busy/.test(whilePaused.json.error)], [409, true]);
+  assert.deepEqual([whilePaused.status, (pastLastWindow ? /for tonight/ : /very busy/).test(whilePaused.json.error)], [409, true]);
   assert.equal((await call('POST', '/api/online/pause', { tonight: true })).json.paused.tonight, true);
   menu = (await customer('GET', '/api/order/menu')).json;
   assert.deepEqual([menu.open, menu.paused.until], [false, null]);
