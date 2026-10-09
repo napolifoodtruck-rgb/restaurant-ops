@@ -1380,3 +1380,5 @@ button.tag.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .pair-row { padding: 8px 0; }
 .pair-pick { display: flex; justify-content: space-between; align-items: baseline; padding: 4px 0 6px; border-bottom: 1px solid var(--soft); }
 .pair-finder .tag { margin-left: 6px; font-size: 11px; }
+/* Search boxes look like the app's other text boxes (the board's big search and .search keep their own). */
+input[type=search]:not(.floor-search):not(.search) { height: 48px; border: 1px solid var(--line); padding: 0 14px; font-size: 16px; background: #fff; font-weight: 500; border-radius: var(--radius); box-sizing: border-box; }
