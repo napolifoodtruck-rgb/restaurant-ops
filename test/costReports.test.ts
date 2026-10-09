@@ -53,3 +53,15 @@ test('an ingredient’s price over time: vendor changes and how much it moved', 
   assert.equal(Math.round(h.change365! * 100), 25); // from 0.80 a year ago
   assert.deepEqual(h.vendors.map((v) => v.vendor), ['IGF', 'Ferraro']);
 });
+
+test('last price by vendor, and a nudge when another vendor was cheaper', () => {
+  const p = (date: string, vendor: string, perUnit: number) => ({ date, vendor, perUnit, packPrice: perUnit * 50, pack: '50 lb', quantity: 1 });
+  const h = priceHistory([p('2026-06-01', 'Ferraro', 0.95), p('2026-08-01', 'Ferraro', 0.9), p('2026-09-20', 'IGF', 1.0), p('2026-10-01', 'IGF', 1.0)], '2026-10-05');
+  assert.deepEqual(h.vendors.map((v) => [v.vendor, v.lastPerUnit, v.last, v.lastPackPrice]), [['IGF', 1, '2026-10-01', 50], ['Ferraro', 0.9, '2026-08-01', 45]]);
+  assert.deepEqual(h.cheaper, { vendor: 'Ferraro', perUnit: 0.9, date: '2026-08-01', current: 'IGF', currentPerUnit: 1, saves: 0.1, daysOld: 65 });
+  // Buying the cheaper one already, or the gap is under 3%: no nudge.
+  assert.equal(priceHistory([p('2026-09-20', 'IGF', 1.0), p('2026-10-01', 'Ferraro', 0.9)], '2026-10-05').cheaper, undefined);
+  assert.equal(priceHistory([p('2026-09-20', 'Ferraro', 0.98), p('2026-10-01', 'IGF', 1.0)], '2026-10-05').cheaper, undefined);
+  assert.equal(priceHistory([p('2026-10-01', 'IGF', 1.0)], '2026-10-05').cheaper, undefined);
+  assert.equal(priceHistory([p('2026-03-01', 'Ferraro', 0.8), p('2026-10-01', 'IGF', 1.0)], '2026-10-05').cheaper, undefined); // too old to go on
+});

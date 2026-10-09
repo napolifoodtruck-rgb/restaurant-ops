@@ -161,19 +161,42 @@ export function priceHistory(points: PricePaid[], today: string) {
     const was = around(shift(today, -daysBack), 30);
     return latest !== undefined && was ? latest / was - 1 : undefined;
   };
-  const vendors = new Map<string, { vendor: string; purchases: number; spent: number; last: string }>();
+  const vendors = new Map<string, { vendor: string; purchases: number; spent: number; last: string; lastPerUnit: number; lastPack: string; lastPackPrice: number }>();
   for (const p of sorted) {
     const k = p.vendor ?? 'Unknown vendor';
-    const v = vendors.get(k) ?? { vendor: k, purchases: 0, spent: 0, last: p.date };
-    v.purchases++; v.spent += p.packPrice * p.quantity; v.last = p.date;
+    const v = vendors.get(k) ?? { vendor: k, purchases: 0, spent: 0, last: p.date, lastPerUnit: p.perUnit, lastPack: p.pack, lastPackPrice: p.packPrice };
+    v.purchases++; v.spent += p.packPrice * p.quantity;
+    v.last = p.date; v.lastPerUnit = p.perUnit; v.lastPack = p.pack; v.lastPackPrice = p.packPrice;
     vendors.set(k, v);
   }
+  const list = [...vendors.values()].map((v) => ({ ...v, spent: money(v.spent), lastPerUnit: Math.round(v.lastPerUnit * 10000) / 10000 })).sort((a, b) => b.last.localeCompare(a.last));
+  const cheaper = cheaperVendor(list, sorted[sorted.length - 1]?.vendor, today);
   return {
     points: sorted,
     switches,
     ...(latest !== undefined ? { latest: Math.round(latest * 10000) / 10000 } : {}),
     ...(change(90) !== undefined ? { change90: change(90) } : {}),
     ...(change(365) !== undefined ? { change365: change(365) } : {}),
-    vendors: [...vendors.values()].map((v) => ({ ...v, spent: money(v.spent) })).sort((a, b) => b.last.localeCompare(a.last)),
+    vendors: list,
+    ...(cheaper ? { cheaper } : {}),
   };
+}
+
+/**
+ * Whether another vendor's last price beat what we pay now: the cheapest other vendor whose last
+ * price is at least 3% under the current vendor's last price, from the last 6 months. `daysOld` says
+ * how stale that price is, so an older quote can be flagged rather than trusted.
+ */
+export function cheaperVendor(vendors: readonly { vendor: string; last: string; lastPerUnit: number }[], current: string | undefined, today: string):
+  { vendor: string; perUnit: number; date: string; current: string; currentPerUnit: number; saves: number; daysOld: number } | undefined {
+  if (!current) return undefined;
+  const now = vendors.find((v) => v.vendor === current);
+  if (!now || !(now.lastPerUnit > 0)) return undefined;
+  const best = vendors.filter((v) => v.vendor !== current && v.vendor !== 'Unknown vendor' && v.lastPerUnit > 0)
+    .sort((a, b) => a.lastPerUnit - b.lastPerUnit)[0];
+  if (!best || best.lastPerUnit > now.lastPerUnit * 0.97) return undefined;
+  const daysOld = Math.max(0, Math.round((Date.parse(today) - Date.parse(best.last)) / 86_400_000));
+  if (daysOld > 180) return undefined; // a price from over 6 months ago says little about today
+  return { vendor: best.vendor, perUnit: best.lastPerUnit, date: best.last, current, currentPerUnit: now.lastPerUnit,
+    saves: Math.round((1 - best.lastPerUnit / now.lastPerUnit) * 1000) / 1000, daysOld };
 }

@@ -5142,9 +5142,29 @@ function productNode(d, node, go) {
       const key = h('span', { class: 'lkey' }); key.style.background = colorOf.get(v.vendor) ?? OTHER; key.style.borderColor = colorOf.get(v.vendor) ?? OTHER;
       return h('div', {}, key, h('span', { class: 'grow' }, h('div', { text: v.vendor }), h('div', { class: 'small muted', text: `${v.purchases} invoice${v.purchases === 1 ? '' : 's'} · last ${shortDate(v.last)}` })), h('b', { text: dollars(v.spent) }));
     }))) : null,
+    vendors.length ? lastPrices(hist, d.unit, colorOf) : null,
     d.usedIn.length ? sideBox('Recipes that use it', h('div', { class: 'list compact' }, d.usedIn.map((u) => h('button', { class: 'linkish lrow', onclick: () => go([{ kind: 'recipe', id: u.id, name: u.name }]) }, h('span', { class: 'grow', text: u.name }), h('span', { class: 'chev', text: '›' }))))) : null,
   ];
   return [main, sideBoxes];
+}
+
+/** What each vendor last charged for it (cheapest first) and when, with a nudge when we're not buying the cheaper one. */
+function lastPrices(hist, unit, colorOf) {
+  const now = hist.points.length ? hist.points[hist.points.length - 1].vendor ?? 'Unknown vendor' : undefined;
+  const rows = [...hist.vendors].filter((v) => v.lastPerUnit > 0).sort((a, b) => a.lastPerUnit - b.lastPerUnit);
+  if (!rows.length) return null;
+  const c = hist.cheaper;
+  const ago = (days) => days < 45 ? `${days} day${days === 1 ? '' : 's'} ago` : `${Math.round(days / 30)} months ago`;
+  const nudge = c ? h('div', { class: `price-nudge${c.saves > 0.5 ? ' odd' : ''}` },
+    h('div', { class: 'strong', text: 'Consider switching' }),
+    h('div', { class: 'small', text: `${c.vendor} was ${Math.round(c.saves * 100)}% cheaper (${perUnitText(c.perUnit, unit)} vs ${perUnitText(c.currentPerUnit, unit)} from ${c.current}).` }),
+    c.saves > 0.5 ? h('div', { class: 'small', text: 'That’s a big gap — check it’s the same product and pack size before switching.' })
+      : c.daysOld > 90 ? h('div', { class: 'small muted', text: `That price is from ${ago(c.daysOld)}, so ask for a fresh quote.` }) : null) : null;
+  const keyOf = (v) => { const k = h('span', { class: 'lkey' }); k.style.background = k.style.borderColor = colorOf.get(v) ?? OTHER; return k; };
+  return sideBox('Last price by vendor', h('div', { class: 'list compact' }, rows.map((v) => h('div', {}, keyOf(v.vendor),
+    h('span', { class: 'grow' }, h('div', { text: v.vendor }),
+      h('div', { class: 'small muted', text: `${v.vendor === now ? 'Buying now · ' : ''}${dateWithYear(v.last)} · ${dollars(v.lastPackPrice, { cents: true })} for ${v.lastPack}` })),
+    h('b', { text: perUnitText(v.lastPerUnit, unit) })))), nudge);
 }
 
 /** Price per unit over time: a dot per purchase in its vendor's color, and a strip below showing who supplied it when. */
