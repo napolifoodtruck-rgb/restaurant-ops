@@ -7049,6 +7049,52 @@ function italyMap(wines, onPick, highlight) {
   return svg;
 }
 
+/**
+ * The map with a legend that points to it: each region we pour from gets a numbered dot, and beside
+ * the map, north to south, the region's name and its wines, joined to its dot by a thin line. Tap a
+ * region for its wines below; tap a wine for its card.
+ */
+function italyMapLegend(wines, onPick, onWine, opts = {}) {
+  const byRegion = new Map();
+  for (const w of wines) { const r = regionOf(w.region); if (r) byRegion.set(r, [...(byRegion.get(r) ?? []), w]); }
+  const K = 1.45; // the map drawn larger beside its legend
+  const big = ([x, y]) => [x * K, y * K];
+  const regions = [...byRegion].map(([region, list]) => ({ region, list: list.sort((a, b) => a.name.localeCompare(b.name)), xy: big(italyXY(ITALY_REGIONS[region])) }))
+    .sort((a, b) => a.xy[1] - b.xy[1]);
+  const LX = 98 * K + 12, HEAD = 7, LINE = 6.4, GAP = 4.5;
+  const height = Math.max(112 * K, regions.reduce((a, r) => a + HEAD + r.list.length * LINE + GAP, 0) + 4);
+  const svg = sv('svg', { viewBox: opts.compact ? `-4 -4 ${98 * K + 8} ${112 * K}` : `-4 -4 ${LX + 104} ${height}`, class: 'italy-map legend-map', role: 'img', 'aria-label': `Map of Italy: ${regions.map((r) => `${r.region}: ${r.list.map((w) => w.name).join(', ')}`).join('; ')}` });
+  svg.append(...ITALY_SHAPES.map((shape) => sv('polygon', { points: shape.map(italyXY).map(big).map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' '), fill: '#EFEDE8', stroke: '#9A968C', 'stroke-width': '0.7', 'stroke-linejoin': 'round' })));
+  let y = 2;
+  const lines = sv('g', { class: 'legend-lines' }), dots = sv('g', {}), legend = sv('g', {});
+  regions.forEach((r, i) => {
+    const [x, dy] = r.xy, top = y, mid = top + 4;
+    lines.append(sv('polyline', { points: `${x.toFixed(1)},${dy.toFixed(1)} ${(LX - 8).toFixed(1)},${mid.toFixed(1)} ${(LX - 2).toFixed(1)},${mid.toFixed(1)}`, fill: 'none', stroke: '#B9B4AA', 'stroke-width': '0.5' }));
+    const dot = sv('g', { class: 'map-dot', tabindex: '0', role: 'button', 'aria-label': `${r.region}: ${r.list.length} wine${r.list.length === 1 ? '' : 's'}` },
+      sv('circle', { cx: x.toFixed(1), cy: dy.toFixed(1), r: '4', fill: '#1C1F22' }),
+      sv('text', { x: x.toFixed(1), y: (dy + 1.7).toFixed(1), 'font-size': '4.8', 'text-anchor': 'middle', fill: '#fff', 'font-weight': '700' }, document.createTextNode(String(i + 1))));
+    const head = sv('g', { class: 'map-dot legend-head', tabindex: '0', role: 'button', 'aria-label': `Show the ${r.region} wines` },
+      sv('text', { x: String(LX), y: (top + 5.6).toFixed(1), 'font-size': '6', 'font-weight': '700', fill: '#1C1F22' }, document.createTextNode(`${i + 1}  ${r.region}`)));
+    for (const g of [dot, head]) if (onPick) { g.addEventListener('click', () => onPick(r.region)); g.addEventListener('keydown', (e) => { if (e.key === 'Enter') onPick(r.region); }); }
+    dots.append(dot);
+    legend.append(head);
+    y += HEAD;
+    for (const w of r.list) {
+      const t = sv('text', { x: String(LX + 5), y: (y + 4.8).toFixed(1), 'font-size': '5.1', fill: '#4A4741', class: 'legend-wine', tabindex: '0', role: 'button' }, document.createTextNode(w.name));
+      if (onWine) { t.addEventListener('click', () => onWine(w.id)); t.addEventListener('keydown', (e) => { if (e.key === 'Enter') onWine(w.id); }); }
+      legend.append(t);
+      y += LINE;
+    }
+    y += GAP;
+  });
+  svg.append(...(opts.compact ? [dots] : [lines, dots, legend]));
+  if (!opts.compact) return svg;
+  // Narrow screens: the numbered dots on the map, the legend as a list under it.
+  return h('div', { class: 'legend-compact' }, svg, h('ol', { class: 'legend-list' }, regions.map((r) => h('li', {},
+    h('button', { class: 'linkish strong', text: r.region, onclick: () => onPick?.(r.region) }),
+    h('div', {}, r.list.map((w) => h('button', { class: 'linkish small', text: w.name, onclick: () => onWine?.(w.id) })))))));
+}
+
 /** Every wine we pour, on the map and as a list. */
 function floorWines(b) {
   const out = h('div', { class: 'list' });
@@ -7056,7 +7102,7 @@ function floorWines(b) {
     h('div', { class: 'grow' }, h('div', { class: 'strong' }, w.name, w.isNew ? h('span', { class: 'tag blue', text: 'new' }) : null), h('div', { class: 'small muted', text: [w.style, w.grapes, w.region].filter(Boolean).join(' · ') })),
     h('span', { class: 'small', text: w.prices.map((p) => `${p.label} ${usd(p.price)}`).join(' · ') }))));
   draw();
-  floorSheet('Wines', h('h2', { class: 'sheet-title', text: 'Our wines' }), italyMap(b.lookup.wines, (region) => draw(region)), h('button', { class: 'link small', text: 'Show every region', onclick: () => draw() }), out);
+  floorSheet('Wines', h('h2', { class: 'sheet-title', text: 'Our wines' }), italyMapLegend(b.lookup.wines, (region) => draw(region), (id) => floorWine(b, id), { compact: window.matchMedia('(max-width: 600px)').matches }), h('button', { class: 'link small', text: 'Show every region', onclick: () => draw() }), out);
 }
 
 /** One wine: what to say at the table. */

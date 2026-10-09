@@ -1363,3 +1363,11 @@ button.tag.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .inv-sections { display: flex; flex-direction: column; gap: 14px; }
 .inv-row.arrange .inv-name { flex: 1; min-width: 0; }
 .tonight-part { display: flex; flex-direction: column; gap: 4px; padding-top: 8px; border-top: 1px solid var(--soft); }
+/* The wine map with its legend: regions north to south, each with its wines, a line to its dot. */
+.italy-map.legend-map { max-width: 620px; }
+.legend-map .legend-wine { cursor: pointer; }
+.legend-map .legend-wine:hover, .legend-map .legend-wine:focus { fill: var(--ink); text-decoration: underline; outline: none; }
+.legend-map .legend-head:focus text { text-decoration: underline; }
+.legend-compact .italy-map { max-width: 240px; margin: 0 auto; }
+.legend-list { margin: 8px 0 0; padding-left: 22px; display: grid; gap: 8px; }
+.legend-list li > div { display: flex; flex-direction: column; align-items: flex-start; }
