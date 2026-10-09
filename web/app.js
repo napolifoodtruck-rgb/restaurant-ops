@@ -6697,7 +6697,7 @@ async function floorBoard(ctx = {}) {
     b.gelato.panChanges.map((p) => h('div', { class: 'small strong', text: `${p.size ? `${p.size} ` : ''}${p.from} → ${p.to}` }))) : null;
   const notes = b.notes.length ? sideBox('From the managers', b.notes.map((n) => h('div', { class: 'floor-note' }, h('div', { text: n.body }), n.by ? h('div', { class: 'small muted', text: n.by }) : null))) : null;
 
-  const body = h('div', { class: 'floor-board' }, h('div', { class: 'floor-main' }, knowBox), h('aside', { class: 'floor-side' }, b.lookup.wines.length ? pairingFinder(b) : null, notes, special, newBox, gelato));
+  const body = h('div', { class: 'floor-board' }, h('div', { class: 'floor-main' }, knowBox), h('aside', { class: 'floor-side' }, gelato, b.lookup.wines.length ? pairingFinder(b) : null, notes, special, newBox));
   if (inShell) show(shell(ctx.me, 'floor', [head, body]));
   else show(h('div', { class: 'floor' }, head, body));
 
