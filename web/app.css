@@ -1352,3 +1352,13 @@ button.tag.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .dash-legend .key-now { background: var(--ink); }
 .dash-legend .key-before { background: #CFCBC2; }
 .attention .todo-body .small.muted { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+/* Inventory arrange: drag items within and across sections, and the sections themselves. */
+.inv-items { min-height: 8px; }
+.inv-items.empty { min-height: 44px; border: 1px dashed var(--line); display: flex; align-items: center; justify-content: center; }
+.inv-items.empty::before { content: 'Drop items here'; font-size: 13px; color: var(--muted); }
+.inv-row.arrange { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.inv-row.arrange .drag-handle { display: flex; align-items: center; justify-content: center; }
+.inv-row.dragging, .inv-section.dragging { opacity: 0.9; background: var(--card); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18); position: relative; z-index: 2; }
+.dragging-items { user-select: none; }
+.inv-sections { display: flex; flex-direction: column; gap: 14px; }
+.inv-row.arrange .inv-name { flex: 1; min-width: 0; }

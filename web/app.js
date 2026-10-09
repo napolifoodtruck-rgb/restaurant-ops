@@ -2226,6 +2226,71 @@ async function comingUpCard(me) {
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const clock = (hhmm) => { const [hh, mm] = hhmm.split(':').map(Number); return `${hh % 12 || 12}:${String(mm).padStart(2, '0')}`; };
 /**
+ * Inventory items dragged by their handle, within a section or into another (the `.inv-items` boxes
+ * under `root`), with a mouse or a finger; the page scrolls near the top and bottom edges so a long
+ * list can be crossed. Arrow keys on a handle move it one place in its section. `onDrop(row,
+ * sectionId, index)` runs when it lands somewhere new.
+ */
+function dragItems(root, onDrop) {
+  const rowsIn = (box) => [...box.children].filter((k) => k.matches('.inv-row'));
+  const where = (row) => ({ box: row.parentNode, at: rowsIn(row.parentNode).indexOf(row) });
+  root.addEventListener('pointerdown', (e) => {
+    const handle = e.target.closest('.drag-handle');
+    const row = handle?.closest('.inv-row');
+    if (!row || !root.contains(row)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const start = where(row);
+    row.classList.add('dragging');
+    root.classList.add('dragging-items');
+    let y = e.clientY;
+    const place = () => {
+      const box = [...root.querySelectorAll('.inv-items')].find((b) => { const r = b.closest('.inv-section').getBoundingClientRect(); return y >= r.top && y <= r.bottom; });
+      if (!box) return;
+      const before = rowsIn(box).filter((k) => k !== row).find((k) => { const r = k.getBoundingClientRect(); return y < r.top + r.height / 2; });
+      if (before) { if (row.nextElementSibling !== before) box.insertBefore(row, before); }
+      else if (rowsIn(box).at(-1) !== row) box.append(row);
+      for (const b of root.querySelectorAll('.inv-items')) b.classList.toggle('empty', !rowsIn(b).length);
+    };
+    let raf = 0;
+    const edge = () => {
+      const zone = 80, speed = y < zone ? -(zone - y) / 3 : y > innerHeight - zone ? (y - (innerHeight - zone)) / 3 : 0;
+      if (speed) { window.scrollBy(0, speed); place(); }
+      raf = requestAnimationFrame(edge);
+    };
+    raf = requestAnimationFrame(edge);
+    const move = (ev) => { if (ev.pointerId !== e.pointerId) return; ev.preventDefault(); y = ev.clientY; place(); };
+    const up = (ev) => {
+      if (ev.pointerId !== e.pointerId) return;
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      document.removeEventListener('pointercancel', up);
+      cancelAnimationFrame(raf);
+      row.classList.remove('dragging');
+      root.classList.remove('dragging-items');
+      const end = where(row);
+      if (end.box !== start.box || end.at !== start.at) onDrop(row, end.box.dataset.section, end.at);
+    };
+    document.addEventListener('pointermove', move, { passive: false });
+    document.addEventListener('pointerup', up);
+    document.addEventListener('pointercancel', up);
+  });
+  root.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    const handle = e.target.closest('.drag-handle');
+    const row = handle?.closest('.inv-row');
+    if (!row || !root.contains(row)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const list = rowsIn(row.parentNode), i = list.indexOf(row), j = e.key === 'ArrowUp' ? i - 1 : i + 1;
+    if (j < 0 || j >= list.length) return;
+    if (j < i) list[j].before(row); else list[j].after(row);
+    handle.focus();
+    onDrop(row, row.parentNode.dataset.section, j);
+  });
+}
+
+/**
  * Drag to reorder: the `selector` children of `box` move by their .drag-handle, with a mouse, a
  * finger or the arrow keys. `onDrop` runs after anything moved. Lists can nest: a handle moves only
  * its own row.
@@ -7494,9 +7559,17 @@ async function inventoryList(me, listId, mode = 'count') {
     const where = h('select', { 'aria-label': `Move ${i.name}` }, h('option', { value: '', text: 'Move to…' }),
       d.lists.map((l) => h('optgroup', { label: l.name }, l.sections.map((s) => h('option', { value: s.id, text: s.name })))), h('option', { value: '__off', text: 'Don’t count it' }));
     where.addEventListener('change', () => where.value && moveTo(i, where.value === '__off' ? null : where.value));
-    return h('div', { class: 'inv-row arrange' }, h('div', { class: 'inv-name strong', text: i.name }),
-      h('div', { class: 'row tight' }, h('button', { class: 'btn small-btn', 'aria-label': `Move ${i.name} up`, text: '↑', onclick: () => pageAction(async () => { await api('POST', '/api/inventory/move', { kind: i.kind, itemId: i.id, dir: 'up' }); reload(); }) }),
-        h('button', { class: 'btn small-btn', 'aria-label': `Move ${i.name} down`, text: '↓', onclick: () => pageAction(async () => { await api('POST', '/api/inventory/move', { kind: i.kind, itemId: i.id, dir: 'down' }); reload(); }) }), where));
+    const row = h('div', { class: 'inv-row arrange', 'data-key': `${i.kind}:${i.id}` },
+      h('span', { class: 'drag-handle', tabindex: '0', role: 'button', 'aria-label': `Drag ${i.name} (or use the arrow keys)`, title: 'Drag to move it', text: '⠿' }),
+      h('div', { class: 'inv-name strong grow', text: i.name }), where);
+    row.dataset.kind = i.kind; row.dataset.id = i.id;
+    return row;
+  };
+  // A dragged item saves where it landed; the page stays put. If the save fails, it reloads as it was.
+  const dropped = async (row, sectionId, at) => {
+    const res = await api('POST', '/api/inventory/place', { kind: row.dataset.kind, itemId: row.dataset.id, sectionId, at });
+    if (!res.ok) return reload();
+    for (const box of app.querySelectorAll('.inv-items')) box.classList.toggle('empty', !box.querySelector('.inv-row'));
   };
   const addHere = (s) => {
     const q = h('input', { type: 'search', placeholder: 'Add an item here…', 'aria-label': `Add an item to ${s.name}` });
@@ -7510,16 +7583,24 @@ async function inventoryList(me, listId, mode = 'count') {
     }, 250); });
     return h('div', { class: 'inv-add' }, q, results);
   };
-  const sectionHead = (s, n) => mode === 'arrange'
+  const sectionHead = (s) => mode === 'arrange'
     ? h('div', { class: 'row wrap inv-sec-head' },
+      h('span', { class: 'drag-handle', tabindex: '0', role: 'button', 'aria-label': `Drag the ${s.name} section (or use the arrow keys)`, title: 'Drag to move the section', text: '⠿' }),
       (() => { const name = h('input', { type: 'text', value: s.name, 'aria-label': 'Section name' }); name.addEventListener('change', () => pageAction(async () => { await api('POST', '/api/inventory/sections', { id: s.id, name: name.value, holds: s.holds ?? '' }); })); return h('div', { class: 'grow' }, name); })(),
-      h('button', { class: 'btn small-btn', text: '↑', 'aria-label': 'Section up', disabled: n === 0 ? true : undefined, onclick: () => pageAction(async () => { await api('POST', '/api/inventory/sections', { id: s.id, move: 'up' }); reload(); }) }),
-      h('button', { class: 'btn small-btn', text: '↓', 'aria-label': 'Section down', onclick: () => pageAction(async () => { await api('POST', '/api/inventory/sections', { id: s.id, move: 'down' }); reload(); }) }),
       !s.items.length ? h('button', { class: 'link', text: 'Remove', onclick: () => pageAction(async () => { await api('POST', '/api/inventory/sections', { id: s.id, active: false }); reload(); }) }) : null)
     : h('h2', { text: s.name });
-  const sectionsEl = d.sections.map((s, n) => h('section', { class: 'card inv-section' }, sectionHead(s, n),
-    s.items.length ? s.items.map(mode === 'arrange' ? arrangeRow : countRow) : h('div', { class: 'small muted', text: 'Nothing here yet.' }),
+  const sectionsEl = d.sections.map((s) => h('section', { class: 'card inv-section', 'data-key': s.id }, sectionHead(s),
+    mode === 'arrange' ? h('div', { class: `inv-items${s.items.length ? '' : ' empty'}`, 'data-section': s.id }, s.items.map(arrangeRow))
+      : s.items.length ? s.items.map(countRow) : h('div', { class: 'small muted', text: 'Nothing here yet.' }),
     mode === 'arrange' ? addHere(s) : null));
+  const secBox = h('div', { class: 'inv-sections' }, sectionsEl);
+  if (mode === 'arrange') {
+    dragItems(secBox, dropped);
+    sortable(secBox, '.inv-section', () => pageAction(async () => {
+      const res = await api('POST', '/api/inventory/sections', { listId, order: [...secBox.children].filter((k) => k.matches('.inv-section')).map((k) => k.dataset.key) });
+      if (!res.ok) reload();
+    }));
+  }
   const newSection = mode === 'arrange' ? (() => {
     const name = h('input', { type: 'text', placeholder: 'e.g. Walk-in · top shelf', 'aria-label': 'New section' });
     return h('section', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Another section' }), h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, name),
@@ -7535,8 +7616,8 @@ async function inventoryList(me, listId, mode = 'count') {
     h('header', { class: 'row wrap' }, h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${COUNTERS[d.list.countedBy]} counts it` }), h('h1', { text: d.list.name })),
       h('div', { class: 'seg' }, [['count', 'Count'], ['arrange', 'Arrange']].map(([k, label]) => h('button', { class: mode === k ? 'on' : '', text: label, onclick: () => inventoryList(me, listId, k) }))),
       h('button', { class: 'btn', text: '← Inventory', onclick: () => inventoryHome(me) })),
-    page([sectionsEl, newSection], mode === 'count' ? [sideBox('Counted so far', totalEl, countedEl, h('div', { class: 'small muted', text: 'Saved as you go. Count the way it’s stored: “+ unit” for 2 cases + 5 lb.' }), finish)]
-      : [sideBox('Arranging', h('div', { class: 'small muted', text: 'Order the sections the way you walk them, and items the way they sit on the shelf. “Move to…” sends an item to another section or list.' }))], { sticky: true }),
+    page([secBox, newSection], mode === 'count' ? [sideBox('Counted so far', totalEl, countedEl, h('div', { class: 'small muted', text: 'Saved as you go. Count the way it’s stored: “+ unit” for 2 cases + 5 lb.' }), finish)]
+      : [sideBox('Arranging', h('div', { class: 'small muted', text: 'Drag by ⠿ to put sections in the order you walk them and items the way they sit on the shelf, across sections too. On a keyboard, the arrow keys move what’s selected. “Move to…” sends an item to another list.' }))], { sticky: true }),
   ]));
 }
 

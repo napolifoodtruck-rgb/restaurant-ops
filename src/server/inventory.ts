@@ -181,6 +181,13 @@ export async function inventoryRoutes(db: Db, req: IncomingMessage, res: ServerR
       } else await db.query('UPDATE storage_spots SET name = coalesce($2, name), holds = $3 WHERE id = $1', [b.id, s(b.name, 80) ?? null, s(b.holds, 200) ?? null]);
       return send(res, 200, { ok: true }), true;
     }
+    // Dragged into a new order: the list's sections, top to bottom.
+    if (Array.isArray(b.order) && isUuid(b.listId)) {
+      const mine = new Set((await sections()).filter((x) => x.area_id === b.listId).map((x) => x.id));
+      const ids = b.order.map(String).filter((id: string) => mine.has(id));
+      for (const [n, id] of ids.entries()) await db.query('UPDATE storage_spots SET sort_order = $3 WHERE restaurant_id = $1 AND id = $2', [rid, id, n]);
+      return send(res, 200, { ok: true }), true;
+    }
     const name = s(b.name, 80);
     if (!isUuid(b.listId) || !name) throw new HttpError(400, 'Which list, and what’s the section called?');
     const r = await db.query<{ id: string }>('INSERT INTO storage_spots (restaurant_id, area_id, name, holds, sort_order) VALUES ($1, $2, $3, $4, (SELECT coalesce(max(sort_order), 0) + 1 FROM storage_spots WHERE restaurant_id = $1 AND area_id = $2)) RETURNING id', [rid, b.listId, name, s(b.holds, 200) ?? null]);
