@@ -6697,7 +6697,7 @@ async function floorBoard(ctx = {}) {
     b.gelato.panChanges.map((p) => h('div', { class: 'small strong', text: `${p.size ? `${p.size} ` : ''}${p.from} → ${p.to}` }))) : null;
   const notes = b.notes.length ? sideBox('From the managers', b.notes.map((n) => h('div', { class: 'floor-note' }, h('div', { text: n.body }), n.by ? h('div', { class: 'small muted', text: n.by }) : null))) : null;
 
-  const body = h('div', { class: 'floor-board' }, h('div', { class: 'floor-main' }, knowBox), h('aside', { class: 'floor-side' }, notes, special, newBox, gelato));
+  const body = h('div', { class: 'floor-board' }, h('div', { class: 'floor-main' }, knowBox), h('aside', { class: 'floor-side' }, b.lookup.wines.length ? pairingFinder(b) : null, notes, special, newBox, gelato));
   if (inShell) show(shell(ctx.me, 'floor', [head, body]));
   else show(h('div', { class: 'floor' }, head, body));
 
@@ -7095,6 +7095,45 @@ function italyMapLegend(wines, onPick, onWine, opts = {}) {
     h('div', {}, r.list.map((w) => h('button', { class: 'linkish small', text: w.name, onclick: () => onWine?.(w.id) })))))));
 }
 
+/** Find a pairing: by dish or by wine, a search, then what goes with it. */
+function pairingFinder(b) {
+  let by = 'dish';
+  const tabs = h('div', { class: 'seg', role: 'tablist' });
+  const q = h('input', { type: 'search', placeholder: 'Find a dish…', 'aria-label': 'Find a dish or wine' });
+  const out = h('div', { class: 'pair-out' });
+  const dishes = b.lookup.dishes.filter((d) => d.kind === 'dish');
+  const winesFor = (d) => b.lookup.wines.flatMap((w) => w.pairings.filter((p) => p.recipeId === d.id).map((p) => ({ w, why: p.why, suggested: p.suggested })));
+  const tag = (x) => (x.suggested ? h('span', { class: 'tag', title: 'Suggested; a manager hasn’t approved it yet', text: 'suggested' }) : null);
+  const showDish = (d) => {
+    const list = winesFor(d);
+    fill(out, h('div', { class: 'pair-pick' }, h('button', { class: 'linkish strong', text: d.name, onclick: () => floorDish(b, d.id) }), h('button', { class: 'link small', text: 'Clear', onclick: () => { q.value = ''; draw(); } })),
+      list.length ? list.map((x) => h('button', { class: 'pick-row pair-row', onclick: () => floorWine(b, x.w.id) },
+        h('div', { class: 'grow' }, h('div', { class: 'strong' }, x.w.name, tag(x)), x.why ? h('div', { class: 'small muted', text: x.why }) : null),
+        h('span', { class: 'small', text: x.w.prices.map((p) => `${p.label} ${usd(p.price)}`).join(' · ') })))
+        : h('div', { class: 'small muted', text: 'No wine paired with it yet.' }));
+  };
+  const showWine = (w) => {
+    fill(out, h('div', { class: 'pair-pick' }, h('button', { class: 'linkish strong', text: w.name, onclick: () => floorWine(b, w.id) }), h('button', { class: 'link small', text: 'Clear', onclick: () => { q.value = ''; draw(); } })),
+      h('div', { class: 'small muted', text: [w.style, w.grapes, w.region].filter(Boolean).join(' · ') }),
+      w.pairings.length ? w.pairings.map((p) => h('button', { class: 'pick-row pair-row', onclick: () => floorDish(b, p.recipeId) },
+        h('div', { class: 'grow' }, h('div', { class: 'strong' }, p.name, tag(p)), p.why ? h('div', { class: 'small muted', text: p.why }) : null)))
+        : h('div', { class: 'small muted', text: 'No dish paired with it yet.' }));
+  };
+  const draw = () => {
+    fill(tabs, [['dish', 'By dish'], ['wine', 'By wine']].map(([k, label]) => h('button', { class: by === k ? 'on' : '', role: 'tab', 'aria-selected': String(by === k), text: label, onclick: () => { by = k; q.value = ''; q.placeholder = k === 'dish' ? 'Find a dish…' : 'Find a wine…'; draw(); q.focus(); } })));
+    const t = q.value.trim().toLowerCase();
+    const pool = by === 'dish' ? dishes : b.lookup.wines;
+    const hits = t ? pool.filter((x) => x.name.toLowerCase().includes(t) || (by === 'wine' && [x.grapes, x.region, x.producer].some((v) => v?.toLowerCase().includes(t)))) : pool;
+    fill(out, hits.slice(0, t ? 8 : 6).map((x) => h('button', { class: 'pick-row pair-row', onclick: () => (by === 'dish' ? showDish(x) : showWine(x)) },
+      h('div', { class: 'grow' }, h('div', { text: x.name })), h('span', { class: 'small muted', text: by === 'dish' ? `${winesFor(x).length || 'no'} wine${winesFor(x).length === 1 ? '' : 's'}` : `${x.pairings.length || 'no'} dish${x.pairings.length === 1 ? '' : 'es'}` }))),
+      !t && hits.length > 6 ? h('div', { class: 'small muted', text: `Type to find any of ${hits.length}.` }) : null,
+      t && !hits.length ? h('div', { class: 'small muted', text: 'Nothing by that name.' }) : null);
+  };
+  q.addEventListener('input', draw);
+  draw();
+  return h('section', { class: 'card tight pair-finder' }, h('h2', { text: 'Find a pairing' }), tabs, q, out);
+}
+
 /** Every wine we pour, on the map and as a list. */
 function floorWines(b) {
   const out = h('div', { class: 'list' });
@@ -7115,7 +7154,7 @@ function floorWine(b, id) {
     h('div', { class: 'wine-top' }, w.hasPhoto ? h('img', { class: 'wine-photo', src: `/api/floor/wines/${w.id}/photo`, alt: w.name }) : null, italyMap([w], null, w.region)),
     w.tastingNotes ? h('section', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Tasting notes' }), h('div', { text: w.tastingNotes })) : null,
     h('div', { class: 'wine-facts' }, [['Grapes', w.grapes], ['Made in', w.vessel], ['Producer', w.producer]].filter(([, v]) => v).map(([k, v]) => h('div', {}, h('div', { class: 'small muted', text: k }), h('div', { text: v })))),
-    w.pairings.length ? h('section', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Pairs with' }), w.pairings.map((p) => h('div', {}, h('button', { class: 'linkish strong', text: p.name, onclick: () => floorDish(b, p.recipeId) }), h('div', { class: 'small muted', text: p.why })))) : null,
+    w.pairings.length ? h('section', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Pairs with' }), w.pairings.map((p) => h('div', {}, h('button', { class: 'linkish strong', text: p.name, onclick: () => floorDish(b, p.recipeId) }), p.suggested ? h('span', { class: 'tag', text: 'suggested' }) : null, h('div', { class: 'small muted', text: p.why })))) : null,
     w.ingredientPairings.length ? h('div', { class: 'small', text: `Also good with: ${w.ingredientPairings.join(', ')}` }) : null,
     w.story ? h('section', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'The story' }), h('div', { text: w.story })) : null,
     w.facts.length ? h('ul', { class: 'small' }, w.facts.map((f) => h('li', { text: f }))) : null);

@@ -1371,3 +1371,12 @@ button.tag.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .legend-compact .italy-map { max-width: 240px; margin: 0 auto; }
 .legend-list { margin: 8px 0 0; padding-left: 22px; display: grid; gap: 8px; }
 .legend-list li > div { display: flex; flex-direction: column; align-items: flex-start; }
+/* Find a pairing on the board. */
+.pair-finder { gap: 8px; }
+.pair-finder .seg { display: flex; }
+.pair-finder .seg button { flex: 1; }
+.pair-finder input[type=search] { width: 100%; }
+.pair-out { display: flex; flex-direction: column; }
+.pair-row { padding: 8px 0; }
+.pair-pick { display: flex; justify-content: space-between; align-items: baseline; padding: 4px 0 6px; border-bottom: 1px solid var(--soft); }
+.pair-finder .tag { margin-left: 6px; font-size: 11px; }

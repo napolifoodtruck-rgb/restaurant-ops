@@ -231,7 +231,10 @@ function wineView(w: WineRow, buttons: ReturnType<typeof wineButtons>, dishes: M
   const items = buttons.filter((m) => w.catalog_ids.includes(m.catalogId));
   const firsts = items.map((m) => firstSold.get(m.itemName)).filter((x): x is string => Boolean(x)).sort();
   const isNew = (firsts[0] ?? w.created_at.slice(0, 10)) >= addDays(today, -30);
-  const pairings = js<{ recipeId: string; why: string }[]>(w.pairings ?? []).map((p) => ({ ...p, name: dishes.get(p.recipeId)?.name })).filter((p) => p.name);
+  // Approved pairings; until there are any, the suggestions waiting for a manager, marked as such.
+  const approved = js<{ recipeId: string; why: string }[]>(w.pairings ?? []);
+  const waiting = approved.length ? [] : js<{ recipeId: string; why: string }[] | null>(w.suggested ?? null) ?? [];
+  const pairings = [...approved.map((p) => ({ ...p })), ...waiting.map((p) => ({ ...p, suggested: true }))].map((p) => ({ ...p, name: dishes.get(p.recipeId)?.name })).filter((p) => p.name);
   return {
     id: w.id, name: w.name, producer: w.producer, region: w.region, place: w.place, grapes: w.grapes, vessel: w.vessel, style: w.style,
     tastingNotes: w.tasting_notes, story: w.story, facts: js<string[]>(w.facts ?? []), sheetPairings: js<string[]>(w.sheet_pairings ?? []), ingredientPairings: js<string[]>(w.ingredient_pairings ?? []),
