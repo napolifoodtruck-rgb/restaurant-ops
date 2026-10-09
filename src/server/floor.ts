@@ -463,6 +463,18 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
   const rid = ctx.restaurantId;
 
   if (method === 'GET' && path === '/api/floor/board') return send(res, 200, await floorBoard(db, ctx, url.searchParams.get('post') ?? undefined)), true;
+  // Tonight for anyone signed in (staff Today): what the boards say, without the reservations.
+  if (method === 'GET' && path === '/api/floor/tonight') {
+    if (!ctx.who) throw new HttpError(401, 'Sign in first.');
+    const posts = (await db.query<{ id: string; kind: string }>('SELECT id, kind FROM floor_posts WHERE restaurant_id = $1 AND active ORDER BY sort_order, name', [rid])).rows;
+    const host = posts.find((p) => p.kind === 'host') ?? posts[0];
+    if (!host) return send(res, 200, { featured: [], talk: [], notes: [], gelato: null }), true;
+    const b = await floorBoard(db, { ...ctx, device: { id: 'tonight', restaurantId: rid, floorPostId: host.id } });
+    return send(res, 200, {
+      featured: b.featured.map((f) => ({ kind: f.kind, name: f.name, ...(f.price !== undefined ? { price: f.price } : {}), ...(f.note ? { note: f.note } : {}), lines: f.lines })),
+      talk: b.talk, notes: b.notes.filter((n) => !n.forPost).map((n) => ({ body: n.body, ...(n.by ? { by: n.by } : {}) })), gelato: b.gelato,
+    }), true;
+  }
 
   if (method === 'GET' && path === '/api/floor/staff') {
     const rows = (await db.query<{ id: string; display_name: string; access: string }>('SELECT id, display_name, access FROM staff WHERE restaurant_id = $1 AND active AND pin_hash IS NOT NULL ORDER BY display_name', [rid])).rows;

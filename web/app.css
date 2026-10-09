@@ -1362,3 +1362,4 @@ button.tag.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .dragging-items { user-select: none; }
 .inv-sections { display: flex; flex-direction: column; gap: 14px; }
 .inv-row.arrange .inv-name { flex: 1; min-width: 0; }
+.tonight-part { display: flex; flex-direction: column; gap: 4px; padding-top: 8px; border-top: 1px solid var(--soft); }

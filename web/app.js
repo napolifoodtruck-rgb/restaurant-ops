@@ -4420,11 +4420,13 @@ async function todayScreen(me, filter = 'all') {
       pauseBar,
       page([h('div', { class: 'row wrap todo-head' }, h('h2', { class: 'grow', text: 'To do' })),
         h('section', { class: 'todos', 'aria-label': 'To do' }, sections.length ? sections : h('div', { class: 'card small muted', text: asleep.length ? 'All clear, apart from what’s snoozed.' : 'All clear.' }), asleepBox)],
-        [quiet, glanceCards(me, t, side, { home: false })]),
+        [quiet, tonight, glanceCards(me, t, side, { home: false })]),
     ]));
     errorFor = null;
   }
 
+  // Staff: tonight from the boards (specials, what to talk up, notes, gelato), beside their prep.
+  const tonight = t.glance ? null : tonightBox();
   // Managers: what keeps the system running (routine work in one strip, the fixes as a short list),
   // then how the restaurant is doing.
   let showAll = false;
@@ -4456,6 +4458,27 @@ async function todayScreen(me, filter = 'all') {
     ]));
   }
   draw();
+}
+
+/** Tonight, from the Service boards, for staff: specials and what's new, what to talk up, managers' notes, gelato. */
+function tonightBox() {
+  const box = sideBox('Tonight', h('div', { class: 'small muted', text: 'Loading…' }));
+  api('GET', '/api/floor/tonight').then((r) => {
+    if (!r.ok) return box.remove();
+    const d = r.data;
+    const specials = d.featured.filter((f) => f.kind === 'special'), fresh = d.featured.filter((f) => f.kind === 'new');
+    const part = (title, ...body) => h('div', { class: 'tonight-part' }, h('div', { class: 'small muted strong', text: title }), ...body);
+    const parts = [
+      d.notes.length ? part('From the managers', d.notes.map((n) => h('div', { class: 'small', text: n.body }))) : null,
+      specials.length ? part('Specials', specials.map((f) => h('div', {}, h('div', { class: 'strong', text: `${f.name}${f.price ? ` · ${usd(f.price)}` : ''}` }), f.note ? h('div', { class: 'small', text: f.note }) : f.lines.length ? h('div', { class: 'small muted', text: f.lines.map(upFirst).join(', ') }) : null))) : null,
+      d.talk.length ? part('Talk it up', d.talk.slice(0, 4).map((x) => h('div', { class: 'small' }, h('b', { text: x.name }), h('span', { class: 'muted', text: ` · ${x.why}` })))) : null,
+      fresh.length ? part('New on the menu', h('div', { class: 'small', text: fresh.map((f) => f.name).join(' · ') })) : null,
+      d.gelato?.flavors?.length ? part('Gelato', h('div', { class: 'small', text: d.gelato.flavors.map((f) => `${f.name}${f.vegan ? ' (v)' : ''}`).join(' · ') })) : null,
+    ].filter(Boolean);
+    if (!parts.length) return box.remove();
+    fill(box, h('div', { class: 'small muted strong', text: 'Tonight' }), parts);
+  });
+  return box;
 }
 
 /** Routine work on Today: prep, counts, orders. Managers see it as one strip, not as rows. */
