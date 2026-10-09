@@ -4201,7 +4201,7 @@ async function todayScreen(me, filter = 'all') {
   const go = (g) => ({
     count: () => prepCount(me, g.stationId, g.date), review: () => prepReview(me, g.stationId, g.date), work: () => prepWork(me, g.stationId, g.date),
     menu: () => menuScreen(me), performance: () => marginsScreen(me), settings: () => home(me),
-    cards: () => cardsScreen(me), drafts: () => draftsScreen(me), recipeChecks: () => { if (g.side) me.side = g.side; recipeChecksScreen(me, { from: returnTo('Today', () => todayScreen(me)) }); }, scan: () => scanScreen(me, g.scanId), invoices: () => invoicesScreen(me), order: () => orderScreen(me, g.vendorId), orders: () => { if (g.side) { me.side = g.side; me.ordersSide = g.side; } ordersScreen(me); },
+    cards: () => cardsScreen(me), drafts: () => draftsScreen(me), recipeChecks: () => { if (g.side) me.side = g.side; recipeChecksScreen(me, { from: returnTo('Today', () => todayScreen(me)) }); }, scan: () => scanScreen(me, g.scanId), invoices: () => invoicesScreen(me), inventory: () => inventoryList(me, g.listId, 'count'), order: () => orderScreen(me, g.vendorId), orders: () => { if (g.side) { me.side = g.side; me.ordersSide = g.side; } ordersScreen(me); },
   })[g.to]?.();
   const targetOf = (b) => (b.type === 'dismiss' ? { dedupeKey: b.dedupeKey } : { catalogId: b.catalogId, itemName: b.itemName, ...(b.variationName ? { variationName: b.variationName } : {}), ...(b.from ? { from: b.from } : {}) });
   // A line folded up in place: what was done, and Undo. Saving happens behind it.
@@ -4406,9 +4406,10 @@ const TODO_TABS = {
   performance: { name: 'Performance', color: '#7A3E9D', go: (me) => marginsScreen(me) },
   reports: { name: 'Reports', color: '#3D3D3D', go: (me) => reportsScreen(me) },
   ideas: { name: 'Ideas', color: '#8C6A00', go: (me) => ideasScreen(me) },
+  inventory: { name: 'Inventory', color: '#5B4636', go: (me) => inventoryHome(me) },
   setup: { name: 'Settings', color: '#6B6B6B', go: (me) => home(me) },
 };
-const todoTab = (i) => ({ count: 'prep', review: 'prep', work: 'prep', order: 'orders', orders: 'orders', menu: 'menu', cards: 'recipes', drafts: 'recipes', performance: 'performance', settings: 'setup' })[i.go?.to] ?? (i.group === 'costs' ? 'performance' : i.group === 'setup' ? 'setup' : i.group);
+const todoTab = (i) => ({ inventory: 'inventory', count: 'prep', review: 'prep', work: 'prep', order: 'orders', orders: 'orders', menu: 'menu', cards: 'recipes', drafts: 'recipes', performance: 'performance', settings: 'setup' })[i.go?.to] ?? (i.group === 'costs' ? 'performance' : i.group === 'setup' ? 'setup' : i.group);
 const TIME_GROUPS = [['now', 'Today', 'Due today, or late'], ['soon', 'This week', 'Due in the next few days'], ['later', 'Whenever you can', 'No deadline']];
 const plusDays = (d, n) => { const x = new Date(`${d}T12:00:00`); x.setDate(x.getDate() + n); return iso(x); };
 function todoGroupKey(i, today, grouping) {
@@ -7071,10 +7072,27 @@ async function inventoryHome(me) {
   const d = r.data;
   const reload = () => refreshInPlace(() => inventoryHome(me));
   const err = h('div', { class: 'error' });
+  // Setting up: three lists, each with its sections in the order they're walked (one per line:
+  // "Walk-in · top shelf: vegetables", what's after the colon helps put things where they belong).
+  const START = {
+    Kitchen: ['kitchen', 'Walk-in · top shelf: vegetables\nWalk-in · second shelf: dairy, prepped items\nWalk-in · bottom shelf: meats\nWalk-in · floor: dough\nWalk-in freezer: gelato, frozen purees, frozen ground pork, ground beef, pork sausage, frozen prep, meatballs, lamb sausage\nDry storage · bottom shelf: flour, sugar, dextrose, tomato cans\nDry storage · second shelf: bulk bins, dextrose, nonfat milk, sugar, maltodextrin\nDry storage · third shelf: basil, cherry tomatoes, shallots\nKitchen shelf: oils, apricot puree, vinegars, spices'],
+    Alcohol: ['bar', 'Cabinets above the bar: liquor\nServer station fridge (interior dining room): wine\nCabinets above the server station\nBooth benches\nWalk-in · kegs: keg, beer'],
+    Other: ['foh', 'Dry storage · top shelf: pizza boxes\nCleaning supplies: cleaning\nDisposables: box, cups, lids, napkins'],
+  };
+  const boxes = Object.entries(START).map(([name, [countedBy, text]]) => { const t = h('textarea', { rows: String(text.split('\n').length + 1), 'aria-label': `${name} sections` }); t.value = text; return { name, countedBy, t }; });
   const setUp = h('section', { class: 'card' }, h('h2', { text: 'Set up the lists' }),
-    h('div', { class: 'small muted', text: 'Three lists to start: Kitchen (the chef counts it), Alcohol (the bar manager) and Other: cleaning supplies and disposables (the FOH manager). Every ingredient goes on the list it belongs to; arrange each list by where things are kept, and move anything to another list.' }),
-    h('button', { class: 'btn dark', text: 'Make the three lists', onclick: () => pageAction(async () => {
-      for (const [name, countedBy] of [['Kitchen', 'kitchen'], ['Alcohol', 'bar'], ['Other', 'foh']]) await api('POST', '/api/inventory/lists', { name, countedBy });
+    h('div', { class: 'small muted', text: 'Three lists: Kitchen (the chef counts it), Alcohol (the bar manager) and Other: cleaning supplies and disposables (the FOH manager). Each is in sections, one per line, in the order you walk them; after the colon, what’s usually there, so ingredients start in the right place. Change anything here or later.' }),
+    boxes.map((x) => h('label', { class: 'stack' }, h('span', { class: 'strong', text: `${x.name} · ${COUNTERS[x.countedBy]} counts it` }), x.t)),
+    h('button', { class: 'btn dark', text: 'Make the lists and place everything', onclick: (e) => pageAction(async () => {
+      busy(e.currentTarget, true);
+      for (const x of boxes) {
+        const res = await api('POST', '/api/inventory/lists', { name: x.name, countedBy: x.countedBy });
+        if (!res.ok) { busy(e.currentTarget, false); return (err.textContent = res.data.error ?? 'That didn’t work.'); }
+        for (const line of x.t.value.split('\n').map((l) => l.trim()).filter(Boolean)) {
+          const [name, holds] = line.split(/:(.*)/s).map((v) => (v ?? '').trim());
+          await api('POST', '/api/inventory/sections', { listId: res.data.id, name, holds });
+        }
+      }
       await api('POST', '/api/inventory/place-all');
       reload();
     }) }));

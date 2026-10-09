@@ -37,7 +37,7 @@ export interface TodayItem {
   due?: string;
   /** Money behind it, for ordering the rest. */
   dollars?: number;
-  go: { to: 'count' | 'review' | 'work' | 'menu' | 'performance' | 'settings' | 'cards' | 'drafts' | 'order' | 'orders' | 'recipeChecks' | 'scan' | 'invoices'; stationId?: string; date?: string; vendorId?: string; side?: 'kitchen' | 'bar'; scanId?: string };
+  go: { to: 'count' | 'review' | 'work' | 'menu' | 'performance' | 'settings' | 'cards' | 'drafts' | 'order' | 'orders' | 'recipeChecks' | 'scan' | 'invoices' | 'inventory'; listId?: string; stationId?: string; date?: string; vendorId?: string; side?: 'kitchen' | 'bar'; scanId?: string };
   button: string;
   /** The side it's about (a station's side comes from its name: "Bar" is the bar's); none for syncs, which everyone sees. */
   side?: 'kitchen' | 'bar';
@@ -341,6 +341,20 @@ export async function todayView(db: Db, who: SignedIn, today: string, hour: numb
   if (onlyStation && stations.some((s) => s.id === onlyStation)) stations = stations.filter((s) => s.id === onlyStation);
   const prep = await prepItems(db, who, stations, today, hour, openToday, nextOpen);
   const items = [...prep.items];
+  // Count day (Saturday unless set otherwise): each list not counted yet, for whoever counts it.
+  if (atLeast(who.roleLevel, 'chef')) {
+    const countDay = Number((await db.query<{ d: string | null }>("SELECT settings->>'countDay' AS d FROM restaurants WHERE id = $1", [who.restaurantId])).rows[0]?.d ?? 6);
+    if (new Date(`${today}T12:00:00Z`).getUTCDay() === countDay) {
+      const lists = (await db.query<{ id: string; name: string; counted_by: string; started: boolean; finished: boolean }>(
+        `SELECT a.id, a.name, a.counted_by, c.id IS NOT NULL AS started, c.finished_at IS NOT NULL AS finished FROM storage_areas a
+           LEFT JOIN inventory_counts c ON c.area_id = a.id AND c.day = $2 WHERE a.restaurant_id = $1 AND a.active ORDER BY a.sort_order`, [who.restaurantId, today])).rows;
+      const who_ = { kitchen: 'the chef', bar: 'the bar manager', foh: 'the FOH manager' } as Record<string, string>;
+      for (const l of lists.filter((x) => !x.finished)) {
+        items.push({ key: `inventory:${l.id}:${today}`, group: 'prep', label: 'Inventory', tone: 'due', due: today, dollars: 500_000, side: l.counted_by === 'bar' ? 'bar' : 'kitchen',
+          title: `Count ${l.name}`, detail: `${l.started ? 'Started; pick up where it left off' : 'This afternoon'} · counted by ${who_[l.counted_by] ?? 'a manager'}`, go: { to: 'inventory', listId: l.id }, button: l.started ? 'Keep counting' : 'Count' });
+      }
+    }
+  }
   let atAGlance;
   if (atLeast(who.roleLevel, 'manager')) {
     const model = await getModel(db, who.restaurantId, today);
