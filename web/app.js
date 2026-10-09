@@ -7070,7 +7070,7 @@ async function floorWineTab(reload) {
   if (!r.ok) return h('div', { class: 'error', text: r.data.error });
   const d = r.data;
   const err = h('div', { class: 'error' });
-  const file = h('input', { type: 'file', accept: '.pdf,image/*', 'aria-label': 'Tech sheets' });
+  const file = h('input', { type: 'file', accept: '.pdf,image/*,.json,application/json', 'aria-label': 'Tech sheets or a cards file' });
   const review = h('div', { class: 'stack' });
   const showScan = async (id) => {
     const s = await api('GET', `/api/floor/wines/scan/${id}`);
@@ -7082,6 +7082,7 @@ async function floorWineTab(reload) {
       const buttons = d.buttons.map((bt) => h('label', { class: 'inline small' }, h('input', { type: 'checkbox', value: bt.catalogId, checked: w.catalogIds.includes(bt.catalogId) ? true : undefined }), bt.name));
       const keep = h('input', { type: 'checkbox', checked: true, 'aria-label': `Save ${w.name}` });
       return { w, keep, buttons, el: h('div', { class: 'card tight' }, h('label', { class: 'inline strong' }, keep, w.name), h('div', { class: 'small muted', text: [w.style, w.region, w.grapes].filter(Boolean).join(' · ') }), w.tastingNotes ? h('div', { class: 'small', text: w.tastingNotes }) : null,
+        (w.dishPairings ?? []).length ? h('div', { class: 'small muted', text: `Suggested with: ${w.dishPairings.map((p) => p.dish).join(', ')} (approve on its card)` }) : null,
         h('details', {}, h('summary', { class: 'small', text: `Square buttons (${w.catalogIds.length} matched)` }), h('div', { class: 'button-picks' }, buttons))) };
     });
     fill(review, h('h3', { text: `Read ${wines.length} wine${wines.length === 1 ? '' : 's'}` }), picks.map((p) => p.el),
@@ -7094,11 +7095,12 @@ async function floorWineTab(reload) {
   };
   const pending = d.scans.find((s) => s.status === 'reading' || s.status === 'read');
   if (pending) showScan(pending.id);
-  const upload = sideBox('Tech sheets', h('div', { class: 'small muted', text: 'A PDF of producers’ tech sheets (several in one is fine). Each wine becomes a card: tasting notes, the story, grapes, where it’s from.' }), file,
+  const upload = sideBox('Tech sheets', h('div', { class: 'small muted', text: 'A PDF of producers’ tech sheets (several in one is fine), or a cards file (.json) already written. Each wine becomes a card: tasting notes, the story, grapes, where it’s from. You check them before they’re saved.' }), file,
     h('button', { class: 'btn dark', text: 'Read them', onclick: () => pageAction(async () => {
       const f = file.files?.[0];
       if (!f) return (err.textContent = 'Choose the file first.');
-      const res = await api('POST', '/api/floor/wines/scan', { mediaType: f.type || 'application/pdf', data: await fileToBase64(f) });
+      const json = /\.json$/i.test(f.name) || f.type === 'application/json';
+      const res = await api('POST', '/api/floor/wines/scan', { mediaType: json ? 'application/json' : f.type || 'application/pdf', data: await fileToBase64(f) });
       if (!res.ok) return (err.textContent = res.data.error);
       showScan(res.data.id);
     }) }), d.canRead ? null : h('div', { class: 'small warn-text', text: 'Reading needs ANTHROPIC_API_KEY in Render.' }), review);

@@ -83,6 +83,28 @@ interface DishInfo {
   ways: { changes: string[]; contains: string[]; allergyLine: string; unchecked: string[] }[];
 }
 
+/**
+ * A cards file: `{ "wines": [...] }` or a bare list, each with the fields a tech sheet is read into, plus
+ * `dishPairings: [{ dish, why }]` naming dishes on the menu. Anything else is dropped.
+ */
+export function readCardsFile(text: string): (WineSheet & { dishPairings: { dish: string; why: string }[] })[] {
+  let raw: unknown;
+  try { raw = JSON.parse(text); } catch { throw new HttpError(400, 'That cards file isn’t valid JSON.'); }
+  const list = Array.isArray(raw) ? raw : Array.isArray((raw as any)?.wines) ? (raw as any).wines : undefined;
+  if (!list) throw new HttpError(400, 'A cards file is a list of wines.');
+  const str = (v: unknown, max: number) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : undefined);
+  const strs = (v: unknown) => (Array.isArray(v) ? v.map((x) => str(x, 300)).filter((x): x is string => Boolean(x)).slice(0, 12) : []);
+  const out = list.slice(0, 200).flatMap((w: any) => {
+    const name = str(w?.name, 160);
+    if (!name) return [];
+    const opt = Object.fromEntries((['producer', 'region', 'place', 'grapes', 'vessel', 'style', 'tastingNotes', 'story'] as const).flatMap((k) => { const v = str(w[k], k === 'story' ? 2000 : 600); return v ? [[k, v]] : []; }));
+    const dishPairings = (Array.isArray(w.dishPairings) ? w.dishPairings : []).flatMap((p: any) => { const dish = str(typeof p === 'string' ? p : p?.dish, 160); return dish ? [{ dish, why: str(p?.why, 200) ?? '' }] : []; }).slice(0, 10);
+    return [{ name, ...opt, facts: strs(w.facts), menuPairings: strs(w.menuPairings), ingredientPairings: strs(w.ingredientPairings), dishPairings }];
+  });
+  if (!out.length) throw new HttpError(400, 'No wines with a name in that file.');
+  return out;
+}
+
 /** "-- No Goat Cheese" → "No Goat Cheese". */
 const modifierLabel = (name: string) => name.replace(/^[\s+*\-–]+/, '').replace(/\s+/g, ' ').trim();
 
@@ -406,10 +428,19 @@ async function readSheets(db: Db, id: string, restaurantId: string): Promise<voi
 }
 
 /** Square's wine buttons a sheet probably is (same producer and wine words). */
+const buttonWords = (x: string) => new Set(normalizeName(x).split(' ').filter((w) => w.length > 2 && !['btl', 'gls', 'bottle', 'glass', 'doc', 'docg', 'igt'].includes(w)));
+const sharedWords = (name: string, button: string) => { const mine = buttonWords(name), theirs = buttonWords(button); return { shared: [...theirs].filter((w) => mine.has(w)).length, size: theirs.size }; };
 function likelyButtons(name: string, items: { catalogId: string; name: string }[]): string[] {
-  const words = (x: string) => new Set(normalizeName(x).split(' ').filter((w) => w.length > 2 && !['btl', 'gls', 'bottle', 'glass', 'doc', 'docg', 'igt'].includes(w)));
-  const mine = words(name);
-  return items.filter((i) => { const theirs = words(i.name); const shared = [...theirs].filter((w) => mine.has(w)).length; return shared >= Math.min(3, theirs.size); }).map((i) => i.catalogId);
+  return items.filter((i) => { const { shared, size } = sharedWords(name, i.name); return shared >= Math.min(3, size); }).map((i) => i.catalogId);
+}
+/**
+ * Buttons for several wines at once: a button that fits more than one ("Tenuta degli Ultimi Prosecco"
+ * and "… Sparkling Rosé" share three words) goes only to the wine sharing the most words with it.
+ */
+export function buttonsForWines(names: readonly string[], items: { catalogId: string; name: string }[]): string[][] {
+  const fits = names.map((n) => likelyButtons(n, items));
+  const best = new Map(items.map((i) => [i.catalogId, Math.max(0, ...names.map((n, k) => (fits[k]!.includes(i.catalogId) ? sharedWords(n, i.name).shared : 0)))]));
+  return names.map((n, k) => fits[k]!.filter((id) => sharedWords(n, items.find((i) => i.catalogId === id)!.name).shared >= best.get(id)!));
 }
 
 // ---------------------------------------------------------------- routes
@@ -702,6 +733,12 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
   if (method === 'POST' && path === '/api/floor/wines/scan') {
     const b = await body(req, 25 * 1024 * 1024);
     const mediaType = String(b.mediaType ?? ''), data = Buffer.from(String(b.data ?? ''), 'base64');
+    // A cards file already written (the same fields a tech sheet is read into): straight to review.
+    if (mediaType === 'application/json') {
+      const wines = readCardsFile(data.toString('utf8'));
+      const r = await db.query<{ id: string }>("INSERT INTO wine_sheet_scans (restaurant_id, status, file, media_type, result, uploaded_by) VALUES ($1, 'read', '\\x00'::bytea, $2, $3, $4) RETURNING id", [rid, mediaType, JSON.stringify(wines), who.staffId]);
+      return send(res, 200, { id: r.rows[0]!.id, connected: true }), true;
+    }
     if (!MEDIA.has(mediaType)) throw new HttpError(400, 'A PDF or photos of the tech sheets.');
     if (data.length < 100 || data.length > 20 * 1024 * 1024) throw new HttpError(400, 'That file is too big or empty.');
     const r = await db.query<{ id: string }>('INSERT INTO wine_sheet_scans (restaurant_id, file, media_type, uploaded_by) VALUES ($1, $2, $3, $4) RETURNING id', [rid, data, mediaType, who.staffId]);
@@ -714,12 +751,18 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
     if (!r) throw new HttpError(404, 'No such upload.');
     const model = await getModel(db, rid, ctx.today);
     const buttons = wineButtons(model, await loadAreas(db, rid)).map((m) => ({ catalogId: m.catalogId, name: m.itemName }));
-    const wines = r.result ? js<WineSheet[]>(r.result).map((w) => ({ ...w, catalogIds: likelyButtons(w.name, buttons) })) : undefined;
+    const read = r.result ? js<WineSheet[]>(r.result) : undefined;
+    const fits = read ? buttonsForWines(read.map((w) => w.name), buttons) : [];
+    const wines = read?.map((w, k) => ({ ...w, catalogIds: fits[k]! }));
     return send(res, 200, { status: r.status, ...(r.error ? { error: r.error } : {}), ...(wines ? { wines } : {}) }), true;
   }
   if (scanPath && method === 'POST' && scanPath[2]) {
     const b = await body(req, 2 * 1024 * 1024);
     const wines = (Array.isArray(b.wines) ? b.wines : []) as any[];
+    // Dishes a cards file pairs it with, by name: they wait as suggestions for a manager to approve.
+    const dishByName = wines.some((w) => Array.isArray(w?.dishPairings) && w.dishPairings.length)
+      ? new Map((await dishIndex(db, rid, await getModel(db, rid, ctx.today))).dishes.filter((d) => d.kind === 'dish').map((d) => [d.name.toLowerCase().trim(), d.id]))
+      : new Map<string, string>();
     let saved = 0;
     for (const w of wines) {
       const name = s(w?.name, 160);
@@ -733,7 +776,14 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
           style = EXCLUDED.style, tasting_notes = EXCLUDED.tasting_notes, story = EXCLUDED.story, facts = EXCLUDED.facts, sheet_pairings = EXCLUDED.sheet_pairings, ingredient_pairings = EXCLUDED.ingredient_pairings,
           catalog_ids = CASE WHEN cardinality(EXCLUDED.catalog_ids) > 0 THEN EXCLUDED.catalog_ids ELSE wine_cards.catalog_ids END, updated_at = now() RETURNING id`,
         [rid, name, ...fields.map((f) => f ?? null), JSON.stringify((Array.isArray(w.facts) ? w.facts : []).map(String).slice(0, 12)), JSON.stringify((Array.isArray(w.menuPairings) ? w.menuPairings : []).map(String).slice(0, 12)), JSON.stringify((Array.isArray(w.ingredientPairings) ? w.ingredientPairings : []).map(String).slice(0, 12)), JSON.stringify(catalog)]);
-      if (r.rows[0]) saved++;
+      if (r.rows[0]) {
+        saved++;
+        const suggested = (Array.isArray(w.dishPairings) ? w.dishPairings : []).flatMap((p: any) => {
+          const id = dishByName.get(String(p?.dish ?? '').toLowerCase().trim());
+          return id ? [{ recipeId: id, why: s(p.why, 200) ?? '' }] : [];
+        }).slice(0, 10);
+        if (suggested.length) await db.query("UPDATE wine_cards SET suggested = $3 WHERE restaurant_id = $1 AND id = $2 AND pairings = '[]'::jsonb", [rid, r.rows[0].id, JSON.stringify(suggested)]);
+      }
     }
     await db.query("UPDATE wine_sheet_scans SET status = 'saved', file = '\\x00'::bytea WHERE restaurant_id = $1 AND id = $2", [rid, scanPath[1]]);
     return send(res, 200, { saved }), true;

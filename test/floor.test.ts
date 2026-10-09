@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { allergensOf, allergyLine, cardLines, spokenName, usesRecipe } from '../src/core/allergens.ts';
-import { wineBase } from '../src/server/floor.ts';
+import { buttonsForWines, readCardsFile, wineBase } from '../src/server/floor.ts';
 import { celebrationOf, clock, dietaryOf, forTables, mergeBooks, notesAndTags, readOpenTableCsv, tablesOf, whyNotable } from '../src/core/reservations.ts';
 import type { Recipe } from '../src/core/recipes.ts';
 
@@ -116,4 +116,17 @@ test('what to know about a guest: what they can eat, what they celebrate', () =>
   assert.equal(celebrationOf(r({ requests: 'Proposal: dessert with ring' })), 'Proposal: dessert with ring');
   assert.equal(celebrationOf(r({ occasions: ['Special Occasion'], requests: 'Proposal: dessert with ring' })), 'Special Occasion · Proposal: dessert with ring');
   assert.equal(celebrationOf(r({ occasions: ['Business Meal'] })), undefined);
+});
+
+test('a cards file reads into wines, keeping only what a card holds', () => {
+  const w = readCardsFile(JSON.stringify({ wines: [{ name: ' Brich Barbera ', style: 'red', facts: ['Organic', 3, ''], dishPairings: [{ dish: 'Funghi', why: 'earthy' }, 'Merguez', { why: 'no dish' }], secret: 'x' }, { producer: 'no name' }] }));
+  assert.deepEqual(w, [{ name: 'Brich Barbera', style: 'red', facts: ['Organic'], menuPairings: [], ingredientPairings: [], dishPairings: [{ dish: 'Funghi', why: 'earthy' }, { dish: 'Merguez', why: '' }] }]);
+  assert.equal(readCardsFile('[{"name":"Grillo"}]')[0]!.name, 'Grillo');
+  assert.throws(() => readCardsFile('not json'), /valid JSON/);
+  assert.throws(() => readCardsFile('{"wines":[{}]}'), /No wines/);
+});
+
+test('a Square button shared by two wines goes to the one it fits best', () => {
+  const items = [{ catalogId: 'p-gls', name: 'Tenuta degli Ultimi Prosecco GLS' }, { catalogId: 'r-btl', name: 'Tenuta degli Ultimi Sparkling Rosé BTL' }, { catalogId: 'g', name: 'Duca di Salaparuta Grillo' }];
+  assert.deepEqual(buttonsForWines(['Tenuta degli Ultimi Prosecco', 'Tenuta degli Ultimi Sparkling Rosé', 'Duca di Salaparuta Grillo'], items), [['p-gls'], ['r-btl'], ['g']]);
 });
