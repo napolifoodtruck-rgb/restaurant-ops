@@ -6549,17 +6549,22 @@ function quizQuestions(b, scope) {
   const all = b.lookup.dishes.filter((d) => d.kind === 'dish' && d.lines.length);
   const pool = scope === 'new' ? all.filter((d) => d.isNew) : all;
   const lines = [...new Set(all.flatMap((d) => d.lines.map(upFirst)))];
+  const seenIn = new Map();
+  for (const d of all) for (const l of new Set(d.lines.map((x) => x.toLowerCase()))) seenIn.set(l, (seenIn.get(l) ?? 0) + 1);
   // Every question each dish allows, then a mix: no more than three about one dish.
   const asked = [];
   for (const d of pool) {
     for (const kind of ['on', 'which', 'allergen', 'wine']) {
       if (kind === 'on') {
-        const right = upFirst(qPick(d.lines));
+        // Not what's on nearly everything (Pizza Dough): what tells this dish apart.
+        const telling = d.lines.filter((l) => (seenIn.get(l.toLowerCase()) ?? 0) <= Math.max(2, all.length * 0.3));
+        if (!telling.length) continue;
+        const right = upFirst(qPick(telling));
         const wrong = qShuffle(lines.filter((l) => !d.lines.some((x) => qSame(x, l)))).slice(0, 3);
         if (wrong.length < 3) continue;
         asked.push({ d, q: `Which of these is on the ${d.name}?`, options: qShuffle([right, ...wrong]), answer: right, why: `${d.name}: ${d.lines.map(upFirst).join(', ')}.` });
       } else if (kind === 'which') {
-        const two = qShuffle(d.lines).slice(0, 2);
+        const two = qShuffle(d.lines.filter((l) => (seenIn.get(l.toLowerCase()) ?? 0) <= Math.max(2, all.length * 0.3))).slice(0, 2);
         if (two.length < 2) continue;
         const has = (x) => two.every((l) => x.lines.some((y) => qSame(y, l)));
         const wrong = qShuffle(all.filter((x) => x.id !== d.id && !has(x))).slice(0, 3).map((x) => x.name);
@@ -6570,9 +6575,12 @@ function quizQuestions(b, scope) {
         const keys = Object.keys(FLOOR_ALLERGENS);
         for (const key of qShuffle([...(d.contains.length ? [qPick(d.contains)] : []), qPick(keys.filter((k) => !d.contains.includes(k)))].filter(Boolean))) {
           const label = FLOOR_ALLERGENS[key].toLowerCase();
-          const swap = (d.swaps ?? []).find((w) => !w.contains.includes(key));
-          const answer = !d.contains.includes(key) ? 'Yes' : swap ? `With the ${swap.label}` : 'No';
-          asked.push({ d, q: `Can a guest avoiding ${label} have the ${d.name}?`, options: ['Yes', 'No', ...(d.swaps ?? []).map((w) => `With the ${w.label}`)], answer, why: `${d.name}: ${d.allergyLine}.${swap && answer !== 'Yes' ? ` With the ${swap.label}: ${swap.allergyLine}.` : ''}${b.allergyNote && /gluten/.test(label) ? ` ${b.allergyNote}` : ''}` });
+          // As it comes, or how it can be made: the crust, a modifier ("No Goat Cheese").
+          const way = (d.ways ?? []).find((w) => !w.contains.includes(key) && !w.unchecked.length);
+          const answer = !d.contains.includes(key) ? 'Yes' : way ? `Yes, with ${way.changes.join(' + ')}` : 'No';
+          const decoy = (d.ways ?? []).find((w) => w !== way && w.contains.includes(key));
+          asked.push({ d, q: `Can a guest avoiding ${label} have the ${d.name}?`, options: qShuffle(['Yes', 'No', ...(way ? [answer] : []), ...(decoy && !way ? [`Yes, with ${decoy.changes.join(' + ')}`] : [])]), answer,
+            why: `${d.name}: ${d.allergyLine}.${way && answer !== 'Yes' ? ` With ${way.changes.join(' + ')}: ${way.allergyLine}.` : ''}${b.allergyNote && /gluten/.test(label) ? ` ${b.allergyNote}` : ''}` });
         }
       } else if (kind === 'wine') {
         if (!d.wines.length || b.lookup.wines.length < 3) continue;
@@ -6664,41 +6672,78 @@ function floorLookup(b, q) {
 }
 
 /** One dish: what's in it in the words servers say, its allergens, what wine goes with it. */
-function floorDish(b, id) {
+function floorDish(b, id, avoid) {
   const d = b.lookup.dishes.find((x) => x.id === id) ?? null;
   if (!d) return;
   floorSheet(d.name,
     h('div', { class: 'kicker', text: `${d.kind === 'drink' ? 'Drink' : 'Dish'}${d.price ? ` · ${usd(d.price)}` : ''}` }), h('h2', { class: 'sheet-title', text: d.name }),
+    avoid?.size ? verdictBox(d, dishVerdict(d, avoid), 'They') : null,
     d.lines.length ? h('ul', { class: 'dish-lines' }, d.lines.map((l) => h('li', { text: upFirst(l) }))) : null,
     h('section', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Allergens' }),
       h('div', { class: 'allergy-chips' }, Object.entries(FLOOR_ALLERGENS).map(([key, label]) => h('span', { class: `tag${d.contains.includes(key) ? ' bad' : ''}`, text: d.contains.includes(key) ? label : `no ${label.toLowerCase()}` }))),
       d.unchecked.length ? h('div', { class: 'warn-text small', text: `Not checked yet, so not sure: ${d.unchecked.join(', ')}. Ask the kitchen.` }) : null,
       d.unknown.length ? h('div', { class: 'warn-text small', text: `On the recipe but not matched: ${d.unknown.join(', ')}. Ask the kitchen.` }) : null,
-      (d.swaps ?? []).filter((w) => w.allergyLine !== d.allergyLine).map((w) => h('div', { class: 'small' }, h('b', { text: `With the ${w.label}: ` }), w.allergyLine)),
+      (d.ways ?? []).length ? h('div', { class: 'small muted strong', text: 'It can also be made' }) : null,
+      (d.ways ?? []).map((w) => {
+        const name = (k) => (FLOOR_ALLERGENS[k] ?? k).toLowerCase();
+        const gone = d.contains.filter((k) => !w.contains.includes(k)).map((k) => `no ${name(k)}`);
+        const left = w.contains.length ? `still has ${w.contains.map(name).join(', ')}` : 'none of the allergens';
+        return h('div', { class: 'small' }, h('b', { text: `With ${w.changes.join(' + ')}: ` }), [...gone, left].join(' · '), w.unchecked.length ? h('span', { class: 'muted', text: ' (some ingredients not checked yet)' }) : null);
+      }),
       b.allergyNote ? h('div', { class: 'small', text: b.allergyNote }) : null),
     d.wines.length ? h('section', { class: 'card tight' }, h('div', { class: 'small muted strong', text: 'Pairs with' }), d.wines.map((name) => { const w = b.lookup.wines.find((x) => x.name === name); return h('button', { class: 'linkish', text: name, onclick: () => w && floorWine(b, w.id) }); })) : null);
 }
 
-/** Dishes without what the guest can't have. */
+/**
+ * Can this guest have it? For each dish: as it comes, or a way it can be made (a swap the kitchen offers,
+ * a modifier rung on the button: "No Goat Cheese"), or not, or not sure (something in it isn't checked).
+ */
+function dishVerdict(d, avoid) {
+  const fits = (keys) => ![...avoid].some((a) => keys.includes(a));
+  const unsure = [...d.unchecked, ...d.unknown];
+  if (fits(d.contains)) return unsure.length ? { kind: 'unsure', unsure } : { kind: 'yes' };
+  const way = (d.ways ?? []).find((w) => fits(w.contains));
+  if (way) return way.unchecked.length || d.unknown.length ? { kind: 'unsure', unsure: [...way.unchecked, ...d.unknown], way } : { kind: 'with', way };
+  return { kind: 'no', has: d.contains.filter((k) => avoid.has(k)).map((k) => FLOOR_ALLERGENS[k]) };
+}
+const verdictBox = (d, v, who) => {
+  if (v.kind === 'yes') return h('div', { class: 'verdict ok', text: `✓ ${who} can have the ${d.name}` });
+  if (v.kind === 'with') return h('div', { class: 'verdict with', text: `✓ ${who} can have the ${d.name} with ${v.way.changes.join(' + ')}` });
+  if (v.kind === 'unsure') return h('div', { class: 'verdict unsure', text: `? Not sure${v.way ? ` (even with ${v.way.changes.join(' + ')})` : ''}: ${v.unsure.join(', ')} not checked yet. Ask the kitchen.` });
+  return h('div', { class: 'verdict no', text: `✗ ${who} can’t have the ${d.name} (${v.has.join(', ')})` });
+};
+
+/** What a guest can't have (the short list, first) or can, by what they avoid; searchable. */
 function floorAllergyFinder(b) {
   const avoid = new Set();
+  let showing = 'cant';
   const out = h('div', { class: 'list' });
+  const search = h('input', { type: 'search', placeholder: 'Find a dish in this list…', 'aria-label': 'Find a dish' });
+  const tabs = h('div', { class: 'seg', role: 'tablist' });
+  const note = h('div');
   const draw = () => {
-    const fits = (keys) => ![...avoid].some((a) => keys.includes(a));
-    // As it comes, or with a swap the kitchen offers (the gluten-sensitive crust).
-    const ok = b.lookup.dishes.map((d) => fits(d.contains) ? { d, swap: null } : { d, swap: (d.swaps ?? []).find((w) => fits(w.contains)) ?? null }).filter((x) => fits(x.d.contains) || x.swap);
-    fill(out, !avoid.size ? h('div', { class: 'muted small', text: 'Tap what the guest can’t have.' })
-      : ok.length ? ok.map(({ d, swap }) => h('button', { class: 'pick-row', onclick: () => floorDish(b, d.id) }, h('div', { class: 'grow' }, h('div', { class: 'strong', text: d.name }),
-          swap ? h('div', { class: 'small', text: `With the ${swap.label}` }) : null,
-          d.unchecked.length || d.unknown.length ? h('div', { class: 'small warn-text', text: `Not sure: ${[...d.unchecked, ...d.unknown].join(', ')}` }) : null)))
-      : h('div', { class: 'muted', text: 'Nothing on the menu fits. Ask the kitchen.' }));
+    fill(tabs, [['cant', 'Can’t have'], ['can', 'Can have']].map(([k, label]) => h('button', { class: showing === k ? 'on' : '', role: 'tab', 'aria-selected': String(showing === k), text: label, onclick: () => { showing = k; draw(); } })));
+    fill(note, b.allergyNote && avoid.has('wheat') ? h('div', { class: 'note small', text: b.allergyNote }) : null);
+    if (!avoid.size) return fill(out, h('div', { class: 'muted small', text: 'Tap what the guest can’t have.' }));
+    const who = 'They';
+    const q = search.value.trim().toLowerCase();
+    const all = b.lookup.dishes.map((d) => ({ d, v: dishVerdict(d, avoid) }));
+    const list = all.filter(({ v }) => (showing === 'cant' ? v.kind === 'no' || v.kind === 'unsure' : v.kind === 'yes' || v.kind === 'with'))
+      .filter(({ d }) => !q || d.name.toLowerCase().includes(q) || d.lines.some((l) => l.toLowerCase().includes(q)))
+      .sort((x, y) => ({ no: 0, unsure: 1, with: 1, yes: 2 })[x.v.kind] - ({ no: 0, unsure: 1, with: 1, yes: 2 })[y.v.kind] || x.d.name.localeCompare(y.d.name));
+    const other = all.length - all.filter(({ v }) => (showing === 'cant' ? v.kind === 'no' || v.kind === 'unsure' : v.kind === 'yes' || v.kind === 'with')).length;
+    fill(out,
+      h('div', { class: 'small muted', text: `${list.length} dish${list.length === 1 ? '' : 'es'}${q ? ` matching “${search.value.trim()}”` : ''} · ${other} on the other list` }),
+      list.length ? list.map(({ d, v }) => h('button', { class: 'pick-row verdict-row', onclick: () => floorDish(b, d.id, avoid) }, h('div', { class: 'grow' }, h('div', { class: 'strong', text: d.name }), verdictBox(d, v, who))))
+        : h('div', { class: 'muted', text: q ? 'Not on this list. Try the other one.' : showing === 'cant' ? 'Nothing on the menu is off limits for them.' : 'Nothing on the menu fits. Ask the kitchen.' }));
   };
+  search.addEventListener('input', draw);
   const chips = h('div', { class: 'allergy-chips' }, Object.entries(FLOOR_ALLERGENS).map(([key, label]) => {
     const chip = h('button', { class: 'chip', 'aria-pressed': 'false', text: `No ${label.toLowerCase()}`, onclick: () => { avoid.has(key) ? avoid.delete(key) : avoid.add(key); chip.classList.toggle('on', avoid.has(key)); chip.setAttribute('aria-pressed', String(avoid.has(key))); draw(); } });
     return chip;
   }));
   draw();
-  floorSheet('Allergies', h('h2', { class: 'sheet-title', text: 'What can they have?' }), chips, b.allergyNote ? h('div', { class: 'note small', text: b.allergyNote }) : null, out);
+  floorSheet('Allergies', h('h2', { class: 'sheet-title', text: 'What can’t they have?' }), chips, tabs, search, note, out);
 }
 
 // Italy, roughly, for the wine map: the coast as longitude/latitude, and each region's middle.

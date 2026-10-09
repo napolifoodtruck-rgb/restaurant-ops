@@ -1301,6 +1301,17 @@ button.donut-row { display: flex; min-width: 0; }
 .inv-add { padding-top: 8px; }
 .inv-sec-head input[type=text] { font-size: 17px; font-weight: 700; width: 100%; height: 40px; border: 1px solid var(--line); border-radius: var(--radius); padding: 0 10px; }
 @media (max-width: 800px) { .inv-row { grid-template-columns: 1fr; } .inv-worth { text-align: left; } }
+.verdict { margin-top: 4px; padding: 6px 10px; font-size: 14px; font-weight: 600; border-radius: var(--radius); border-left: 4px solid; }
+.verdict.ok { background: #E3F0E6; color: var(--green); }
+.verdict.with { background: #FFF4D6; color: #7A5600; }
+.verdict.unsure { background: #FFF1DF; color: var(--orange); }
+.verdict.no { background: #FBE6E2; color: var(--accent); }
+.verdict-row { align-items: flex-start; }
+/* The logo on a board keeps its own shape: as tall as the header line, as wide as it needs. */
+.floor-logo .brand-logo, .floor-logo .brand-logo.rail { width: auto; height: 56px; max-height: none; max-width: 160px; object-fit: contain; display: block; }
 /* Last price by vendor: a nudge when another vendor was cheaper. */
 .price-nudge { margin-top: 10px; padding: 8px 10px; border-radius: var(--radius); border-left: 4px solid #C99A00; background: #FFF4D6; color: #5C4200; display: grid; gap: 2px; }
 .price-nudge.odd { border-left-color: var(--orange); background: #FFF1DF; }
+/* A sheet scrolls rather than squeezing its parts (the Can't have / Can have tabs collapsed to a line). */
+.sheet > * { flex-shrink: 0; }
+.sheet > .seg { align-self: flex-start; }

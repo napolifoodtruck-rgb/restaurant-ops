@@ -231,6 +231,9 @@ export interface Model {
   sales: MarginSaleLine[];
   linkQuestions: LinkQuestion[];
   modifiers: ModifierCosts;
+  /** The modifiers rung on each button in the period ("-- No Goat Cheese" on the House Salad), and what's been answered about them. */
+  modifierSales: ReturnType<typeof squareModifierSales>;
+  modifierAnswers: ModifierAnswers;
   margins: MarginReport;
   spans: SellingSpan[];
   entries: MenuEntry[];
@@ -473,7 +476,9 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
   const linkQuestions = matchMenu(soldItems, recipes, state).questions;
 
   // Modifiers, margins, menu.
-  const modifiers = modifierCosts(book, squareModifierSales(modRows), (id, name, date) => lookup(id, name, date)?.recipeId, bookData.modifierAnswers ?? emptyModifierAnswers());
+  const modifierSales = squareModifierSales(modRows);
+  const modifierAnswers = bookData.modifierAnswers ?? emptyModifierAnswers();
+  const modifiers = modifierCosts(book, modifierSales, (id, name, date) => lookup(id, name, date)?.recipeId, modifierAnswers);
   const margins = menuMargins(book, lookup, sales, { modifierCosts: modifiers.byItem });
   // Buttons answered "not food" (a fee, a gift card) aren't waiting on a card.
   const notFoodNames = new Set((linkAnswers.notFood ?? []).map((x) => posName(x)));
@@ -515,5 +520,5 @@ async function buildModel(db: Db, restaurantId: string, from: string, today: str
     // A dish change already answered: a version on that button starts within a week of the suggested day.
     .filter((c) => !(c.kind === 'dishChanged' && c.catalogId && c.suggestedDate && [...linkAnswers.confirm, ...linkAnswers.newDish].some((v) => v.catalogId === c.catalogId && v.from && Math.abs(Date.parse(v.from) - Date.parse(c.suggestedDate!)) <= 7 * 86_400_000)));
 
-  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, purchasing, menuItems, lookup, sales, linkQuestions, modifiers, margins, spans, entries, checks, imageOf, folded, menuStatus: linkAnswers.menuStatus ?? [], rough: new Set(cards.filter((c) => c.status === 'rough').map(cardId)), priceSource, gardenVendors: base.garden, invoiceSources: base.sources };
+  return { today, from, ...(dataFrom ? { dataFrom } : {}), missing, book, recipes, products, purchasing, menuItems, lookup, sales, linkQuestions, modifiers, modifierSales, modifierAnswers, margins, spans, entries, checks, imageOf, folded, menuStatus: linkAnswers.menuStatus ?? [], rough: new Set(cards.filter((c) => c.status === 'rough').map(cardId)), priceSource, gardenVendors: base.garden, invoiceSources: base.sources };
 }

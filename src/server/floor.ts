@@ -40,6 +40,8 @@ import { getModel, loadBook, type Model } from './model.ts';
 import { loadAreas } from './areas.ts';
 import { kindOf, linkedItems } from './cards.ts';
 import { allergensOf, allergyLine, cardLines, spokenName, usesRecipe, ALLERGEN_KEYS, type AllergenInfo, type Swap } from '../core/allergens.ts';
+import { modifierKey, readModifier, resolveModifier, type PosModifier } from '../core/modifiers.ts';
+import type { ItemRef } from '../core/recipes.ts';
 import { celebrationOf, dietaryOf, forTables, mergeBooks, readOpenTableCsv, whyNotable, REGULAR_VISITS, type Book } from '../core/reservations.ts';
 import { claudeOptions, type ClaudePage } from '../connectors/claude.ts';
 import { readReservations, readWineSheets, suggestIngredients, suggestPairings, type WineSheet } from '../connectors/floorReaders.ts';
@@ -74,7 +76,15 @@ interface DishInfo {
   firstSold?: string; catalogIds: string[]; area: 'kitchen' | 'bar'; image?: string;
   /** Asked for with a swap (the gluten-sensitive crust): what it has then. */
   swaps: { label: string; contains: string[]; allergyLine: string; unchecked: string[] }[];
+  /**
+   * Other ways it can be made for someone avoiding something: a swap the kitchen offers, a modifier rung
+   * on the button ("No Goat Cheese"), or two of them together; each with what it has then. Fewest changes first.
+   */
+  ways: { changes: string[]; contains: string[]; allergyLine: string; unchecked: string[] }[];
 }
+
+/** "-- No Goat Cheese" → "No Goat Cheese". */
+const modifierLabel = (name: string) => name.replace(/^[\s+*\-–]+/, '').replace(/\s+/g, ' ').trim();
 
 async function floorSettings(db: Db, restaurantId: string): Promise<{ allergyNote?: string; swaps?: Swap[] }> {
   return js<{ allergyNote?: string; swaps?: Swap[] }>((await db.query<{ settings: unknown }>('SELECT settings FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.settings ?? {});
@@ -117,6 +127,44 @@ async function dishIndex(db: Db, restaurantId: string, model: Model): Promise<{ 
     product: (id: string) => { const a = answers.get(id); return { name: a?.guest_name ?? spokenName(productName.get(id) ?? id), show: a?.on_cards ?? true }; },
     recipe: (id: string) => prepNames.get(id) ?? model.book.recipes.get(id)?.name ?? id,
   };
+  // The modifiers rung on each button, and what each takes off or puts on a dish.
+  const modsOn = new Map<string, PosModifier[]>();
+  for (const l of model.modifierSales) {
+    const list = modsOn.get(l.catalogId) ?? [];
+    if (!list.some((m) => modifierKey(m) === modifierKey(l.modifier))) list.push(l.modifier);
+    modsOn.set(l.catalogId, list);
+  }
+  const waysFor = (recipeId: string, catalogIds: string[], plain: AllergenInfo) => {
+    const keys = (i: AllergenInfo) => i.contains.map((x) => x.key);
+    const base = new Set(keys(plain));
+    const changes: { label: string; swap?: Swap; removes?: ItemRef[]; adds?: ItemRef[] }[] = [
+      ...swaps.filter((w) => usesRecipe(recipeId, w.from, model.book.recipes)).map((w) => ({ label: `the ${w.label}`, swap: w })),
+    ];
+    const seen = new Set<string>();
+    for (const m of catalogIds.flatMap((id) => modsOn.get(id) ?? [])) {
+      const reading = readModifier(m);
+      if (reading.action !== 'remove' && reading.action !== 'swap') continue;
+      if (seen.has(modifierLabel(m.name).toLowerCase())) continue;
+      seen.add(modifierLabel(m.name).toLowerCase());
+      const r = resolveModifier(model.book, recipeId, m, model.modifierAnswers);
+      if (!('resolved' in r) || !r.resolved.removes.length) continue;
+      changes.push({ label: modifierLabel(m.name), removes: r.resolved.removes.map((x) => x.item), adds: r.resolved.adds.map((x) => x.item) });
+    }
+    const out: DishInfo['ways'] = [];
+    const tryWay = (picked: typeof changes) => {
+      const swap = picked.find((x) => x.swap)?.swap;
+      const change = { removes: picked.flatMap((x) => x.removes ?? []), adds: picked.flatMap((x) => x.adds ?? []) };
+      const info = allergensOf(recipeId, src, swap, change);
+      const now = keys(info);
+      // Only worth saying when it takes an allergen away (and not already said with fewer changes).
+      if ([...base].some((k) => !now.includes(k)) && !out.some((w) => w.contains.join() === now.join() && w.changes.length <= picked.length)) {
+        out.push({ changes: picked.map((x) => x.label), contains: now, allergyLine: allergyLine(info), unchecked: info.unchecked });
+      }
+    };
+    for (const a of changes) tryWay([a]);
+    for (let i = 0; i < changes.length; i++) for (let j = i + 1; j < changes.length; j++) if (!(changes[i]!.swap && changes[j]!.swap)) tryWay([changes[i]!, changes[j]!]);
+    return out.slice(0, 12);
+  };
   const dishes: DishInfo[] = [];
   for (const c of cards) {
     const recipe = c.id ? model.book.recipes.get(c.id) : undefined;
@@ -136,6 +184,7 @@ async function dishIndex(db: Db, restaurantId: string, model: Model): Promise<{ 
         const with_ = allergensOf(recipe.id, src, w);
         return { label: w.label, contains: with_.contains.map((x) => x.key), allergyLine: allergyLine(with_), unchecked: with_.unchecked };
       }),
+      ways: waysFor(recipe.id, items.map((i) => i.catalogId), info),
     });
   }
   return { dishes, byId: new Map(dishes.map((d) => [d.id, d])) };
@@ -313,7 +362,7 @@ export async function floorBoard(db: Db, ctx: FloorContext, asked?: string) {
     lookup: {
       dishes: dishes
         .map((d) => ({ id: d.id, name: d.name, kind: d.kind, area: d.area, ...(d.price !== undefined ? { price: d.price } : {}), ...(d.image ? { image: d.image } : {}),
-          ...(d.firstSold ? { firstSold: d.firstSold } : {}), isNew: fresh.some((f) => f.id === d.id), lines: d.lines, allergyLine: d.allergyLine, contains: d.contains.map((c) => c.key), unchecked: d.unchecked, unknown: d.unknown, swaps: d.swaps, wines: winesFor.get(d.id) ?? [] }))
+          ...(d.firstSold ? { firstSold: d.firstSold } : {}), isNew: fresh.some((f) => f.id === d.id), lines: d.lines, allergyLine: d.allergyLine, contains: d.contains.map((c) => c.key), unchecked: d.unchecked, unknown: d.unknown, swaps: d.swaps, ways: d.ways, wines: winesFor.get(d.id) ?? [] }))
         .sort((a, b) => a.name.localeCompare(b.name)),
       wines,
     },

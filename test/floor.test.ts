@@ -44,6 +44,10 @@ test('a swap the kitchen offers answers the dish both ways', () => {
   assert.equal(allergyLine(allergensOf('pizza', src, { from: 'dough', to: 'gs-dough' })), 'Dairy, Allium');
   assert.ok(usesRecipe('pizza', 'dough', recipes));
   assert.ok(!usesRecipe('salad', 'dough', recipes));
+  // A modifier rung on the dish ("No Mozzarella") takes its line off; one that adds puts a line on.
+  assert.equal(allergyLine(allergensOf('pizza', src, undefined, { removes: [{ kind: 'product', id: 'mozz' }] })), 'Gluten, Allium');
+  assert.equal(allergyLine(allergensOf('pizza', src, { from: 'dough', to: 'gs-dough' }, { removes: [{ kind: 'product', id: 'mozz' }] })), 'Allium');
+  assert.equal(allergyLine(allergensOf('salad', src, undefined, { removes: [{ kind: 'product', id: 'mozz' }], adds: [{ kind: 'product', id: 'garlic' }] })), 'Allium');
 });
 
 test('Square wine buttons come down to the wine', () => {

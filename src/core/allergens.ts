@@ -7,7 +7,7 @@
  * the name the team uses at the table ("Fior di Latte" for "Cheese, Mozzarella").
  */
 
-import type { Recipe } from './recipes.ts';
+import type { ItemRef, Recipe } from './recipes.ts';
 
 export const ALLERGENS = [
   { key: 'milk', label: 'Dairy' },
@@ -57,17 +57,23 @@ export function usesRecipe(recipeId: string, target: string, recipes: ReadonlyMa
   return (recipes.get(recipeId)?.ingredients ?? []).some((l) => l.item.kind === 'recipe' && (l.item.id === target || usesRecipe(l.item.id, target, recipes, seen)));
 }
 
-/** What's in a recipe, through everything it uses (with a swap: the replacement's instead). */
-export function allergensOf(recipeId: string, src: AllergenSource, swap?: Pick<Swap, 'from' | 'to'>): AllergenInfo {
+/** A change rung on the dish itself: lines taken off ("No Goat Cheese") and lines put on. */
+export interface DishChange { removes?: readonly ItemRef[]; adds?: readonly ItemRef[] }
+
+/** What's in a recipe, through everything it uses (with a swap: the replacement's instead; with a change: the dish as rung). */
+export function allergensOf(recipeId: string, src: AllergenSource, swap?: Pick<Swap, 'from' | 'to'>, change?: DishChange): AllergenInfo {
   const from = new Map<string, Set<string>>();
   const unchecked = new Set<string>(), unknown = new Set<string>();
   const seen = new Set<string>();
+  const same = (a: ItemRef, b: ItemRef) => a.kind === b.kind && a.id === b.id;
   const walk = (id: string) => {
     if (seen.has(id)) return;
     seen.add(id);
     const recipe = src.recipes.get(id);
     if (!recipe) return;
-    for (const line of recipe.ingredients) {
+    const top = id === recipeId;
+    const lines = top && change ? [...recipe.ingredients.filter((l) => !(change.removes ?? []).some((r) => same(r, l.item))), ...(change.adds ?? []).map((item) => ({ item, quantity: { amount: 1, unit: 'each' } }))] : recipe.ingredients;
+    for (const line of lines) {
       if (line.item.kind === 'recipe') { walk(swap && line.item.id === swap.from ? swap.to : line.item.id); continue; }
       const pid = line.item.id;
       if (isFree(pid)) continue;
