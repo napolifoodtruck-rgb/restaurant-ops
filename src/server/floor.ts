@@ -108,8 +108,8 @@ export function readCardsFile(text: string): (WineSheet & { dishPairings: { dish
 /** "-- No Goat Cheese" → "No Goat Cheese". */
 const modifierLabel = (name: string) => name.replace(/^[\s+*\-–]+/, '').replace(/\s+/g, ' ').trim();
 
-async function floorSettings(db: Db, restaurantId: string): Promise<{ allergyNote?: string; swaps?: Swap[] }> {
-  return js<{ allergyNote?: string; swaps?: Swap[] }>((await db.query<{ settings: unknown }>('SELECT settings FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.settings ?? {});
+async function floorSettings(db: Db, restaurantId: string): Promise<{ allergyNote?: string; swaps?: Swap[]; readOnlyLists?: string[] }> {
+  return js<{ allergyNote?: string; swaps?: Swap[]; readOnlyLists?: string[] }>((await db.query<{ settings: unknown }>('SELECT settings FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.settings ?? {});
 }
 
 /** Allergens for any recipe, from what's been tagged on the ingredients (and the swaps the kitchen offers). */
@@ -340,17 +340,20 @@ export async function floorBoard(db: Db, ctx: FloorContext, asked?: string) {
     .map((n) => ({ id: n.id, body: n.body, ...(n.by ? { by: n.by } : {}), forPost: Boolean(n.post_id) }));
 
   // Checklists: tonight's opening and closing, and the "when it's slow" list with when each was last done.
-  const lists = (await db.query<{ id: string; kind: 'opening' | 'closing' | 'slow'; name: string; every_days: number | null }>(
-    'SELECT id, kind, name, every_days FROM floor_checklists WHERE restaurant_id = $1 AND active AND (post_id IS NULL OR post_id = $2) ORDER BY kind, sort_order, name', [rid, post.id])).rows;
+  const readOnlyLists = new Set((await floorSettings(db, rid)).readOnlyLists ?? []);
+  const lists = (await db.query<{ id: string; kind: 'opening' | 'closing' | 'slow'; name: string; every_days: number | null; read_only: boolean }>(
+    'SELECT id, kind, name, every_days, read_only FROM floor_checklists WHERE restaurant_id = $1 AND active AND (post_id IS NULL OR post_id = $2) ORDER BY kind, sort_order, name', [rid, post.id])).rows;
   const done = (await db.query<{ checklist_id: string; day: string; by: string | null; at: string }>(
     `SELECT DISTINCT ON (c.checklist_id) c.checklist_id, c.day::text AS day, s.display_name AS by, c.done_at::text AS at
        FROM floor_checks c LEFT JOIN staff s ON s.id = c.done_by WHERE c.restaurant_id = $1 ORDER BY c.checklist_id, c.day DESC, c.done_at DESC`, [rid])).rows;
   const last = new Map(done.map((d) => [d.checklist_id, d]));
   const checklist = (kind: 'opening' | 'closing') => lists.filter((l) => l.kind === kind).map((l) => {
     const d = last.get(l.id);
+    if (readOnlyLists.has(kind) || l.read_only) return { id: l.id, name: l.name, readOnly: true };
     return { id: l.id, name: l.name, ...(d && d.day === today ? { done: { by: d.by, at: d.at } } : {}) };
   });
   const slow = lists.filter((l) => l.kind === 'slow').map((l) => {
+    if (readOnlyLists.has('slow') || l.read_only) return { id: l.id, name: l.name, due: false, readOnly: true };
     const d = last.get(l.id);
     const due = !d || !l.every_days || d.day <= addDays(today, -l.every_days);
     return { id: l.id, name: l.name, due, ...(d ? { last: { day: d.day, by: d.by } } : {}), ...(l.every_days ? { everyDays: l.every_days } : {}) };
@@ -469,8 +472,9 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
       await db.query('INSERT INTO floor_handoffs (restaurant_id, post_id, day, body, written_by) VALUES ($1, $2, $3, $4, $5)', [rid, ctx.device?.floorPostId ?? null, ctx.today, text, staffId]);
       return send(res, 200, { ok: true, by: pin.name }), true;
     }
-    const list = (await db.query<{ id: string }>('SELECT id FROM floor_checklists WHERE restaurant_id = $1 AND id = $2 AND active', [rid, String(b.checklistId ?? '')])).rows[0];
+    const list = (await db.query<{ id: string; kind: string; read_only: boolean }>('SELECT id, kind, read_only FROM floor_checklists WHERE restaurant_id = $1 AND id = $2 AND active', [rid, String(b.checklistId ?? '')])).rows[0];
     if (!list) throw new HttpError(404, 'That checklist item isn’t there any more.');
+    if (list.read_only || ((await floorSettings(db, rid)).readOnlyLists ?? []).includes(list.kind)) throw new HttpError(400, 'That one’s a reminder to read, not a box to tick.');
     if (b.undo === true) await db.query('DELETE FROM floor_checks WHERE restaurant_id = $1 AND checklist_id = $2 AND day = $3', [rid, list.id, ctx.today]);
     else await db.query('INSERT INTO floor_checks (restaurant_id, checklist_id, day, done_by) VALUES ($1, $2, $3, $4) ON CONFLICT (checklist_id, day) DO UPDATE SET done_by = EXCLUDED.done_by, done_at = now()', [rid, list.id, ctx.today, staffId]);
     return send(res, 200, { ok: true, by: pin.name }), true;
@@ -495,7 +499,7 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
       q('SELECT id, name, kind, tables, station_id AS "stationId", sort_order AS "sortOrder" FROM floor_posts WHERE restaurant_id = $1 AND active ORDER BY sort_order, name'),
       q('SELECT id, name, floor_post_id AS "postId", station_id AS "stationId", last_seen_at::text AS "lastSeen" FROM devices WHERE restaurant_id = $1 AND revoked_at IS NULL ORDER BY name'),
       q('SELECT id, name FROM stations WHERE restaurant_id = $1 AND active ORDER BY sort_order'),
-      q('SELECT id, post_id AS "postId", kind, name, every_days AS "everyDays" FROM floor_checklists WHERE restaurant_id = $1 AND active ORDER BY kind, sort_order, name'),
+      q('SELECT id, post_id AS "postId", kind, name, every_days AS "everyDays", read_only AS "readOnly" FROM floor_checklists WHERE restaurant_id = $1 AND active ORDER BY kind, sort_order, name'),
       q(`SELECT n.id, n.post_id AS "postId", n.starts_on::text AS "startsOn", n.ends_on::text AS "endsOn", n.weekdays, n.body, s.display_name AS by FROM floor_notes n LEFT JOIN staff s ON s.id = n.created_by
            WHERE n.restaurant_id = $1 AND n.ends_on >= $2 ORDER BY n.starts_on`, [rid, ctx.today]),
       q(`SELECT id, kind, recipe_id AS "recipeId", name, price, starts_on::text AS "startsOn", ends_on::text AS "endsOn", weekdays, note FROM floor_features
@@ -513,6 +517,7 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
       today: ctx.today, posts, devices, stations, checklists, notes, features, pushes, gelato: (gelato as unknown[])[0] ?? null, handoffs,
       allergyNote: js<{ allergyNote?: string }>((settings as { settings: unknown }[])[0]?.settings ?? {}).allergyNote ?? '',
       swaps: js<{ swaps?: Swap[] }>((settings as { settings: unknown }[])[0]?.settings ?? {}).swaps ?? [],
+      readOnlyLists: js<{ readOnlyLists?: string[] }>((settings as { settings: unknown }[])[0]?.settings ?? {}).readOnlyLists ?? [],
       recipes: model.recipes.map((r) => ({ id: r.id, name: r.name })).sort((a, b) => a.name.localeCompare(b.name)),
       dishes: dishes.map((d) => ({ id: d.id, name: d.name, kind: d.kind, price: d.price, firstSold: d.firstSold, allergyLine: d.allergyLine, unchecked: d.unchecked.length })),
       ...(report ? { report: { id: report.id, status: report.status, error: report.error, source: report.source, at: report.uploaded_at } } : {}),
@@ -542,13 +547,17 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
     const name = s(b.name, 200);
     const post = typeof b.postId === 'string' && b.postId ? b.postId : null;
     const every = Number(b.everyDays) > 0 ? Math.round(Number(b.everyDays)) : null;
+    if (typeof b.id === 'string' && b.id && typeof b.readOnly === 'boolean' && b.name === undefined) {
+      await db.query('UPDATE floor_checklists SET read_only = $3 WHERE restaurant_id = $1 AND id = $2', [rid, b.id, b.readOnly]);
+      return send(res, 200, { ok: true }), true;
+    }
     if (typeof b.id === 'string' && b.id) {
       if (b.active === false) await db.query('UPDATE floor_checklists SET active = false WHERE restaurant_id = $1 AND id = $2', [rid, b.id]);
       else await db.query('UPDATE floor_checklists SET name = coalesce($3, name), post_id = $4, every_days = $5 WHERE restaurant_id = $1 AND id = $2', [rid, b.id, name ?? null, post, every]);
       return send(res, 200, { ok: true }), true;
     }
     if (!kind || !name) throw new HttpError(400, 'Which list (opening, closing, when it’s slow) and what needs doing?');
-    const r = await db.query<{ id: string }>('INSERT INTO floor_checklists (restaurant_id, post_id, kind, name, every_days, sort_order) VALUES ($1, $2, $3, $4, $5, (SELECT coalesce(max(sort_order), 0) + 1 FROM floor_checklists WHERE restaurant_id = $1)) RETURNING id', [rid, post, kind, name, every]);
+    const r = await db.query<{ id: string }>('INSERT INTO floor_checklists (restaurant_id, post_id, kind, name, every_days, read_only, sort_order) VALUES ($1, $2, $3, $4, $5, $6, (SELECT coalesce(max(sort_order), 0) + 1 FROM floor_checklists WHERE restaurant_id = $1)) RETURNING id', [rid, post, kind, name, every, b.readOnly === true]);
     return send(res, 201, { ok: true, id: r.rows[0]!.id }), true;
   }
 
@@ -608,6 +617,10 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
   if (method === 'POST' && path === '/api/floor/settings') {
     const b = await body(req);
     if (typeof b.allergyNote === 'string') await db.query("UPDATE restaurants SET settings = jsonb_set(coalesce(settings, '{}'::jsonb), '{allergyNote}', to_jsonb($2::text)) WHERE id = $1", [rid, s(b.allergyNote, 1000) ?? '']);
+    if (Array.isArray(b.readOnlyLists)) {
+      const lists = [...new Set(b.readOnlyLists.map(String).filter((k: string) => ['opening', 'closing', 'slow'].includes(k)))];
+      await db.query("UPDATE restaurants SET settings = jsonb_set(coalesce(settings, '{}'::jsonb), '{readOnlyLists}', $2::jsonb) WHERE id = $1", [rid, JSON.stringify(lists)]);
+    }
     if (Array.isArray(b.swaps)) {
       const swaps = b.swaps.map((w: any) => ({ from: String(w?.from ?? ''), to: String(w?.to ?? ''), label: s(w?.label, 60) ?? '' }))
         .filter((w: Swap) => /^[0-9a-f-]{36}$/.test(w.from) && /^[0-9a-f-]{36}$/.test(w.to) && w.from !== w.to && w.label).slice(0, 10);

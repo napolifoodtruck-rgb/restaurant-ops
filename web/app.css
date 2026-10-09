@@ -1316,3 +1316,8 @@ button.donut-row { display: flex; min-width: 0; }
 /* A sheet scrolls rather than squeezing its parts (the Can't have / Can have tabs collapsed to a line). */
 .sheet > * { flex-shrink: 0; }
 .sheet > .seg { align-self: flex-start; }
+/* A checklist reminder: read, not ticked. */
+.check-row.read { cursor: default; color: var(--ink); }
+.check-row.read .dot { width: 24px; flex: none; text-align: center; color: var(--muted); font-size: 20px; }
+button.tag { cursor: pointer; border: 1px solid var(--line); background: var(--card); }
+button.tag.on { background: var(--ink); color: #fff; border-color: var(--ink); }

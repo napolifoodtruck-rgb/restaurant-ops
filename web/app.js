@@ -6475,7 +6475,7 @@ async function floorBoard(ctx = {}) {
 function floorTasksButton(b, reload) {
   const c = b.checklists;
   if (!c.opening.length && !c.closing.length && !c.slow.length) return h('button', { class: 'btn', text: 'Tasks', onclick: () => floorTasks(b, reload) });
-  const due = b.phase === 'pre' ? c.opening.filter((x) => !x.done).length : b.phase === 'closing' ? c.closing.filter((x) => !x.done).length : c.slow.filter((x) => x.due).length;
+  const due = b.phase === 'pre' ? c.opening.filter((x) => !x.done && !x.readOnly).length : b.phase === 'closing' ? c.closing.filter((x) => !x.done && !x.readOnly).length : c.slow.filter((x) => x.due && !x.readOnly).length;
   return h('button', { class: `btn${due ? ' due' : ''}`, text: due ? `Tasks · ${due}` : 'Tasks ✓', onclick: () => floorTasks(b, reload) });
 }
 
@@ -6484,7 +6484,8 @@ function floorTasks(b, reload) {
   const box = h('div', { class: 'stack' });
   let board = b;
   const fresh = async () => { const r = await api('GET', `/api/floor/board?post=${encodeURIComponent(board.post.id)}`); if (r.ok) { board = r.data; draw(); } };
-  const tick = (item, slow) => h('button', { class: `check-row${item.done ? ' done' : ''}`, onclick: async () => {
+  // A reminder to read: no box, no PIN.
+  const tick = (item, slow) => item.readOnly ? h('div', { class: 'check-row read' }, h('span', { class: 'dot', 'aria-hidden': 'true', text: '•' }), h('span', { class: 'grow', text: item.name })) : h('button', { class: `check-row${item.done ? ' done' : ''}`, onclick: async () => {
       const res = await floorWithPin(item.done ? 'Undo' : 'Done', item.name, (who) => api('POST', '/api/floor/check', { checklistId: item.id, staffId: who.staffId, pin: who.pin, ...(item.done ? { undo: true } : {}) }));
       if (res) fresh();
     } }, h('span', { class: 'box', 'aria-hidden': 'true', text: item.done ? '✓' : '' }), h('span', { class: 'grow', text: item.name }),
@@ -6495,7 +6496,7 @@ function floorTasks(b, reload) {
     const c = board.checklists;
     const order = board.phase === 'closing' ? ['closing', 'slow', 'opening'] : board.phase === 'service' ? ['slow', 'closing', 'opening'] : ['opening', 'slow', 'closing'];
     const lists = { opening: ['Opening', c.opening, false], closing: ['Closing', c.closing, false], slow: ['When it’s slow', c.slow.map((x) => ({ ...x, done: null })), true] };
-    fill(box, order.map((k) => { const [title, items, slow] = lists[k]; return items.length ? h('section', { class: 'card tight' }, h('h3', { text: title }), slow ? h('div', { class: 'small muted', text: 'Pick one up when it’s quiet: whoever does it gets the credit.' }) : null, h('div', { class: 'checks' }, items.map((x) => tick(x, slow)))) : null; }),
+    fill(box, order.map((k) => { const [title, items, slow] = lists[k]; return items.length ? h('section', { class: 'card tight' }, h('h3', { text: title }), slow && items.some((x) => !x.readOnly) ? h('div', { class: 'small muted', text: 'Pick one up when it’s quiet: whoever does it gets the credit.' }) : null, h('div', { class: 'checks' }, items.map((x) => tick(x, slow)))) : null; }),
       !c.opening.length && !c.closing.length && !c.slow.length ? h('div', { class: 'muted', text: 'No tasks set up yet. A manager adds them in Service → Setup.' }) : null,
       h('section', { class: 'card tight' }, h('h3', { text: 'Note for the managers' }), h('div', { class: 'small muted', text: 'At the end of the night: they see it in Today.' }), handoffText,
         h('button', { class: 'btn', text: 'Send', onclick: async () => {
@@ -6993,15 +6994,26 @@ function floorSetupTab(d, reload) {
   const KLIST = { opening: 'Opening', closing: 'Closing', slow: 'When it’s slow (deep cleaning)' };
   const checklistBox = (kind) => {
     const items = d.checklists.filter((c) => c.kind === kind);
+    const listRO = (d.readOnlyLists ?? []).includes(kind);
     const name = h('input', { type: 'text', placeholder: kind === 'slow' ? 'e.g. Wipe down the wine fridge' : 'e.g. Roll silverware', 'aria-label': 'Task' });
     const where = h('select', { 'aria-label': 'Where' }, h('option', { value: '', text: 'Every post' }), d.posts.map((p) => h('option', { value: p.id, text: p.name })));
-    const every = kind === 'slow' ? h('input', { type: 'number', min: '1', class: 'short', value: '7', 'aria-label': 'Every so many days' }) : null;
-    return h('section', { class: 'card' }, h('h2', { text: KLIST[kind] }),
-      kind === 'slow' ? h('div', { class: 'small muted', text: 'Shown as reminders for slow moments, due again after so many days. A PIN gives the credit to whoever does it.' }) : null,
-      items.length ? h('div', { class: 'list compact' }, items.map((c) => h('div', { class: 'row' }, h('span', { class: 'grow', text: c.name }), h('span', { class: 'small muted', text: `${d.posts.find((p) => p.id === c.postId)?.name ?? 'Every post'}${c.everyDays ? ` · every ${c.everyDays} days` : ''}` }),
+    const every = kind === 'slow' && !listRO ? h('input', { type: 'number', min: '1', class: 'short', value: '7', 'aria-label': 'Every so many days' }) : null;
+    const readOnly = listRO ? null : h('input', { type: 'checkbox', 'aria-label': 'Read only' });
+    const setList = (ro) => pageAction(async () => { await api('POST', '/api/floor/settings', { readOnlyLists: [...(d.readOnlyLists ?? []).filter((k) => k !== kind), ...(ro ? [kind] : [])] }); reload(); });
+    const mode = h('div', { class: 'seg', role: 'group', 'aria-label': `${KLIST[kind]}: tick or read` },
+      [['Checkable', false], ['Read only', true]].map(([t, ro]) => h('button', { class: listRO === ro ? 'on' : '', 'aria-pressed': String(listRO === ro), text: t, onclick: () => setList(ro) })));
+    const itemTag = (c) => listRO ? h('span', { class: 'tag', title: 'The whole list is read only', text: 'Read only' })
+      : h('button', { class: `tag${c.readOnly ? ' on' : ''}`, title: c.readOnly ? 'A reminder: tap to make it a box to tick' : 'A box to tick: tap to make it a reminder', text: c.readOnly ? 'Read only' : 'Checkable',
+        onclick: () => pageAction(async () => { await api('POST', '/api/floor/checklists', { id: c.id, readOnly: !c.readOnly }); reload(); }) });
+    return h('section', { class: 'card' }, h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: KLIST[kind] }), mode),
+      h('div', { class: 'small muted', text: listRO ? 'Read only: shown as reminders, no boxes or PINs. Switch to Checkable to pick item by item.'
+        : kind === 'slow' ? 'Shown as reminders for slow moments, due again after so many days. A PIN gives the credit to whoever does it. Mark an item Read only to show it without a box.'
+        : 'Each item is a box ticked with a PIN. Mark an item Read only to show it as a reminder.' }),
+      items.length ? h('div', { class: 'list compact' }, items.map((c) => h('div', { class: 'row' }, h('span', { class: 'grow', text: c.name }), h('span', { class: 'small muted', text: `${d.posts.find((p) => p.id === c.postId)?.name ?? 'Every post'}${c.everyDays && !listRO && !c.readOnly ? ` · every ${c.everyDays} days` : ''}` }), itemTag(c),
         h('button', { class: 'link', text: 'Remove', onclick: () => pageAction(async () => { await api('POST', '/api/floor/checklists', { id: c.id, active: false }); reload(); }) })))) : null,
       h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, name), where, every ? [h('span', { class: 'small', text: 'every' }), every, h('span', { class: 'small', text: 'days' })] : null,
-        h('button', { class: 'btn', text: 'Add', onclick: () => pageAction(async () => { const res = await api('POST', '/api/floor/checklists', { kind, name: name.value, postId: where.value || null, ...(every ? { everyDays: Number(every.value) } : {}) }); if (!res.ok) return (err.textContent = res.data.error); reload(); }) })));
+        readOnly ? h('label', { class: 'inline small' }, readOnly, 'Read only') : null,
+        h('button', { class: 'btn', text: 'Add', onclick: () => pageAction(async () => { const res = await api('POST', '/api/floor/checklists', { kind, name: name.value, postId: where.value || null, ...(every ? { everyDays: Number(every.value) } : {}), ...(readOnly?.checked ? { readOnly: true } : {}) }); if (!res.ok) return (err.textContent = res.data.error); reload(); }) })));
   };
   const note = h('textarea', { rows: 3, 'aria-label': 'Allergy note', placeholder: 'e.g. Our gluten-sensitive crust starts gluten-free, but it’s made in a kitchen full of flour: we can’t promise it’s free of gluten. The guest decides.' });
   note.value = d.allergyNote ?? '';
