@@ -1382,3 +1382,18 @@ button.tag.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .pair-finder .tag { margin-left: 6px; font-size: 11px; }
 /* Search boxes look like the app's other text boxes (the board's big search and .search keep their own). */
 input[type=search]:not(.floor-search):not(.search) { height: 48px; border: 1px solid var(--line); padding: 0 14px; font-size: 16px; background: #fff; font-weight: 500; border-radius: var(--radius); box-sizing: border-box; }
+/* The left menu fits the screen without scrolling: smaller buttons and icons, tighter gaps,
+   and tighter still on short screens (an iPad in landscape with the browser's bars). */
+@media (min-width: 701px) {
+  .rail { padding: 12px 0; gap: 2px; }
+  .rail button { padding: 7px 0 6px; gap: 3px; font-size: 9.5px; }
+  .rail button svg { width: 19px; height: 19px; }
+  .rail .logo { margin-bottom: 6px; }
+}
+@media (min-width: 701px) and (max-height: 760px) {
+  .rail { padding: 8px 0; gap: 0; }
+  .rail button { padding: 5px 0 4px; gap: 2px; }
+  .rail button svg { width: 17px; height: 17px; }
+  .rail .logo, .rail .logo .brand-logo, .brand-logo.rail { width: 80px; }
+  .rail .me-chip { padding: 2px 0 4px; }
+}
