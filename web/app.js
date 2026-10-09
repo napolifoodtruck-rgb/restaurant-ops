@@ -6405,7 +6405,7 @@ async function floorBoard(ctx = {}) {
   search.addEventListener('keydown', (e) => { if (e.key === 'Enter' && search.value.trim()) floorLookup(b, search.value.trim()); });
   const dateText = new Date(`${b.day}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
   const head = h('header', { class: 'floor-head' },
-    inShell ? null : h('div', { class: 'floor-logo' }, brandMark('rail')),
+    inShell ? null : h('div', { class: 'floor-logo' }, brandMark('board')),
     h('div', { class: 'grow' }, h('div', { class: 'kicker', text: dateText }), h('h1', { text: b.post.name })),
     search,
     h('button', { class: 'btn', text: 'Allergies', onclick: () => floorAllergyFinder(b) }),
