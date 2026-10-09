@@ -65,6 +65,7 @@ import { marginsView, menuView, posItemOf } from './views.ts';
 import { prepRoutes } from './prep.ts';
 import { planRoutes } from './plans.ts';
 import { SNOOZE_MORNING, todayView } from './today.ts';
+import { dashboardView } from './dashboard.ts';
 import { cardRoutes } from './cards.ts';
 import { orderRoutes } from './orders.ts';
 import { onlineRoutes } from './online.ts';
@@ -758,6 +759,14 @@ export function createApp(config: AppConfig) {
       // Staff on a station's iPad see that station; managers see the whole kitchen.
       const device = atLeast(who.roleLevel, 'manager') ? undefined : await deviceFor(db, cookies(req)[DEVICE_COOKIE]);
       return send(res, 200, await todayView(db, who, local.date, local.hour, device?.restaurantId === who.restaurantId ? device.stationId ?? undefined : undefined));
+    }
+
+    // How the restaurant is running: managers and up.
+    if (method === 'GET' && path === '/api/today/dashboard') {
+      const who = await signedIn(req);
+      if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
+      const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+      return send(res, 200, await dashboardView(db, who, localDateHour(tz).date));
     }
 
     // Set Today's lines aside for a while (just for this person), or bring them back.

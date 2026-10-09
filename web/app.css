@@ -1327,3 +1327,28 @@ button.tag.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .quiz-form { padding: 10px; background: var(--bg); }
 .quiz-form input, .quiz-form textarea, .quiz-form select { width: 100%; }
 .ok-text { color: var(--green); }
+/* Today for managers: routine work as tiles, what needs fixing in the middle, the numbers down the side. */
+.today-tiles { margin-bottom: 18px; }
+.home-tile.due { box-shadow: inset 0 -3px 0 var(--orange); }
+.attention .more-link { margin: 6px 0 0 2px; }
+.dash-side { display: flex; flex-direction: column; gap: 12px; }
+.dash-head { align-items: center; }
+.dash-title { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 700; color: var(--muted); text-align: left; }
+.dash-title:hover { color: var(--ink); }
+.dash-stats { display: flex; gap: 22px; margin-top: 4px; }
+.dash-stats > div { display: flex; flex-direction: column; }
+.dash-chart-wrap { width: 100%; margin-top: 6px; }
+.dash-chart { width: 100%; height: auto; display: block; overflow: visible; }
+.dash-chart .axis { stroke: #CFCBC2; stroke-width: 1; }
+.dash-chart .tick { fill: var(--muted); font-size: 11px; font-family: inherit; }
+.dash-chart .strong-tick { fill: var(--ink); font-weight: 700; font-size: 12px; }
+.dash-chart .bar-now { fill: var(--ink); }
+.dash-chart .bar-before { fill: #CFCBC2; }
+.dash-chart .prime-line { fill: none; stroke: var(--ink); stroke-width: 2; stroke-linejoin: round; }
+.dash-chart .prime-dot { fill: var(--ink); stroke: var(--card); stroke-width: 2; }
+.dash-legend { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.dash-legend .key { width: 10px; height: 10px; display: inline-block; margin-left: 8px; }
+.dash-legend .key:first-child { margin-left: 0; }
+.dash-legend .key-now { background: var(--ink); }
+.dash-legend .key-before { background: #CFCBC2; }
+.attention .todo-body .small.muted { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

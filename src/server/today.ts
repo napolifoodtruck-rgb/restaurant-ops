@@ -78,7 +78,6 @@ function addDays(day: string, n: number): string {
 }
 const weekday = (day: string) => new Date(`${day}T12:00:00Z`).getUTCDay();
 const dollars = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
-const cents = (v: number) => `$${v.toFixed(2)}`;
 const list = (names: string[], max = 3) => (names.length <= max ? names.join(', ') : `${names.slice(0, max).join(', ')} and ${names.length - max} more`);
 
 /** Weekdays the restaurant opens, from the last 8 weeks of sales (every day, with no sales yet). */
@@ -233,13 +232,7 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string, 
       items.push({ key: `q:more:${side}`, group: 'menu', label: 'Questions', tone: 'ask', dollars: rest[0]!.dollars, title: `${rest.length} more ${side} question${rest.length === 1 ? '' : 's'}`, detail: list(rest.map((q) => q.name.replace(/[.?]$/, '')), 4), go: { to: 'menu' }, button: 'Menu' });
     }
 
-    // Prices that moved enough to matter.
-    for (const m of priceMoves(model, today, (c) => inArea(view, c)).slice(0, 3)) {
-      const up = m.change > 0;
-      items.push({ key: `price:${m.productId}`, group: 'costs', label: up ? 'Price up' : 'Price down', tone: up ? 'alert' : 'info', dollars: Math.abs(m.perWeek) * 13,
-        title: `${m.product} is ${up ? 'up' : 'down'} ${Math.round(Math.abs(m.change) * 100)}% in 3 months`,
-        detail: `About ${dollars(Math.abs(m.perWeek))} a week ${up ? 'more' : 'less'} at your volume · ${m.dish} ${up ? '+' : '−'}${cents(Math.abs(m.plateChange))} a plate`, go: { to: 'performance' }, button: 'See dishes' });
-    }
+    // Prices that moved enough to matter are on the dashboard (GET /api/today/dashboard), not here.
     // Recipe checks: a product the menu uses every week that hasn't come in on an invoice in far too
     // long (the recipe probably names one you stopped buying), and what you buy weekly that no recipe uses.
     const checks = recipeChecks(model, today, dismissed);

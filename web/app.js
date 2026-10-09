@@ -4347,19 +4347,170 @@ async function todayScreen(me, filter = 'all') {
     });
     for (const [gk, keys] of doneByGroup) if (!groupsOf.some((g) => g.key === gk)) sections.push(todoSection(todoGroupInfo(gk, grouping), keys.map(doneRow)));
 
+    if (t.glance) { drawManager(side, sides, onSide, asleepBox); errorFor = null; return; }
     show(shell(me, 'today', [
       h('header', { class: 'row wrap' },
         h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${longDay(t.today)} · ${me.restaurantName}` }), h('h1', { text: 'Today' }), h('div', { class: 'sub', text: sub })),
         h('div', { class: 'row wrap' }, sides)),
       pauseBar,
-      t.glance ? homeTiles(me, t, side, onSide) : null,
       page([h('div', { class: 'row wrap todo-head' }, h('h2', { class: 'grow', text: 'To do' })),
         h('section', { class: 'todos', 'aria-label': 'To do' }, sections.length ? sections : h('div', { class: 'card small muted', text: asleep.length ? 'All clear, apart from what’s snoozed.' : 'All clear.' }), asleepBox)],
-        [quiet, glanceCards(me, t, side, { home: Boolean(t.glance) })]),
+        [quiet, glanceCards(me, t, side, { home: false })]),
     ]));
     errorFor = null;
   }
+
+  // Managers: what keeps the system running (routine work in one strip, the fixes as a short list),
+  // then how the restaurant is doing.
+  let showAll = false;
+  const dash = h('div', { class: 'dash-side' }, sideBox('How we’re doing', h('div', { class: 'small muted', text: 'Loading the numbers…' })));
+  api('GET', '/api/today/dashboard').then((r) => fill(dash, r.ok ? dashboardCards(me, r.data) : h('div', { class: 'error small', text: r.data.error ?? 'Couldn’t load the numbers.' })));
+  function drawManager(side, sides, onSide, asleepBox) {
+    const routine = onSide.filter(isRoutine);
+    const fixes = onSide.filter((i) => !isRoutine(i));
+    const limit = window.matchMedia('(max-width: 700px)').matches ? 3 : 5;
+    const shownFixes = showAll ? fixes : fixes.slice(0, limit);
+    const rows = shownFixes.map(itemRow);
+    for (const [key, d] of done) {
+      if (isRoutine(d.item) || (side !== 'all' && d.item.side && d.item.side !== side)) continue;
+      rows.splice(Math.min(d.indexIn ?? rows.length, rows.length), 0, doneRow(key));
+    }
+    const more = fixes.length - shownFixes.length;
+    show(shell(me, 'today', [
+      h('header', { class: 'row wrap' },
+        h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${longDay(t.today)} · ${me.restaurantName}` }), h('h1', { text: 'Today' }),
+          h('div', { class: 'sub', text: fixes.length ? `${fixes.length} thing${fixes.length === 1 ? '' : 's'} need${fixes.length === 1 ? 's' : ''} fixing or an answer, the biggest first.` : 'Nothing needs fixing. The system’s running clean.' })),
+        h('div', { class: 'row wrap' }, sides)),
+      pauseBar,
+      todayTiles(me, t, side, routine, go),
+      page([h('div', { class: 'row wrap todo-head' }, h('h2', { class: 'grow', text: 'Needs attention' })),
+        h('section', { class: 'todos attention', 'aria-label': 'Needs attention' }, rows.length ? rows : h('div', { class: 'card small muted', text: 'All clear.' }),
+          more > 0 ? h('button', { class: 'link more-link', text: `Show ${more} more`, onclick: () => { showAll = true; draw(); } }) : showAll && fixes.length > limit ? h('button', { class: 'link more-link', text: 'Show fewer', onclick: () => { showAll = false; draw(); } }) : null,
+          asleepBox)],
+        [dash], { label: 'How we’re doing' }),
+    ]));
+  }
   draw();
+}
+
+/** Routine work on Today: prep, counts, orders. Managers see it as one strip, not as rows. */
+const isRoutine = (i) => i.group === 'prep' || i.group === 'orders';
+
+/** Routine work as tiles across the top, each a door: prep, counts and approvals, orders, inventory. */
+function todayTiles(me, t, side, routine, go) {
+  const prep = t.prep.filter((s) => side === 'all' || s.side === side);
+  const lists = prep.filter((s) => s.today?.total);
+  const doneLists = lists.filter((s) => s.today.approved && !s.today.left).length;
+  const of = (kind) => routine.filter(kind);
+  const count = of((i) => i.go.to === 'count'), approve = of((i) => i.go.to === 'review'), orders = of((i) => i.group === 'orders'), inventory = of((i) => i.go.to === 'inventory');
+  const tile = (key, name, big, line, onclick, due) => {
+    const el = h('button', { class: `home-tile${due ? ' due' : ''}`, onclick }, h('span', { class: 'tile-name' }, icon(key), name), h('span', { class: 'tile-big', text: big }), h('span', { class: 'tile-line small muted', text: line }));
+    el.style.setProperty('--tab', TODO_TABS[key].color);
+    return el;
+  };
+  const tiles = [
+    tile('prep', 'Prep', !t.openToday ? 'Closed today' : lists.length ? `${doneLists} of ${lists.length} done` : 'Nothing today',
+      lists.filter((s) => s.today.left).map((s) => `${s.station}: ${s.today.left} left`).slice(0, 2).join(' · ') || (lists.length ? 'All lists finished' : 'No lists today'), () => prepHome(me), lists.some((s) => !s.today.approved)),
+    count.length || approve.length ? tile('prep', count.length ? 'Count' : 'Approve', count.length ? (count.some((i) => /tonight/i.test(i.label)) ? 'Tonight' : weekdayName(count[0].go.date)) : `${approve.length} list${approve.length === 1 ? '' : 's'}`,
+      [count.length ? count.map((i) => i.title.replace(/^Count /, '')).join(', ') : null, approve.length ? `${approve.length} to approve` : null].filter(Boolean).join(' · '), () => go((count[0] ?? approve[0]).go), true) : null,
+    tile('orders', 'Orders', orders.length ? `${orders.length} due soon` : 'On track', orders[0]?.title ?? 'Nothing due in the next two days', () => (orders.length === 1 ? go(orders[0].go) : ordersScreen(me)), orders.some((i) => i.due === t.today)),
+    inventory.length ? tile('inventory', 'Inventory', `${inventory.length} to count`, inventory.map((i) => i.title.replace(/^Count /, '')).join(', '), () => go(inventory[0].go), true) : null,
+  ].filter(Boolean);
+  return h('nav', { class: 'home-tiles today-tiles', 'aria-label': 'Routine work' }, tiles);
+}
+
+const fmtPct = (v) => `${Math.round(v * 100)}%`;
+const versusText = (now, then, words) => {
+  if (!then) return null;
+  const c = now / then - 1;
+  return h('span', { class: `small ${c >= 0.03 ? 'trend-up' : c <= -0.03 ? 'trend-down' : 'trend-flat'}`, text: `${c >= 0 ? '▲' : '▼'} ${Math.abs(Math.round(c * 100))}% ${words}` });
+};
+/** A box in the side column: its title opens the report behind it; a chart in it can open large. */
+const dashBox = (title, open, expand, ...body) => h('section', { class: 'card tight dash-box' },
+  h('div', { class: 'row tight dash-head' }, h('button', { class: 'linkish grow dash-title', onclick: open }, h('span', { text: title }), h('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })),
+    expand ? h('button', { class: 'link pie-expand', 'aria-label': `Expand ${title}`, title: 'Open it large', onclick: (e) => expand(e.currentTarget) }, '⤢ Expand') : null),
+  ...body);
+
+/** How the restaurant is running, down the side: the last service, the week, prime cost, prices that moved, what earned most, ideas. */
+function dashboardCards(me, d) {
+  const report = (state) => () => reportsScreen(me, state);
+  const boxes = [];
+  const l = d.lastService;
+  if (l) boxes.push(dashBox(`Last service · ${weekdayName(l.day)} ${shortDate(l.day)}`, report({ report: 'sales', range: { from: l.day, to: l.day } }), null,
+    h('div', { class: 'big', text: dollars(l.sales, { exact: true }) }),
+    l.usual ? versusText(l.sales, l.usual.sales, `vs a usual ${weekdayName(l.day)} (${dollars(l.usual.sales, { exact: true })})`) : h('span', { class: 'small muted', text: 'Not enough weeks yet to say what’s usual.' }),
+    h('div', { class: 'dash-stats' },
+      l.orders ? h('div', {}, h('b', { text: l.orders.toLocaleString() }), h('span', { class: 'small muted', text: 'orders' })) : null,
+      l.perOrder ? h('div', {}, h('b', { text: dollars(l.perOrder, { cents: true }) }), h('span', { class: 'small muted', text: 'per order' })) : null,
+      l.laborShare !== undefined ? h('div', {}, h('b', { text: fmtPct(l.laborShare) }), h('span', { class: 'small muted', text: 'labor' })) : null)));
+  const w = d.week;
+  const weekTitle = w.current ? `This week, through ${weekdayName(w.through)}` : `Last week, ${shortDate(w.from)} – ${shortDate(w.through)}`;
+  if (w.total > 0) boxes.push(dashBox(weekTitle, report({ report: 'sales', range: { from: w.from, to: w.through } }), (btn) => openBig(btn, weekTitle, weekChart(w, { large: true })),
+    h('div', { class: 'big', text: dollars(w.total, { exact: true }) }),
+    versusText(w.total, w.before, w.current ? 'vs the same days last week' : 'vs the week before'),
+    weekChart(w)));
+  const weeks = d.prime.weeks;
+  const lw = weeks[weeks.length - 1];
+  if (lw?.primeShare !== undefined) boxes.push(dashBox('Prime cost', report({ report: 'prime', range: { from: d.prime.from, to: d.prime.to } }), weeks.length > 1 ? (btn) => openBig(btn, 'Prime cost, week by week', primeChart(weeks, { large: true })) : null,
+    h('div', { class: 'big', text: fmtPct(lw.primeShare) }),
+    h('div', { class: 'small muted', text: `Week of ${shortDate(lw.week)}: food ${fmtPct(lw.foodShare ?? 0)} · bar ${fmtPct(lw.barShare ?? 0)} · labor ${fmtPct(lw.laborShare ?? 0)}` }),
+    weeks.length > 1 ? primeChart(weeks) : null,
+    h('div', { class: 'small muted', text: 'What was bought plus hourly labor, as a share of sales. Invoices land in lumps, so read the trend.' })));
+  if (d.prices.length) boxes.push(dashBox('Prices that moved', report({ report: 'prices' }), null,
+    h('div', { class: 'list compact' }, d.prices.map((m) => h('div', {}, h('span', { class: 'grow', text: m.product }),
+      h('span', { class: `small ${m.change > 0 ? 'trend-down' : 'trend-up'}`, text: `${m.change > 0 ? '▲' : '▼'} ${Math.abs(Math.round(m.change * 100))}%` }),
+      h('span', { class: 'small muted', text: `${m.perWeek > 0 ? '+' : '−'}${dollars(Math.abs(m.perWeek))}/wk` })))),
+    h('div', { class: 'small muted', text: 'Over 3 months, at your volume.' })));
+  if (d.earners.length) boxes.push(dashBox('Earning most, last 7 days', () => marginsScreen(me), null,
+    h('div', { class: 'list compact' }, d.earners.map((x) => h('div', {}, h('span', { class: 'grow', text: x.name }), h('span', { class: 'small muted', text: `${x.sold} sold` }), h('b', { text: dollars(x.left, { exact: true }) })))),
+    h('div', { class: 'small muted', text: 'Sales minus the recipe’s food cost.' })));
+  const ideas = dashBox('Ideas', () => ideasScreen(me), null, h('div', { class: 'small muted', text: 'Working out what the numbers suggest…' }));
+  api('GET', '/api/ideas').then((r) => {
+    if (!r.ok || !r.data.ideas.length) return ideas.remove();
+    ideas.querySelector('.dash-head').after(h('div', { class: 'big', text: `${dollars(r.data.monthly)}/mo` }));
+    fill(ideas.lastChild, `${r.data.ideas.length} idea${r.data.ideas.length === 1 ? '' : 's'} from the numbers. The biggest: ${r.data.ideas[0].title}`);
+  });
+  boxes.push(ideas);
+  return boxes;
+}
+
+/** The week by day: this week's bar beside last week's, one scale. */
+function weekChart(w, opts = {}) {
+  const W = opts.large ? 760 : 340, H = opts.large ? 260 : 120, B = 20, T = 8;
+  const max = Math.max(...w.days.flatMap((x) => [x.sales ?? 0, x.before ?? 0]), 1);
+  const y = (v) => T + (1 - v / max) * (H - T - B);
+  const bar = (x, v, cls, label) => {
+    if (!v) return null;
+    const top = y(v), bottom = H - B, wd = opts.large ? 30 : 13, r = Math.min(4, (bottom - top) / 2);
+    return s('path', { class: cls, d: `M${x},${bottom}V${top + r}Q${x},${top} ${x + r},${top}H${x + wd - r}Q${x + wd},${top} ${x + wd},${top + r}V${bottom}Z` }, s('title', {}, document.createTextNode(label)));
+  };
+  const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, class: 'dash-chart', role: 'img', 'aria-label': `Sales by day: ${w.days.filter((x) => x.sales).map((x) => `${weekdayName(x.day)} ${dollars(x.sales)}`).join(', ')}` });
+  svg.append(s('line', { x1: 0, x2: W, y1: H - B, y2: H - B, class: 'axis' }));
+  w.days.forEach((x, i) => {
+    const cx = (W / 7) * i + W / 14;
+    const day = weekdayName(x.day).slice(0, 3);
+    [bar(cx - (opts.large ? 32 : 15), x.before, 'bar-before', `${day} last week: ${x.before ? dollars(x.before, { exact: true }) : '–'}`), bar(cx + 2, x.sales, 'bar-now', `${day}: ${x.sales ? dollars(x.sales, { exact: true }) : '–'}`)].forEach((b) => b && svg.append(b));
+    svg.append(s('text', { x: cx, y: H - 4, class: 'tick', 'text-anchor': 'middle' }, document.createTextNode(day)));
+    if (opts.large && x.sales) svg.append(s('text', { x: cx + 17, y: y(x.sales) - 6, class: 'tick strong-tick', 'text-anchor': 'middle' }, document.createTextNode(dollars(x.sales))));
+  });
+  return h('div', { class: 'dash-chart-wrap' }, svg, h('div', { class: 'dash-legend small muted' }, h('span', { class: 'key key-before' }), 'Last week', h('span', { class: 'key key-now' }), w.current ? 'This week' : 'That week'));
+}
+
+/** Prime cost week by week: one line, the last week labeled. */
+function primeChart(weeks, opts = {}) {
+  const W = opts.large ? 760 : 340, H = opts.large ? 240 : 90, L = 4, R = 40, T = 14, B = 18;
+  const vals = weeks.map((w) => w.primeShare ?? 0);
+  const lo = Math.max(0, Math.min(...vals) - 0.05), hi = Math.max(...vals) + 0.05;
+  const x = (i) => L + (i / Math.max(weeks.length - 1, 1)) * (W - L - R);
+  const y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, class: 'dash-chart', role: 'img', 'aria-label': `Prime cost by week: ${weeks.map((w) => `${shortDate(w.week)} ${fmtPct(w.primeShare ?? 0)}`).join(', ')}` });
+  svg.append(s('polyline', { points: vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' '), class: 'prime-line' }));
+  weeks.forEach((w, i) => svg.append(s('circle', { cx: x(i), cy: y(vals[i]), r: 4, class: 'prime-dot' }, s('title', {}, document.createTextNode(`Week of ${shortDate(w.week)}: ${fmtPct(vals[i])} (food ${fmtPct(w.foodShare ?? 0)}, bar ${fmtPct(w.barShare ?? 0)}, labor ${fmtPct(w.laborShare ?? 0)})`)))));
+  if (opts.large) vals.forEach((v, i) => i < vals.length - 1 && svg.append(s('text', { x: x(i), y: y(v) - 10, class: 'tick', 'text-anchor': 'middle' }, document.createTextNode(fmtPct(v)))));
+  svg.append(s('text', { x: x(weeks.length - 1) + 8, y: y(vals[vals.length - 1]) + 4, class: 'tick strong-tick' }, document.createTextNode(fmtPct(vals[vals.length - 1]))));
+  svg.append(s('text', { x: L, y: H - 4, class: 'tick' }, document.createTextNode(shortDate(weeks[0].week))));
+  svg.append(s('text', { x: x(weeks.length - 1), y: H - 4, class: 'tick', 'text-anchor': 'end' }, document.createTextNode(shortDate(weeks[weeks.length - 1].week))));
+  return svg;
 }
 
 /**
