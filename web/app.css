@@ -1321,3 +1321,9 @@ button.donut-row { display: flex; min-width: 0; }
 .check-row.read .dot { width: 24px; flex: none; text-align: center; color: var(--muted); font-size: 20px; }
 button.tag { cursor: pointer; border: 1px solid var(--line); background: var(--card); }
 button.tag.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+/* The quiz bank. */
+.quiz-row { padding: 10px 0; border-top: 1px solid var(--soft); }
+.quiz-row.off .strong { color: var(--muted); text-decoration: line-through; }
+.quiz-form { padding: 10px; background: var(--bg); }
+.quiz-form input, .quiz-form textarea, .quiz-form select { width: 100%; }
+.ok-text { color: var(--green); }

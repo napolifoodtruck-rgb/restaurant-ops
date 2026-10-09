@@ -6545,62 +6545,85 @@ const qShuffle = (a) => { const x = [...a]; for (let i = x.length - 1; i > 0; i-
 const qPick = (a) => a[Math.floor(Math.random() * a.length)];
 const qSame = (a, b) => a.toLowerCase() === b.toLowerCase();
 
-/** Questions from the recipes: what's on it, which dish has these, can someone avoiding X have it, what wine. */
-function quizQuestions(b, scope) {
+/**
+ * Every question the recipes allow, each with a key that stays the same while the dish does
+ * ("allergen|<dish>|milk"), so a manager's edit or switch-off sticks. Wrong options for "what's on it"
+ * are drawn fresh each time.
+ */
+function quizCandidates(b, scope) {
   const all = b.lookup.dishes.filter((d) => d.kind === 'dish' && d.lines.length);
   const pool = scope === 'new' ? all.filter((d) => d.isNew) : all;
   const lines = [...new Set(all.flatMap((d) => d.lines.map(upFirst)))];
   const seenIn = new Map();
   for (const d of all) for (const l of new Set(d.lines.map((x) => x.toLowerCase()))) seenIn.set(l, (seenIn.get(l) ?? 0) + 1);
-  // Every question each dish allows, then a mix: no more than three about one dish.
-  const asked = [];
+  // Not what's on nearly everything (Pizza Dough): what tells a dish apart.
+  const telling = (d) => d.lines.filter((l) => (seenIn.get(l.toLowerCase()) ?? 0) <= Math.max(2, all.length * 0.3));
+  const why = (d) => `${d.name}: ${d.lines.map(upFirst).join(', ')}.`;
+  const out = [];
   for (const d of pool) {
-    for (const kind of ['on', 'which', 'allergen', 'wine']) {
-      if (kind === 'on') {
-        // Not what's on nearly everything (Pizza Dough): what tells this dish apart.
-        const telling = d.lines.filter((l) => (seenIn.get(l.toLowerCase()) ?? 0) <= Math.max(2, all.length * 0.3));
-        if (!telling.length) continue;
-        const right = upFirst(qPick(telling));
-        const wrong = qShuffle(lines.filter((l) => !d.lines.some((x) => qSame(x, l)))).slice(0, 3);
-        if (wrong.length < 3) continue;
-        asked.push({ d, q: `Which of these is on the ${d.name}?`, options: qShuffle([right, ...wrong]), answer: right, why: `${d.name}: ${d.lines.map(upFirst).join(', ')}.` });
-      } else if (kind === 'which') {
-        const two = qShuffle(d.lines.filter((l) => (seenIn.get(l.toLowerCase()) ?? 0) <= Math.max(2, all.length * 0.3))).slice(0, 2);
-        if (two.length < 2) continue;
-        const has = (x) => two.every((l) => x.lines.some((y) => qSame(y, l)));
-        const wrong = qShuffle(all.filter((x) => x.id !== d.id && !has(x))).slice(0, 3).map((x) => x.name);
-        if (wrong.length < 3 || all.some((x) => x.id !== d.id && has(x))) continue;
-        asked.push({ d, q: `Which dish has ${upFirst(two[0])} and ${two[1].toLowerCase()}?`, options: qShuffle([d.name, ...wrong]), answer: d.name, why: `${d.name}: ${d.lines.map(upFirst).join(', ')}.` });
-      } else if (kind === 'allergen') {
-        if (d.unchecked.length || d.unknown.length) continue;
-        const keys = Object.keys(FLOOR_ALLERGENS);
-        for (const key of qShuffle([...(d.contains.length ? [qPick(d.contains)] : []), qPick(keys.filter((k) => !d.contains.includes(k)))].filter(Boolean))) {
-          const label = FLOOR_ALLERGENS[key].toLowerCase();
-          // As it comes, or how it can be made: the crust, a modifier ("No Goat Cheese").
-          const way = (d.ways ?? []).find((w) => !w.contains.includes(key) && !w.unchecked.length);
-          const answer = !d.contains.includes(key) ? 'Yes' : way ? `Yes, with ${way.changes.join(' + ')}` : 'No';
-          const decoy = (d.ways ?? []).find((w) => w !== way && w.contains.includes(key));
-          asked.push({ d, q: `Can a guest avoiding ${label} have the ${d.name}?`, options: qShuffle(['Yes', 'No', ...(way ? [answer] : []), ...(decoy && !way ? [`Yes, with ${decoy.changes.join(' + ')}`] : [])]), answer,
-            why: `${d.name}: ${d.allergyLine}.${way && answer !== 'Yes' ? ` With ${way.changes.join(' + ')}: ${way.allergyLine}.` : ''}${b.allergyNote && /gluten/.test(label) ? ` ${b.allergyNote}` : ''}` });
-        }
-      } else if (kind === 'wine') {
-        if (!d.wines.length || b.lookup.wines.length < 3) continue;
-        const right = d.wines[0];
-        const wrong = qShuffle(b.lookup.wines.map((w) => w.name).filter((n) => !d.wines.includes(n))).slice(0, 3);
-        if (wrong.length < 2) continue;
-        const w = b.lookup.wines.find((x) => x.name === right);
-        asked.push({ d, q: `Which wine would you suggest with the ${d.name}?`, options: qShuffle([right, ...wrong]), answer: right, why: w?.pairings.find((p) => p.recipeId === d.id)?.why ?? `It pairs with the ${d.name}.` });
-      }
+    for (const l of telling(d)) {
+      const wrong = qShuffle(lines.filter((x) => !d.lines.some((y) => qSame(y, x)))).slice(0, 3);
+      if (wrong.length < 3) continue;
+      out.push({ key: `on|${d.id}|${l.toLowerCase()}`, kind: 'on', d, q: `Which of these is on the ${d.name}?`, answer: upFirst(l), wrong, why: why(d) });
+    }
+    const t = telling(d).slice(0, 4);
+    for (let x = 0; x < t.length; x++) for (let y = x + 1; y < t.length; y++) {
+      const two = [t[x], t[y]];
+      const has = (o) => two.every((l) => o.lines.some((z) => qSame(z, l)));
+      if (all.some((o) => o.id !== d.id && has(o))) continue;
+      const wrong = qShuffle(all.filter((o) => o.id !== d.id && !has(o))).slice(0, 3).map((o) => o.name);
+      if (wrong.length < 3) continue;
+      out.push({ key: `which|${d.id}|${two.map((l) => l.toLowerCase()).sort().join('|')}`, kind: 'which', d, q: `Which dish has ${upFirst(two[0])} and ${two[1].toLowerCase()}?`, answer: d.name, wrong, why: why(d) });
+    }
+    if (!d.unchecked.length && !d.unknown.length) for (const key of Object.keys(FLOOR_ALLERGENS)) {
+      const label = FLOOR_ALLERGENS[key].toLowerCase();
+      // As it comes, or how it can be made: the crust, a modifier ("No Goat Cheese").
+      const way = (d.ways ?? []).find((w) => !w.contains.includes(key) && !w.unchecked.length);
+      const answer = !d.contains.includes(key) ? 'Yes' : way ? `Yes, with ${way.changes.join(' + ')}` : 'No';
+      const decoy = (d.ways ?? []).find((w) => w !== way && w.contains.includes(key));
+      const options = ['Yes', 'No', ...(way ? [answer] : []), ...(decoy && !way ? [`Yes, with ${decoy.changes.join(' + ')}`] : [])];
+      out.push({ key: `allergen|${d.id}|${key}`, kind: 'allergen', contains: d.contains.includes(key), d, q: `Can a guest avoiding ${label} have the ${d.name}?`, answer, wrong: [...new Set(options)].filter((o) => o !== answer),
+        why: `${d.name}: ${d.allergyLine}.${way && answer !== 'Yes' ? ` With ${way.changes.join(' + ')}: ${way.allergyLine}.` : ''}${b.allergyNote && /gluten/.test(label) ? ` ${b.allergyNote}` : ''}` });
+    }
+    if (b.lookup.wines.length >= 3) for (const right of d.wines) {
+      const wrong = qShuffle(b.lookup.wines.map((w) => w.name).filter((n) => !d.wines.includes(n))).slice(0, 3);
+      if (wrong.length < 2) continue;
+      const w = b.lookup.wines.find((x) => x.name === right);
+      out.push({ key: `wine|${d.id}|${right.toLowerCase()}`, kind: 'wine', d, q: `Which wine would you suggest with the ${d.name}?`, answer: right, wrong, why: w?.pairings.find((p) => p.recipeId === d.id)?.why ?? `It pairs with the ${d.name}.` });
     }
   }
-  const per = new Map(), out = [];
+  return out;
+}
+
+/** A candidate as a manager left it: their words, or off (null). */
+function quizEdited(c, edits) {
+  const e = edits.get(c.key);
+  if (!e) return c;
+  if (!e.active) return null;
+  return { ...c, edited: true, q: e.question || c.q, answer: e.answer || c.answer, wrong: e.wrong?.length ? e.wrong : c.wrong.filter((w) => w !== (e.answer || c.answer)), why: e.why || c.why };
+}
+
+/** A round of eight: some of the managers' own questions, the rest from the menu, no more than three on one dish. */
+function quizQuestions(b, scope) {
+  const edits = new Map((b.quiz?.edits ?? []).map((e) => [e.key, e]));
+  const cands = quizCandidates(b, scope).map((c) => quizEdited(c, edits)).filter(Boolean);
+  // One question per dish and kind (two for allergens: one it has, one it doesn't), so no kind crowds the rest.
+  const buckets = new Map();
+  for (const c of cands) { const k = `${c.d.id}|${c.kind}`; buckets.set(k, [...(buckets.get(k) ?? []), c]); }
+  const asked = [...buckets.values()].flatMap((list) => list[0].kind === 'allergen'
+    ? [qPick(list.filter((c) => c.contains)), qPick(list.filter((c) => !c.contains))].filter(Boolean)
+    : [qPick(list)]);
+  const newIds = new Set(b.lookup.dishes.filter((d) => d.isNew).map((d) => d.id));
+  const own = qShuffle((b.quiz?.own ?? []).filter((o) => scope !== 'new' || newIds.has(o.dishId))).slice(0, 4)
+    .map((o) => ({ key: `own|${o.id}`, d: { id: `own|${o.id}` }, q: o.question, answer: o.answer, wrong: o.wrong, why: o.why ?? '' }));
+  const per = new Map(), out = [...own];
   for (const q of qShuffle(asked)) {
+    if (out.length >= 8) break;
     if ((per.get(q.d.id) ?? 0) >= 3) continue;
     per.set(q.d.id, (per.get(q.d.id) ?? 0) + 1);
     out.push(q);
-    if (out.length >= 8) break;
   }
-  return out;
+  return qShuffle(out).map((q) => ({ ...q, options: qShuffle([q.answer, ...q.wrong.slice(0, 3)]) }));
 }
 
 /** A quiz, ten seconds a question, nothing kept. */
@@ -6836,7 +6859,7 @@ async function floorManage(me) {
   if (!r.ok) return show(shell(me, 'floor', [h('header', {}, h('h1', { text: 'Service' })), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const d = r.data;
   const reload = () => refreshInPlace(() => floorManage(me));
-  const tabs = h('div', { class: 'seg', role: 'tablist' }, [['tonight', 'Tonight'], ['setup', 'Setup'], ['allergens', 'Allergens & names'], ['wine', 'Wine']].map(([k, label]) =>
+  const tabs = h('div', { class: 'seg', role: 'tablist' }, [['tonight', 'Tonight'], ['setup', 'Setup'], ['allergens', 'Allergens & names'], ['wine', 'Wine'], ['quiz', 'Quiz']].map(([k, label]) =>
     h('button', { class: floorTab === k ? 'on' : '', role: 'tab', 'aria-selected': String(floorTab === k), text: label, onclick: () => { floorTab = k; floorManage(me); } })));
   const onDevice = Boolean(me.device?.floorPostId);
   const header = h('header', { class: 'row wrap' }, h('div', { class: 'grow' }, h('div', { class: 'kicker', text: 'Front of house' }), h('h1', { text: 'Service' })), tabs,
@@ -6845,6 +6868,7 @@ async function floorManage(me) {
   if (floorTab === 'setup') content = floorSetupTab(d, reload);
   else if (floorTab === 'allergens') content = await floorAllergensTab(reload);
   else if (floorTab === 'wine') content = await floorWineTab(reload);
+  else if (floorTab === 'quiz') content = await floorQuizTab(reload);
   else content = floorTonightTab(d, reload);
   show(shell(me, 'floor', [header, content]));
 }
@@ -7075,6 +7099,80 @@ async function floorAllergensTab(reload) {
     d.preps.map((p) => { const input = h('input', { type: 'text', value: p.guestName ?? '', placeholder: p.name, 'aria-label': `Card name for ${p.name}` }); input.addEventListener('change', () => pageAction(async () => { await api('POST', `/api/floor/preps/${p.id}`, { guestName: input.value }); })); return h('label', { class: 'small' }, p.name, input); }));
   return page([h('section', { class: 'card' }, h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, h('h2', { text: 'Allergens and the names servers say' }),
     h('div', { class: 'small muted', text: 'Tag what you buy once; every dish works out its own allergens through its recipes. Suggestions come from Claude: check each before confirming, especially prepared things like salumi.' })), seg), suggest, err, out)], [preps]);
+}
+
+/** The quiz bank: the managers' own questions, and the menu's questions to edit or turn off. */
+async function floorQuizTab(reload) {
+  const [r, q] = await Promise.all([api('GET', '/api/floor/board'), api('GET', '/api/floor/quiz')]);
+  if (!r.ok) return h('div', { class: 'error', text: r.data.error });
+  if (!q.ok) return h('div', { class: 'error', text: q.data.error });
+  const b = r.data;
+  const err = h('div', { class: 'error' });
+  const rows = q.data.questions;
+  const edits = new Map(rows.filter((x) => x.key).map((x) => [x.key, x]));
+  const dishes = b.lookup.dishes.filter((d) => d.kind === 'dish');
+  const save = (payload) => pageAction(async () => { const res = await api('POST', '/api/floor/quiz', payload); if (!res.ok) return (err.textContent = res.data.error); reload(); });
+  // One form for a question: theirs, or one from the menu in their words.
+  const form = (start, onSave, onCancel) => {
+    const question = h('input', { type: 'text', value: start.q ?? '', placeholder: 'e.g. What’s our gelato flight?', 'aria-label': 'Question' });
+    const answer = h('input', { type: 'text', value: start.answer ?? '', placeholder: 'The right answer', 'aria-label': 'Right answer' });
+    const wrong = [0, 1, 2].map((k) => h('input', { type: 'text', value: start.wrong?.[k] ?? '', placeholder: k ? `Another wrong answer (optional)` : 'A wrong answer', 'aria-label': `Wrong answer ${k + 1}` }));
+    const why = h('textarea', { rows: 2, placeholder: 'Shown after they answer (optional)', 'aria-label': 'Why' });
+    why.value = start.why ?? '';
+    const dish = start.withDish ? h('select', { 'aria-label': 'About a dish' }, h('option', { value: '', text: 'Not about one dish' }), dishes.map((d) => h('option', { value: d.id, text: d.name, selected: d.id === start.dishId ? true : undefined }))) : null;
+    return h('div', { class: 'stack quiz-form' }, h('label', { class: 'small' }, 'Question', question), h('label', { class: 'small' }, 'Right answer', answer),
+      h('div', { class: 'small' }, 'Wrong answers', h('div', { class: 'stack tight' }, wrong)), h('label', { class: 'small' }, 'Why', why),
+      dish ? h('label', { class: 'small' }, 'About a dish (so it comes up in the “what’s new” quiz too)', dish) : null,
+      h('div', { class: 'row' }, h('button', { class: 'btn dark', text: 'Save', onclick: () => onSave({ question: question.value, answer: answer.value, wrong: wrong.map((w) => w.value).filter((w) => w.trim()), why: why.value, ...(dish ? { dishId: dish.value || null } : {}) }) }),
+        onCancel ? h('button', { class: 'link', text: 'Cancel', onclick: onCancel }) : null));
+  };
+
+  // Theirs.
+  const own = rows.filter((x) => !x.key && x.active);
+  const ownList = h('div', { class: 'stack' }, own.length ? own.map((o) => {
+    const row = h('div', { class: 'stack tight quiz-row' });
+    const show = () => fill(row, h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'strong', text: o.question }), h('div', { class: 'small' }, h('span', { class: 'ok-text', text: `✓ ${o.answer}` }), h('span', { class: 'muted', text: ` · ${o.wrong.join(' · ')}` })),
+        o.dishId ? h('div', { class: 'small muted', text: `About the ${dishes.find((d) => d.id === o.dishId)?.name ?? 'a dish'}` }) : null),
+      h('button', { class: 'link', text: 'Edit', onclick: () => fill(row, form({ q: o.question, answer: o.answer, wrong: o.wrong, why: o.why, dishId: o.dishId, withDish: true }, (v) => save({ id: o.id, ...v }), show)) }),
+      h('button', { class: 'link', text: 'Remove', onclick: () => save({ id: o.id, active: false }) })));
+    show();
+    return row;
+  }) : h('div', { class: 'small muted', text: 'None yet. Add the things only your team knows: the gelato flight, the house rules, what’s in the wine of the week.' }));
+  const adding = h('div');
+  const addBtn = h('button', { class: 'btn', text: 'Add a question', onclick: () => fill(adding, form({ withDish: true }, (v) => save(v), () => fill(adding))) });
+  const mine = h('section', { class: 'card' }, h('div', { class: 'row' }, h('h2', { class: 'grow', text: 'Your questions' }), addBtn),
+    h('div', { class: 'small muted', text: 'They come up in every round, mixed in with questions from the menu.' }), adding, ownList);
+
+  // From the menu, a dish at a time.
+  const cands = quizCandidates(b, 'all');
+  const KIND = { on: 'What’s on it', which: 'Which dish', allergen: 'Allergens', wine: 'Wine' };
+  const pick = h('select', { 'aria-label': 'Dish' }, h('option', { value: '', text: 'Pick a dish…' }), dishes.filter((d) => cands.some((c) => c.d.id === d.id)).map((d) => h('option', { value: d.id, text: `${d.name} (${cands.filter((c) => c.d.id === d.id).length})` })));
+  const out = h('div', { class: 'stack' });
+  const changed = cands.filter((c) => edits.has(c.key));
+  const candRow = (c) => {
+    const e = edits.get(c.key);
+    const now = quizEdited(c, edits);
+    const row = h('div', { class: `stack tight quiz-row${e && !e.active ? ' off' : ''}` });
+    const show = () => fill(row, h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { class: 'strong', text: (now ?? c).q }),
+        h('div', { class: 'small' }, h('span', { class: 'ok-text', text: `✓ ${(now ?? c).answer}` }), (e?.wrong ?? []).length ? h('span', { class: 'muted', text: ` · ${e.wrong.join(' · ')}` }) : c.kind === 'on' || c.kind === 'which' || c.kind === 'wine' ? h('span', { class: 'muted', text: ' · wrong answers picked from the menu' }) : h('span', { class: 'muted', text: ` · ${c.wrong.join(' · ')}` })),
+        e ? h('div', { class: 'small warn-text', text: e.active ? 'Edited' : 'Turned off' }) : null),
+      e?.active !== false ? h('button', { class: 'link', text: 'Edit', onclick: () => fill(row, form({ q: (now ?? c).q, answer: (now ?? c).answer, wrong: e?.wrong ?? (c.kind === 'allergen' ? c.wrong : []), why: (now ?? c).why }, (v) => save({ key: c.key, ...v, dishId: c.d.id }), show)) }) : null,
+      e?.active === false ? h('button', { class: 'link', text: 'Turn on', onclick: () => save({ key: c.key, reset: true }) }) : h('button', { class: 'link', text: 'Turn off', onclick: () => save({ key: c.key, active: false, dishId: c.d.id }) }),
+      e?.active ? h('button', { class: 'link', text: 'Undo edit', onclick: () => save({ key: c.key, reset: true }) }) : null));
+    show();
+    return row;
+  };
+  const draw = () => {
+    const list = cands.filter((c) => c.d.id === pick.value);
+    if (!pick.value) return fill(out, changed.length ? [h('h3', { text: 'Edited or turned off' }), changed.map(candRow)] : h('div', { class: 'small muted', text: 'Pick a dish to see its questions.' }));
+    fill(out, Object.entries(KIND).map(([k, label]) => { const xs = list.filter((c) => c.kind === k); return xs.length ? [h('h3', { text: label }), xs.map(candRow)] : null; }));
+  };
+  pick.addEventListener('change', draw);
+  draw();
+  const menu = h('section', { class: 'card' }, h('h2', { text: 'Questions from the menu' }),
+    h('div', { class: 'small muted', text: `${cands.length} questions, made from the recipes, allergens and wine pairings, so they follow the menu as it changes. Each round picks eight. Fix one in your own words, or turn off one that doesn’t help.` }),
+    pick, out);
+  return page([err, mine, menu], []);
 }
 
 async function floorWineTab(reload) {

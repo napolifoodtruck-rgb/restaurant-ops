@@ -105,6 +105,14 @@ export function readCardsFile(text: string): (WineSheet & { dishPairings: { dish
   return out;
 }
 
+/** The quiz bank: managers' own questions, and their edits to (or switching off of) questions from the menu. */
+interface QuizRow { id: string; auto_key: string | null; question: string | null; answer: string | null; wrong: unknown; why: string | null; dish_id: string | null; active: boolean }
+const quizView = (r: QuizRow) => ({ id: r.id, ...(r.auto_key ? { key: r.auto_key } : {}), question: r.question, answer: r.answer, wrong: js<string[]>(r.wrong ?? []), why: r.why, dishId: r.dish_id, active: r.active });
+async function quizBank(db: Db, rid: string) {
+  const rows = (await db.query<QuizRow>('SELECT id, auto_key, question, answer, wrong, why, dish_id, active FROM floor_quiz WHERE restaurant_id = $1 ORDER BY updated_at', [rid])).rows;
+  return { own: rows.filter((r) => !r.auto_key && r.active).map(quizView), edits: rows.filter((r) => r.auto_key).map(quizView) };
+}
+
 /** "-- No Goat Cheese" → "No Goat Cheese". */
 const modifierLabel = (name: string) => name.replace(/^[\s+*\-–]+/, '').replace(/\s+/g, ' ').trim();
 
@@ -384,6 +392,7 @@ export async function floorBoard(db: Db, ctx: FloorContext, asked?: string) {
     book, featured,
     gelato: gelato ? { flavors: js(gelato.flavors), panChanges: gelato.pans_on === today ? js(gelato.pan_changes) : [], setAt: gelato.set_at } : null,
     talk, notes, checklists: { opening: checklist('opening'), closing: checklist('closing'), slow },
+    quiz: await quizBank(db, rid),
     lookup: {
       dishes: dishes
         .map((d) => ({ id: d.id, name: d.name, kind: d.kind, area: d.area, ...(d.price !== undefined ? { price: d.price } : {}), ...(d.image ? { image: d.image } : {}),
@@ -492,6 +501,42 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
   // Everything below changes how the Floor is set up: managers only.
   const who = ctx.who;
   if (!who || !atLeast(who.roleLevel, 'manager')) throw new HttpError(who ? 403 : 401, 'A manager signs in to change this.');
+
+  // The quiz bank: every question a manager has written or changed, turned off ones too.
+  if (method === 'GET' && path === '/api/floor/quiz') {
+    const rows = (await db.query<QuizRow>('SELECT id, auto_key, question, answer, wrong, why, dish_id, active FROM floor_quiz WHERE restaurant_id = $1 ORDER BY updated_at DESC', [rid])).rows;
+    return send(res, 200, { questions: rows.map(quizView) }), true;
+  }
+  if (method === 'POST' && path === '/api/floor/quiz') {
+    const b = await body(req);
+    const key = s(b.key, 300) ?? null;
+    const id = typeof b.id === 'string' && /^[0-9a-f-]{36}$/.test(b.id) ? b.id : null;
+    // Back to how the menu makes it: the edit goes.
+    if (b.reset === true && (key || id)) {
+      await db.query('DELETE FROM floor_quiz WHERE restaurant_id = $1 AND (auto_key = $2 OR id = $3)', [rid, key, id]);
+      return send(res, 200, { ok: true }), true;
+    }
+    const question = s(b.question, 300) ?? null, answer = s(b.answer, 200) ?? null;
+    const wrong = (Array.isArray(b.wrong) ? b.wrong : []).map((x: unknown) => s(x, 200)).filter((x: string | undefined): x is string => Boolean(x) && x !== answer).slice(0, 5);
+    const why = s(b.why, 600) ?? null;
+    const dish = typeof b.dishId === 'string' && /^[0-9a-f-]{36}$/.test(b.dishId) ? b.dishId : null;
+    const active = b.active !== false;
+    if (!key && active && (!question || !answer || !wrong.length)) throw new HttpError(400, 'A question, the right answer and at least one wrong one.');
+    if (key) {
+      await db.query(`INSERT INTO floor_quiz (restaurant_id, auto_key, question, answer, wrong, why, dish_id, active, updated_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (restaurant_id, auto_key) WHERE auto_key IS NOT NULL DO UPDATE SET question = coalesce(EXCLUDED.question, floor_quiz.question), answer = coalesce(EXCLUDED.answer, floor_quiz.answer),
+          wrong = CASE WHEN jsonb_array_length(EXCLUDED.wrong) > 0 THEN EXCLUDED.wrong ELSE floor_quiz.wrong END, why = coalesce(EXCLUDED.why, floor_quiz.why), dish_id = coalesce(EXCLUDED.dish_id, floor_quiz.dish_id),
+          active = EXCLUDED.active, updated_by = EXCLUDED.updated_by, updated_at = now()`, [rid, key, question, answer, JSON.stringify(wrong), why, dish, active, who.staffId]);
+      return send(res, 200, { ok: true }), true;
+    }
+    if (id) {
+      if (!active) await db.query('UPDATE floor_quiz SET active = false, updated_by = $3, updated_at = now() WHERE restaurant_id = $1 AND id = $2 AND auto_key IS NULL', [rid, id, who.staffId]);
+      else await db.query('UPDATE floor_quiz SET question = $3, answer = $4, wrong = $5, why = $6, dish_id = $7, active = true, updated_by = $8, updated_at = now() WHERE restaurant_id = $1 AND id = $2 AND auto_key IS NULL', [rid, id, question, answer, JSON.stringify(wrong), why, dish, who.staffId]);
+      return send(res, 200, { ok: true }), true;
+    }
+    const r = await db.query<{ id: string }>('INSERT INTO floor_quiz (restaurant_id, question, answer, wrong, why, dish_id, updated_by) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id', [rid, question, answer, JSON.stringify(wrong), why, dish, who.staffId]);
+    return send(res, 201, { ok: true, id: r.rows[0]!.id }), true;
+  }
 
   if (method === 'GET' && path === '/api/floor/setup') {
     const q = <T>(sql: string, p: unknown[] = [rid]) => db.query<T>(sql, p).then((r) => r.rows);
