@@ -37,7 +37,7 @@ export interface TodayItem {
   due?: string;
   /** Money behind it, for ordering the rest. */
   dollars?: number;
-  go: { to: 'count' | 'review' | 'work' | 'menu' | 'performance' | 'settings' | 'cards' | 'drafts' | 'order' | 'orders' | 'recipeChecks' | 'scan' | 'invoices' | 'inventory'; listId?: string; stationId?: string; date?: string; vendorId?: string; side?: 'kitchen' | 'bar'; scanId?: string };
+  go: { to: 'count' | 'review' | 'work' | 'menu' | 'performance' | 'settings' | 'cards' | 'drafts' | 'order' | 'orders' | 'recipeChecks' | 'scan' | 'invoices' | 'inventory' | 'floor'; listId?: string; stationId?: string; date?: string; vendorId?: string; side?: 'kitchen' | 'bar'; scanId?: string };
   button: string;
   /** The side it's about (a station's side comes from its name: "Bar" is the bar's); none for syncs, which everyone sees. */
   side?: 'kitchen' | 'bar';
@@ -183,6 +183,21 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string, 
     else if (r.finished_at && Date.now() - new Date(r.finished_at).getTime() > 3 * 86_400_000) items.push({ key: `sync:${r.source}:stale`, group: 'setup', label: 'Sync', tone: 'alert', title: `${name} hasn’t synced in ${Math.floor((Date.now() - new Date(r.finished_at).getTime()) / 86_400_000)} days`, go: { to: 'settings' }, button: 'Settings' });
   }
 
+  // Notes left on a Service board at the end of the night (feedback, something broken, what ran low):
+  // first on the list until a manager marks each one seen.
+  const seen = new Set(((await loadBook(db, who.restaurantId)).linkAnswers?.dismissed ?? []).map((d) => d.dedupeKey));
+  const notes = (await db.query<{ id: string; day: string; body: string; by: string | null; post: string | null }>(
+    `SELECT h.id::text AS id, h.day::text AS day, h.body, s.display_name AS by, p.name AS post FROM floor_handoffs h LEFT JOIN staff s ON s.id = h.written_by LEFT JOIN floor_posts p ON p.id = h.post_id
+       WHERE h.restaurant_id = $1 AND h.day >= $2 ORDER BY h.written_at`, [who.restaurantId, addDays(today, -3)])).rows;
+  for (const n of notes.filter((x) => !seen.has(handoffKey(x.id)))) {
+    const when = n.day === addDays(today, -1) ? 'last night' : n.day === today ? 'today' : DAYS[weekday(n.day)]!;
+    items.push({ key: `handoff:${n.id}`, group: 'setup', label: 'From the floor', tone: 'ask', dollars: 2_000_000,
+      title: n.body.length > 400 ? `${n.body.slice(0, 398).trim()}…` : n.body,
+      detail: `${n.by ?? 'Someone'}${n.post ? ` at ${n.post}` : ''}, ${when}`,
+      answers: [{ label: 'Seen', body: { type: 'dismiss', dedupeKey: handoffKey(n.id), note: `Seen: ${n.body.slice(0, 60)}` } }],
+      go: { to: 'floor' }, button: 'Service' });
+  }
+
   // Dishes coming to the menu whose preps aren't on the lists yet.
   const plans = (await db.query<{ id: string; name: string; starts_on: string; section: string | null }>(
     "SELECT id, name, section, starts_on::text AS starts_on FROM menu_plans WHERE restaurant_id = $1 AND status = 'planned' AND starts_on <= $2 ORDER BY starts_on", [who.restaurantId, addDays(today, 21)])).rows;
@@ -279,6 +294,9 @@ async function managerItems(db: Db, who: SignedIn, model: Model, today: string, 
   }
   return items;
 }
+
+/** A board note marked seen on Today. */
+export const handoffKey = (id: string) => `handoff:${id}`;
 
 function shortDate(day: string): string {
   return new Date(`${day}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });

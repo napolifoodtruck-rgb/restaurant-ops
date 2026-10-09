@@ -4266,7 +4266,7 @@ async function todayScreen(me, filter = 'all') {
   const go = (g) => ({
     count: () => prepCount(me, g.stationId, g.date), review: () => prepReview(me, g.stationId, g.date), work: () => prepWork(me, g.stationId, g.date),
     menu: () => menuScreen(me), performance: () => marginsScreen(me), settings: () => home(me),
-    cards: () => cardsScreen(me), drafts: () => draftsScreen(me), recipeChecks: () => { if (g.side) me.side = g.side; recipeChecksScreen(me, { from: returnTo('Today', () => todayScreen(me)) }); }, scan: () => scanScreen(me, g.scanId), invoices: () => invoicesScreen(me), inventory: () => inventoryList(me, g.listId, 'count'), order: () => orderScreen(me, g.vendorId), orders: () => { if (g.side) { me.side = g.side; me.ordersSide = g.side; } ordersScreen(me); },
+    cards: () => cardsScreen(me), drafts: () => draftsScreen(me), recipeChecks: () => { if (g.side) me.side = g.side; recipeChecksScreen(me, { from: returnTo('Today', () => todayScreen(me)) }); }, scan: () => scanScreen(me, g.scanId), invoices: () => invoicesScreen(me), floor: () => floorManage(me), inventory: () => inventoryList(me, g.listId, 'count'), order: () => orderScreen(me, g.vendorId), orders: () => { if (g.side) { me.side = g.side; me.ordersSide = g.side; } ordersScreen(me); },
   })[g.to]?.();
   const targetOf = (b) => (b.type === 'dismiss' ? { dedupeKey: b.dedupeKey } : { catalogId: b.catalogId, itemName: b.itemName, ...(b.variationName ? { variationName: b.variationName } : {}), ...(b.from ? { from: b.from } : {}) });
   // A line folded up in place: what was done, and Undo. Saving happens behind it.
@@ -4325,7 +4325,7 @@ async function todayScreen(me, filter = 'all') {
     const fillNormal = () => fill(actions,
       (i.answers ?? []).map((a, n) => h('button', { class: `btn small-btn${n === 0 ? ' blue' : ''}`, text: a.label, onclick: () => answer(row, i, a) })),
       i.pick ? h('button', { class: 'btn small-btn', text: 'Another recipe…', onclick: pickRecipe }) : null,
-      i.answers?.length ? h('button', { class: 'link', text: `More on ${i.go.to === 'menu' ? 'Menu' : 'its screen'}`, onclick: () => go(i.go) })
+      i.answers?.length ? h('button', { class: 'link', text: `More on ${i.go.to === 'menu' ? 'Menu' : i.go.to === 'floor' ? 'Service' : 'its screen'}`, onclick: () => go(i.go) })
         : h('button', { class: 'btn small-btn dark', text: i.button, onclick: () => go(i.go) }),
       i.snooze?.length ? h('button', { class: 'link snooze-link', text: 'Snooze', title: 'Set it aside for a while, just for you', onclick: choose }) : null);
     // Any recipe we have, found by typing: for a button whose recipe has another name (Katahdin Pizza → Katahdin).
@@ -4624,8 +4624,9 @@ const TODO_TABS = {
   ideas: { name: 'Ideas', color: '#8C6A00', go: (me) => ideasScreen(me) },
   inventory: { name: 'Inventory', color: '#5B4636', go: (me) => inventoryHome(me) },
   setup: { name: 'Settings', color: '#6B6B6B', go: (me) => home(me) },
+  floor: { name: 'Service', color: '#8A2D3B', go: (me) => floorManage(me) },
 };
-const todoTab = (i) => ({ inventory: 'inventory', count: 'prep', review: 'prep', work: 'prep', order: 'orders', orders: 'orders', menu: 'menu', cards: 'recipes', drafts: 'recipes', performance: 'performance', settings: 'setup' })[i.go?.to] ?? (i.group === 'costs' ? 'performance' : i.group === 'setup' ? 'setup' : i.group);
+const todoTab = (i) => ({ floor: 'floor', inventory: 'inventory', count: 'prep', review: 'prep', work: 'prep', order: 'orders', orders: 'orders', menu: 'menu', cards: 'recipes', drafts: 'recipes', performance: 'performance', settings: 'setup' })[i.go?.to] ?? (i.group === 'costs' ? 'performance' : i.group === 'setup' ? 'setup' : i.group);
 const TIME_GROUPS = [['now', 'Today', 'Due today, or late'], ['soon', 'This week', 'Due in the next few days'], ['later', 'Whenever you can', 'No deadline']];
 const plusDays = (d, n) => { const x = new Date(`${d}T12:00:00`); x.setDate(x.getDate() + n); return iso(x); };
 function todoGroupKey(i, today, grouping) {
