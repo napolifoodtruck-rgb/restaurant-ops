@@ -26,7 +26,7 @@ test('every ball on today’s tickets, open or paid; dine-in and takeout apart',
     order({ ticketName: 'Pat to go', lines: [line('Spinaci'), line('4oz Gelato')] }),
     order({ lines: [line('6oz Gelato')] }),
   ], doughOf);
-  assert.deepEqual(t, { used: 8, dineIn: 3, takeout: { online: 4, toGo: 1, total: 5 }, glutenFree: 0, orders: 6, guessed: {}, notCounted: {} });
+  assert.deepEqual(t, { used: 8, dineIn: 3, takeout: { online: 4, toGo: 1, total: 5 }, glutenFree: 0, orders: 6 });
 });
 
 test('cancelled orders and unfinished online carts don’t count', () => {
@@ -57,7 +57,7 @@ test('gluten-free is its own count: no dough ball, and not against takeout', () 
 });
 
 test('what the boards show: left of each count, and takeout out at zero', () => {
-  const tally = { used: 40, dineIn: 28, takeout: { online: 8, toGo: 4, total: 12 }, glutenFree: 3, orders: 30, guessed: {}, notCounted: {} };
+  const tally = { used: 40, dineIn: 28, takeout: { online: 8, toGo: 4, total: 12 }, glutenFree: 3, orders: 30 };
   const b = doughBoard({ start: 120, glutenFreeStart: 10, takeoutCap: 30, tally });
   assert.deepEqual(b.dough, { used: 40, dineIn: 28, start: 120, left: 80 });
   assert.deepEqual(b.glutenFree, { used: 3, start: 10, left: 7 });
@@ -72,12 +72,11 @@ test('what the boards show: left of each count, and takeout out at zero', () => 
   assert.equal(doughBoard({ tally }).takeoutOut, false);
 });
 
-test('items with no recipe: listed, counted by category or not at all', () => {
-  const of: DoughOf = (l) => (l.name === 'Spinaci' ? { balls: 1, glutenFree: 0, guessed: true } : l.name === 'Breadsticks' ? { balls: 0, glutenFree: 0, unknown: true } : doughOf(l));
-  const t = tallyDough([order({ ticketName: 'T1', lines: [line('Spinaci', 0.33333), line('Breadsticks', 2)] }), order({ ticketName: 'T1 - S2', lines: [line('Spinaci', 0.66667)] })], of);
-  assert.equal(t.used, 1);
-  assert.deepEqual(t.guessed, { Spinaci: 1 });
-  assert.deepEqual(t.notCounted, { Breadsticks: 2 });
+test('a side of gluten-free bread is a quarter of a crust', () => {
+  const of: DoughOf = (l) => (l.name === 'Meatballs' ? { balls: 0, glutenFree: l.modifierKeys.length ? 0.25 : 0 } : doughOf(l));
+  const t = tallyDough([order({ ticketName: 'T1', lines: [line('Meatballs', 1, ['meatballs|sub gluten free']), line('Meatballs', 2)] }), order({ ticketName: 'T2', lines: [line('Meatballs', 2, ['meatballs|sub gluten free'])] })], of);
+  assert.equal(t.glutenFree, 0.75);
+  assert.equal(t.used, 0);
 });
 
 test('the takeout number: the night’s own, else the weekday’s', () => {

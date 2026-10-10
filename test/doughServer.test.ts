@@ -59,6 +59,11 @@ test('the dough count', { skip: !db && 'no PostgreSQL for tests (or running as r
     card('Gelato', [[120, 'g', 'Milk, Whole']]),
   ] } })).status, 200);
 
+  // Square's categories, as last sold: the pizzas are in Pizza; the breadsticks and gelato aren't.
+  for (const [id, name, category] of [['var-marg', 'Margherita', 'Pizza'], ['var-bread', 'Neapolitan Breadsticks', 'Apps'], ['var-gelato', 'Gelato', 'Gelato'], ['var-meat', 'Meatball App', 'Apps']]) {
+    await db!.query("INSERT INTO pos_item_sales_daily (restaurant_id, day, catalog_id, item_name, category, quantity, net_sales) VALUES ($1, current_date - 3, $2, $3, $4, 1, 10)", [rid, id, name, category]);
+  }
+
   // The front-of-house iPad at the counter, nobody signed in.
   const counter = (await call('POST', '/api/floor/posts', { cookies: owner, body: { name: 'Counter', kind: 'counter', tables: '' } })).json.id;
   const ipad = (await call('POST', '/api/devices', { cookies: owner, body: { name: 'Counter POS', floorPostId: counter } })).cookies;
@@ -76,37 +81,53 @@ test('the dough count', { skip: !db && 'no PostgreSQL for tests (or running as r
   // gluten-free pizza, a gelato at the counter, and a cancelled table.
   const at = (o: object) => ({ id: `o${orders.length}`, state: 'OPEN', ...o });
   orders.push(
-    at({ ticket_name: 'T9 - 3', state: 'COMPLETED', line_items: [{ name: 'Margherita', quantity: '2' }] }),
-    at({ source: { name: 'Square Online' }, line_items: [{ name: 'Margherita', quantity: '3' }] }),
-    at({ ticket_name: 'Sam to go', line_items: [{ name: 'Breadsticks', quantity: '1' }, { name: 'Margherita', quantity: '1', modifiers: [{ name: 'Gluten Free Crust' }] }] }),
-    at({ line_items: [{ name: 'Gelato', quantity: '1' }] }),
-    at({ ticket_name: 'T2', state: 'CANCELED', line_items: [{ name: 'Margherita', quantity: '4' }] }),
+    at({ ticket_name: 'T9 - 3', state: 'COMPLETED', line_items: [{ catalog_object_id: 'var-marg', name: 'Margherita', quantity: '2' }, { catalog_object_id: 'var-meat', name: 'Meatball App', quantity: '1', modifiers: [{ name: '-- No Focaccia; Sub Gluten Free' }] }] }),
+    at({ source: { name: 'Square Online' }, line_items: [{ catalog_object_id: 'var-marg', name: 'Margherita', quantity: '3' }] }),
+    at({ ticket_name: 'Sam to go', line_items: [{ catalog_object_id: 'var-bread', name: 'Neapolitan Breadsticks', quantity: '1' }, { catalog_object_id: 'var-marg', name: 'Margherita', quantity: '1', modifiers: [{ name: 'Gluten Sensitive Crust' }] }] }),
+    at({ line_items: [{ catalog_object_id: 'var-gelato', name: 'Gelato', quantity: '1' }] }),
+    at({ ticket_name: 'T2', state: 'CANCELED', line_items: [{ catalog_object_id: 'var-marg', name: 'Margherita', quantity: '4' }] }),
   );
 
-  // Managers set the takeout number by weekday; the kitchen enters the start, counted by hand.
+  // Managers set each weekday's presets; the night starts from them, nothing typed.
   const weekday = new Date(`${now.date}T12:00:00Z`).getUTCDay();
-  const week = [null, null, null, null, null, null, null] as (number | null)[];
-  week[weekday] = 5;
-  assert.equal((await call('POST', '/api/floor/dough/settings', { cookies: ipad, body: { takeoutByWeekday: week } })).status, 403, 'not from a board with no one signed in');
-  const s = (await call('POST', '/api/floor/dough/settings', { cookies: owner, body: { takeoutByWeekday: week } })).json;
+  const preset = (n: number) => { const w = [null, null, null, null, null, null, null] as (number | null)[]; w[weekday] = n; return w; };
+  assert.equal((await call('POST', '/api/floor/dough/settings', { cookies: ipad, body: { takeoutByWeekday: preset(5) } })).status, 403, 'not from a board with no one signed in');
+  const s = (await call('POST', '/api/floor/dough/settings', { cookies: owner, body: { doughByWeekday: preset(120), gfByWeekday: preset(10), takeoutByWeekday: preset(5) } })).json;
   assert.equal(s.takeoutByWeekday[weekday], 5);
-  assert.ok(s.doughs.some((d: any) => d.name === 'Pizza Dough' && d.id === s.doughRecipeId), 'the dough found by name');
-  assert.ok(s.doughs.some((d: any) => d.name === 'Gluten Free Dough' && d.id === s.gfRecipeId));
-  assert.equal((await call('POST', '/api/floor/dough', { cookies: ipad, body: { leftOver: 20 } })).status, 401, 'changing a count needs someone signed in');
-  assert.equal((await call('POST', '/api/floor/dough', { cookies: owner, body: { leftOver: -1 } })).status, 400);
+  assert.equal(s.doughByWeekday[weekday], 120);
+  assert.equal(s.doughByWeekday[(weekday + 1) % 7], null);
   resetDoughCache();
-  v = (await call('POST', '/api/floor/dough', { cookies: owner, body: { leftOver: 20, made: 100, gfLeftOver: 4, gfMade: 6 } })).json;
+  v = (await call('GET', '/api/floor/dough', { cookies: ipad })).json;
   assert.deepEqual(v.dough, { used: 6, dineIn: 2, start: 120, left: 114 });
-  assert.deepEqual(v.glutenFree, { used: 1, start: 10, left: 9 });
+  assert.deepEqual(v.glutenFree, { used: 1.25, start: 10, left: 8.75 }, 'a gluten-free pizza, and a quarter crust for the side');
   assert.deepEqual(v.takeout, { online: 3, toGo: 1, total: 4, cap: 5, left: 1 });
-  assert.equal(v.night.planned, 5);
+  assert.deepEqual(v.preset, { dough: 120, gf: 10, takeout: 5 });
+  assert.deepEqual(v.changed, { dough: false, gf: false, takeout: false });
   assert.equal(v.takeoutOut, false);
+
+  // The kitchen counts 100 left, not 114: the night counts down from 100 from here on.
+  assert.equal((await call('POST', '/api/floor/dough', { cookies: ipad, body: { count: 'dough', left: 100 } })).status, 401, 'changing a count needs someone signed in');
+  assert.equal((await call('POST', '/api/floor/dough', { cookies: owner, body: { count: 'dough', left: -1 } })).status, 400);
+  assert.equal((await call('POST', '/api/floor/dough', { cookies: owner, body: { count: 'flour', left: 3 } })).status, 400);
+  v = (await call('POST', '/api/floor/dough', { cookies: owner, body: { count: 'dough', left: 100 } })).json;
+  assert.deepEqual(v.dough, { used: 6, dineIn: 2, start: 106, left: 100 });
+  assert.equal(v.changed.dough, true);
+  orders.push(at({ ticket_name: 'T4', line_items: [{ catalog_object_id: 'var-marg', name: 'Margherita', quantity: '2' }] }));
+  resetDoughCache();
+  assert.equal((await call('GET', '/api/floor/dough', { cookies: ipad })).json.dough.left, 98, 'two more sold: 98');
+  // Gluten-free by the quarter, from what's left now.
+  v = (await call('POST', '/api/floor/dough', { cookies: owner, body: { count: 'gf', left: 6 } })).json;
+  assert.deepEqual(v.glutenFree, { used: 1.25, start: 7.25, left: 6 });
+  // Back to the preset.
+  v = (await call('POST', '/api/floor/dough', { cookies: owner, body: { count: 'dough', reset: true } })).json;
+  assert.equal(v.dough.left, 112);
+  assert.equal(v.changed.dough, false);
 
   // Online ordering is on (a pickup window tonight) until takeout runs out.
   await call('POST', '/api/online/windows/plan', { cookies: owner, body: { cells: [{ weekday, starts: '17:00', maxPizzas: 20 }] } });
   let menu = (await call('GET', '/api/order/menu')).json;
   assert.equal(menu.open, true);
-  orders.push(at({ source: { name: 'Online ordering' }, line_items: [{ name: 'Margherita', quantity: '1' }] }));
+  orders.push(at({ source: { name: 'Online ordering' }, line_items: [{ catalog_object_id: 'var-marg', name: 'Margherita', quantity: '1' }] }));
   resetDoughCache();
   menu = (await call('GET', '/api/order/menu')).json;
   assert.equal(menu.open, false);
@@ -116,14 +137,16 @@ test('the dough count', { skip: !db && 'no PostgreSQL for tests (or running as r
   assert.ok(v.takeoutOut);
 
   // The kitchen adds three: online ordering is back on, and every board sees it.
-  v = (await call('POST', '/api/floor/dough', { cookies: owner, body: { takeoutAdd: 3 } })).json;
+  v = (await call('POST', '/api/floor/dough', { cookies: owner, body: { count: 'takeout', add: 3 } })).json;
   assert.equal(v.takeout.cap, 8);
   assert.equal(v.takeout.left, 3);
-  assert.equal(v.night.changed, true);
+  assert.equal(v.changed.takeout, true);
   assert.equal((await call('GET', '/api/order/menu')).json.open, true);
   assert.equal((await call('GET', '/api/floor/dough', { cookies: ipad })).json.takeout.left, 3);
-  // Back to the day's number.
-  v = (await call('POST', '/api/floor/dough', { cookies: owner, body: { takeoutReset: true } })).json;
+  // "2 left" typed in; then back to the day's number.
+  v = (await call('POST', '/api/floor/dough', { cookies: owner, body: { count: 'takeout', left: 2 } })).json;
+  assert.deepEqual([v.takeout.cap, v.takeout.left], [7, 2]);
+  v = (await call('POST', '/api/floor/dough', { cookies: owner, body: { count: 'takeout', reset: true } })).json;
   assert.equal(v.takeout.cap, 5);
 
   // A failed read from Square never closes online ordering: the last count stays, flagged.

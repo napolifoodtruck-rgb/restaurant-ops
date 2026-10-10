@@ -1269,7 +1269,7 @@ button.donut-row { display: flex; min-width: 0; }
 .gelato-mini { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; font-size: 15px; }
 .gelato-mini .v { color: var(--green); font-size: 13px; }
 .btn.due { border-color: var(--orange); color: var(--orange); }
-.floor-board { grid-template-columns: minmax(0, 1fr) 320px; }
+@media (min-width: 1001px) { .floor-board { grid-template-columns: minmax(0, 1fr) 320px; } }
 .new-card h3 { margin: 0; }
 .new-card ul { margin: 0; padding-left: 18px; }
 .new-photo { width: 100%; max-height: 220px; object-fit: cover; }
@@ -1427,3 +1427,7 @@ input[type=search]:not(.floor-search):not(.search) { height: 48px; border: 1px s
 .dough-field input { width: 140px; font-size: 22px; }
 .dough-total { margin-top: -4px; }
 @media (max-width: 700px) { .dough-tiles { grid-template-columns: 1fr; } .dough-big { font-size: 36px; } }
+/* Dough & takeout presets: seven days and the row names fit the card without scrolling. */
+.takeout-grid th, .takeout-grid td { padding: 4px 3px; }
+.takeout-grid input.amount { width: 60px; padding: 0 4px; font-size: 15px; }
+.takeout-grid tbody th { white-space: normal; max-width: 92px; line-height: 1.2; }

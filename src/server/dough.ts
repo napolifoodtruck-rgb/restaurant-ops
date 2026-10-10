@@ -2,10 +2,13 @@
  * The dough count, live from Square, for the kitchen, counter and host iPads.
  *
  *   GET  /api/floor/dough             tonight's counts: dough and gluten-free left, takeout sold and left
- *   POST /api/floor/dough             { leftOver?, made?, gfLeftOver?, gfMade? } the night's start, counted by hand
- *                                     or { takeout: n } / { takeoutAdd: ±n } / { takeoutReset: true } tonight's takeout number
- *   GET  /api/floor/dough/settings    managers: the takeout number for each weekday, tonight's, and which recipes are the doughs
- *   POST /api/floor/dough/settings    { takeoutByWeekday?: (n | null)[7], tonight?: n | null, doughRecipeId?, gfRecipeId? }
+ *   POST /api/floor/dough             { count: 'dough' | 'gf' | 'takeout', left: n } what's really left right now: counts on from there
+ *                                     or { count, add: ±n } (takeout's quick buttons) or { count, reset: true } back to the weekday's preset
+ *   GET  /api/floor/dough/settings    managers: each weekday's presets
+ *   POST /api/floor/dough/settings    { doughByWeekday?, gfByWeekday?, takeoutByWeekday?: (n | null)[7], Sunday first }
+ *
+ * Each night starts from the weekday's preset; the kitchen changes it whenever the real count
+ * differs ("38 left", not 30): from then on the night counts down from 38.
  *
  * Reading is open to a front-of-house iPad with no one signed in (its board shows the counts);
  * changing a count needs someone signed in. Square is only read: today's orders, at most once a
@@ -21,7 +24,6 @@ import type { FloorContext } from './floor.ts';
 import { getModel } from './model.ts';
 import { usesRecipe } from '../core/allergens.ts';
 import { modifierKey } from '../core/modifiers.ts';
-import { nameKey } from '../core/menuLinks.ts';
 import { doughBoard, takeoutFor, tallyDough, type DoughOf, type DoughTally, type LiveOrder } from '../core/dough.ts';
 import type { SquareCheckout } from '../connectors/squareCheckout.ts';
 
@@ -32,9 +34,8 @@ const REFRESH_MS = 60_000;
 const RULES_MS = 10 * 60_000;
 
 const isGlutenFree = (name: string) => /gluten|\bgf\b/i.test(name);
-const DOUGH_NAME = /^\s*pizza dough\s*$/i;
 
-interface Rules { doughId?: string; gfId?: string; doughOf: DoughOf; at: number; day: string }
+interface Rules { doughOf: DoughOf; at: number; day: string }
 const rulesCache = new Map<string, Rules>();
 interface Live { day: string; at: number; tally?: DoughTally; error?: string; pending?: Promise<void> }
 const liveCache = new Map<string, Live>();
@@ -44,71 +45,79 @@ export function resetDoughCache(restaurantId?: string) {
   if (restaurantId) { rulesCache.delete(restaurantId); liveCache.delete(restaurantId); } else { rulesCache.clear(); liveCache.clear(); }
 }
 
-async function settingsOf(db: Db, rid: string) {
-  const r = (await db.query<{ dough_recipe_id: string | null; gf_recipe_id: string | null; takeout_by_weekday: unknown }>(
-    'SELECT dough_recipe_id, gf_recipe_id, takeout_by_weekday FROM dough_settings WHERE restaurant_id = $1', [rid])).rows[0];
-  const week = (r ? (typeof r.takeout_by_weekday === 'string' ? JSON.parse(r.takeout_by_weekday) : r.takeout_by_weekday) : null) as (number | null)[] | null;
-  return { doughRecipeId: r?.dough_recipe_id ?? null, gfRecipeId: r?.gf_recipe_id ?? null, takeoutByWeekday: (week ?? [null, null, null, null, null, null, null]).map((v) => (v === null ? null : Number(v))) };
+const WEEK_KEYS = { doughByWeekday: 'dough_by_weekday', gfByWeekday: 'gf_by_weekday', takeoutByWeekday: 'takeout_by_weekday' } as const;
+type Week = (number | null)[];
+
+/** Each weekday's presets, Sunday first: dough balls, gluten-free crusts, takeout pizzas. */
+async function settingsOf(db: Db, rid: string): Promise<Record<keyof typeof WEEK_KEYS, Week>> {
+  const r = (await db.query<Record<string, unknown>>('SELECT dough_by_weekday, gf_by_weekday, takeout_by_weekday FROM dough_settings WHERE restaurant_id = $1', [rid])).rows[0];
+  const week = (v: unknown): Week => ((v ? (typeof v === 'string' ? JSON.parse(v) : v) : null) as Week | null ?? [null, null, null, null, null, null, null]).map((x) => (x === null ? null : Number(x)));
+  return { doughByWeekday: week(r?.dough_by_weekday), gfByWeekday: week(r?.gf_by_weekday), takeoutByWeekday: week(r?.takeout_by_weekday) };
 }
 
+/** Tonight's counts where the kitchen changed them. */
 async function nightOf(db: Db, rid: string, day: string) {
-  const r = (await db.query<{ left_over: number | null; made: number | null; gf_left_over: number | null; gf_made: number | null; takeout: number | null; start_at: Date | null; takeout_at: Date | null }>(
-    'SELECT left_over, made, gf_left_over, gf_made, takeout, start_at, takeout_at FROM dough_nights WHERE restaurant_id = $1 AND day = $2', [rid, day])).rows[0];
-  const n = (v: number | null | undefined) => (v === null || v === undefined ? undefined : Number(v));
-  return { leftOver: n(r?.left_over), made: n(r?.made), gfLeftOver: n(r?.gf_left_over), gfMade: n(r?.gf_made), takeout: n(r?.takeout) };
+  const r = (await db.query<{ dough: string | null; gf: string | null; takeout: string | null }>(
+    'SELECT dough, gf, takeout FROM dough_nights WHERE restaurant_id = $1 AND day = $2', [rid, day])).rows[0];
+  const n = (v: string | null | undefined) => (v === null || v === undefined ? undefined : Number(v));
+  return { dough: n(r?.dough), gf: n(r?.gf), takeout: n(r?.takeout) };
 }
 
 /**
- * Which items use a dough ball or a gluten-free crust, from the recipes: anything whose recipe uses
- * the dough (or the gluten-free dough), and the changes that swap one for the other.
+ * Which items use a dough ball or a gluten-free crust. A dough ball: anything in Square's Pizza
+ * category, and the breadsticks (the one dough item outside it). Not by recipe: the focaccia on a
+ * side uses some dough, but not a ball, and a new pizza counts before anyone writes its recipe. Rung
+ * gluten-free, a pizza or breadsticks takes a gluten-free crust instead; a side of gluten-free bread
+ * on anything else (meatballs, ricotta) takes a quarter of one.
  */
 async function rulesFor(db: Db, rid: string, today: string): Promise<Rules> {
   const had = rulesCache.get(rid);
   if (had && had.day === today && Date.now() - had.at < RULES_MS) return had;
-  const settings = await settingsOf(db, rid);
   const model = await getModel(db, rid, today);
   const recipes = model.book.recipes;
-  const all = [...recipes.values()];
-  const doughId = settings.doughRecipeId ?? all.find((r) => DOUGH_NAME.test(r.name))?.id ?? all.find((r) => /dough/i.test(r.name) && !isGlutenFree(r.name))?.id;
-  const gfId = settings.gfRecipeId ?? all.find((r) => /dough|crust/i.test(r.name) && isGlutenFree(r.name))?.id;
+  const gfId = [...recipes.values()].find((r) => /dough|crust/i.test(r.name) && isGlutenFree(r.name))?.id;
   const uses = (recipeId: string | undefined, target: string | undefined) => Boolean(recipeId && target && (recipeId === target || usesRecipe(recipeId, target, recipes)));
   const answers = model.modifierAnswers;
   const addsGf = (key: string) => (answers.adds[key] ?? []).some((a) => a.item.kind === 'recipe' && uses(a.item.id, gfId));
-  const takesDough = (recipeId: string, key: string) => {
-    const r = answers.removes[`${recipeId}|${key}`] ?? answers.removes[`*|${key}`];
-    return Boolean(r && r.kind === 'recipe' && uses(recipeId, r.id) && uses(r.id, doughId));
-  };
-  const byName = new Map(all.filter((r) => r.kind !== 'prep').map((r) => [nameKey(r.name), r.id]));
-  // Each item's Square category, as last sold; the categories that sell dough items.
-  const categoryOf = new Map((await db.query<{ catalog_id: string; item_name: string; category: string | null }>(
-    "SELECT DISTINCT ON (catalog_id) catalog_id, item_name, category FROM pos_item_sales_daily WHERE restaurant_id = $1 AND catalog_id <> '' AND day >= $2::date - 120 ORDER BY catalog_id, day DESC", [rid, today])).rows
-    .map((r) => [r.catalog_id, { name: r.item_name, category: r.category ?? '' }]));
-  const doughCategories = new Set([...categoryOf].filter(([id, x]) => uses(model.lookup(id, x.name, today)?.recipeId ?? byName.get(nameKey(x.name)), doughId)).map(([, x]) => x.category).filter(Boolean));
+  const categoryOf = await categoriesOf(db, rid, today);
   const cache = new Map<string, ReturnType<DoughOf>>();
   const doughOf: DoughOf = (line) => {
     const k = `${line.catalogId ?? ''}|${line.name}|${line.modifierKeys.join(',')}`;
     const hit = cache.get(k);
     if (hit) return hit;
-    // Linked to its recipe on Menu; else a recipe of the very same name (a special rung tonight, not linked yet).
-    const recipeId = (line.catalogId ? model.lookup(line.catalogId, line.name, today)?.recipeId : undefined) ?? byName.get(nameKey(line.name));
-    let out: ReturnType<DoughOf> = { balls: 0, glutenFree: 0 };
+    const category = (line.catalogId && categoryOf.get(line.catalogId)) || '';
+    const dough = /pizza/i.test(category) || BREADSTICKS.test(line.name);
     const gfRung = line.modifierKeys.some((key) => addsGf(key) || isGlutenFree(key.split('|')[1] ?? ''));
-    if (recipeId) {
-      const dough = uses(recipeId, doughId);
-      const swapped = dough && (gfRung || line.modifierKeys.some((key) => takesDough(recipeId, key)));
-      out = { balls: dough && !swapped ? 1 : 0, glutenFree: uses(recipeId, gfId) || swapped ? 1 : 0 };
-    } else {
-      // No recipe yet: a pizza by its Square category still takes a ball; something else sold beside the dough items is flagged.
-      const category = (line.catalogId && categoryOf.get(line.catalogId)?.category) || '';
-      if (/pizza/i.test(category)) out = { balls: gfRung ? 0 : 1, glutenFree: gfRung ? 1 : 0, guessed: true };
-      else if (category && doughCategories.has(category)) out = { balls: 0, glutenFree: 0, unknown: true };
-    }
+    // A dish that's gluten-free as it comes (its own button, or made with the gluten-free dough).
+    const recipeId = line.catalogId ? model.lookup(line.catalogId, line.name, today)?.recipeId : undefined;
+    const gfDish = isGlutenFree(line.name) || uses(recipeId, gfId);
+    const out = dough
+      ? (gfRung || gfDish ? { balls: 0, glutenFree: 1 } : { balls: 1, glutenFree: 0 })
+      : { balls: 0, glutenFree: gfRung ? 0.25 : gfDish ? 1 : 0 };
     cache.set(k, out);
     return out;
   };
-  const rules = { ...(doughId ? { doughId } : {}), ...(gfId ? { gfId } : {}), doughOf, at: Date.now(), day: today };
+  const rules = { doughOf, at: Date.now(), day: today };
   rulesCache.set(rid, rules);
   return rules;
+}
+
+const BREADSTICKS = /bread\s*sticks?/i;
+
+/** Each size's Square category: from the catalog (an item added today has no sales yet), else as last sold. */
+async function categoriesOf(db: Db, rid: string, today: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const r of (await db.query<{ catalog_id: string; category: string | null }>(
+    "SELECT DISTINCT ON (catalog_id) catalog_id, category FROM pos_item_sales_daily WHERE restaurant_id = $1 AND catalog_id <> '' AND day >= $2::date - 120 ORDER BY catalog_id, day DESC", [rid, today])).rows) if (r.category) out.set(r.catalog_id, r.category);
+  const objects = (await db.query<{ data: any }>("SELECT data FROM pos_catalog WHERE restaurant_id = $1 AND type IN ('ITEM', 'CATEGORY')", [rid])).rows.map((r) => (typeof r.data === 'string' ? JSON.parse(r.data) : r.data));
+  const names = new Map(objects.filter((o) => o.type === 'CATEGORY').map((o) => [o.id, o.category_data?.name ?? '']));
+  for (const o of objects) {
+    if (o.type !== 'ITEM') continue;
+    const d = o.item_data ?? {};
+    const name = names.get(d.reporting_category?.id ?? d.categories?.[0]?.id ?? d.category_id);
+    if (name) for (const v of d.variations ?? []) out.set(v.id, name);
+  }
+  return out;
 }
 
 /** Square's orders as the count reads them: ticket, source, and each line with the changes rung on it. */
@@ -166,22 +175,20 @@ async function tallyFor(db: Db, rid: string, today: string, timezone: string, sq
   return live;
 }
 
-const EMPTY: DoughTally = { used: 0, dineIn: 0, takeout: { online: 0, toGo: 0, total: 0 }, glutenFree: 0, orders: 0, guessed: {}, notCounted: {} };
+const EMPTY: DoughTally = { used: 0, dineIn: 0, takeout: { online: 0, toGo: 0, total: 0 }, glutenFree: 0, orders: 0 };
 
-/** Tonight's counts, as every board shows them. */
+/** Tonight's counts, as every board shows them: from the weekday's presets, or where the kitchen changed them. */
 export async function doughView(db: Db, rid: string, today: string, timezone: string, square: DoughSquare | undefined, fresh = false) {
   const [settings, night, live] = await Promise.all([settingsOf(db, rid), nightOf(db, rid, today), tallyFor(db, rid, today, timezone, square, fresh)]);
-  const sum = (a?: number, b?: number) => (a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0));
-  const start = sum(night.leftOver, night.made), gfStart = sum(night.gfLeftOver, night.gfMade);
-  const planned = takeoutFor(today, settings.takeoutByWeekday);
-  const cap = takeoutFor(today, settings.takeoutByWeekday, night.takeout);
-  const board = doughBoard({ ...(start !== undefined ? { start } : {}), ...(gfStart !== undefined ? { glutenFreeStart: gfStart } : {}), ...(cap !== undefined ? { takeoutCap: cap } : {}), tally: live.tally ?? EMPTY });
+  const preset = { dough: takeoutFor(today, settings.doughByWeekday), gf: takeoutFor(today, settings.gfByWeekday), takeout: takeoutFor(today, settings.takeoutByWeekday) };
+  const from = { dough: night.dough ?? preset.dough, gf: night.gf ?? preset.gf, takeout: night.takeout ?? preset.takeout };
+  const board = doughBoard({ ...(from.dough !== undefined ? { start: from.dough } : {}), ...(from.gf !== undefined ? { glutenFreeStart: from.gf } : {}), ...(from.takeout !== undefined ? { takeoutCap: from.takeout } : {}), tally: live.tally ?? EMPTY });
   return {
     day: today,
     ...board,
-    night: { ...night, ...(planned !== undefined ? { planned } : {}), changed: night.takeout !== undefined && night.takeout !== planned },
-    // For managers to fix on Menu: items with no recipe, counted by category or not at all.
-    ...(Object.keys(live.tally?.guessed ?? {}).length || Object.keys(live.tally?.notCounted ?? {}).length ? { check: { guessed: live.tally!.guessed, notCounted: live.tally!.notCounted } } : {}),
+    // The weekday's presets, and which counts the kitchen changed tonight.
+    preset,
+    changed: { dough: night.dough !== undefined, gf: night.gf !== undefined, takeout: night.takeout !== undefined },
     asOf: live.at ? new Date(live.at).toISOString() : null,
     ...(live.error ? { problem: live.error } : {}),
   };
@@ -192,7 +199,7 @@ export async function takeoutOut(db: Db, rid: string, today: string, timezone: s
   try {
     // No takeout number tonight: nothing to run out of, and no need to ask Square.
     const [settings, night] = await Promise.all([settingsOf(db, rid), nightOf(db, rid, today)]);
-    if (takeoutFor(today, settings.takeoutByWeekday, night.takeout) === undefined) return { out: false };
+    if (night.takeout === undefined && takeoutFor(today, settings.takeoutByWeekday) === undefined) return { out: false };
     const v = await doughView(db, rid, today, timezone, square);
     // Not read from Square yet, or the last read failed: never closes online ordering on a guess.
     if (!v.asOf || v.problem) return { out: false };
@@ -210,6 +217,9 @@ const count = (v: unknown, what: string) => {
   return n;
 };
 
+const COUNTS = { dough: 'dough', gf: 'gf', takeout: 'takeout' } as const;
+type CountKey = keyof typeof COUNTS;
+
 export async function doughRoutes(db: Db, req: IncomingMessage, res: ServerResponse, path: string, method: string, ctx: FloorContext, timezone: string, square: DoughSquare | undefined): Promise<boolean> {
   if (path !== '/api/floor/dough' && path !== '/api/floor/dough/settings') return false;
   const rid = ctx.restaurantId, today = ctx.today;
@@ -219,24 +229,26 @@ export async function doughRoutes(db: Db, req: IncomingMessage, res: ServerRespo
     if (method !== 'POST') throw new HttpError(404, 'Not found.');
     if (!ctx.who) throw new HttpError(401, 'Sign in to change the counts.');
     const b = await body(req);
-    const staff = ctx.who.staffId;
-    await db.query('INSERT INTO dough_nights (restaurant_id, day) VALUES ($1, $2) ON CONFLICT DO NOTHING', [rid, today]);
-    const startKeys = { leftOver: 'left_over', made: 'made', gfLeftOver: 'gf_left_over', gfMade: 'gf_made' } as const;
-    const startChanges = Object.entries(startKeys).filter(([k]) => k in b);
-    for (const [k, col] of startChanges) await db.query(`UPDATE dough_nights SET ${col} = $3, start_by = $4, start_at = now() WHERE restaurant_id = $1 AND day = $2`, [rid, today, count(b[k], 'A count'), staff]);
-    let takeout: number | null | undefined;
-    if (b.takeoutReset === true) takeout = null;
-    else if ('takeout' in b) takeout = count(b.takeout, 'Takeout pizzas');
-    else if ('takeoutAdd' in b) {
-      const add = Number(b.takeoutAdd);
-      if (!Number.isInteger(add) || Math.abs(add) > 500) throw new HttpError(400, 'Add or take off a whole number of pizzas.');
-      const v = await doughView(db, rid, today, timezone, square);
-      if (v.takeout.cap === undefined) throw new HttpError(409, 'There’s no takeout number tonight. A manager sets one in Settings, or type one in.');
-      takeout = Math.max(0, v.takeout.cap + add);
+    if (typeof b.count !== 'string' || !(b.count in COUNTS)) throw new HttpError(400, 'Which count: dough, gluten-free or takeout?');
+    const key = b.count as CountKey;
+    let from: number | null;
+    if (b.reset === true) from = null;
+    else {
+      // Counted from what's used so far, read fresh from Square, so "38 left" is 38 left now.
+      const v = await doughView(db, rid, today, timezone, square, true);
+      const used = key === 'dough' ? v.dough.used : key === 'gf' ? v.glutenFree.used : v.takeout.total;
+      const left = key === 'dough' ? v.dough.left : key === 'gf' ? v.glutenFree.left : v.takeout.left;
+      if ('left' in b) from = used + count(b.left, 'What’s left')!;
+      else if ('add' in b) {
+        const add = Number(b.add);
+        if (!Number.isInteger(add) || Math.abs(add) > 500) throw new HttpError(400, 'Add or take off a whole number.');
+        if (left === undefined) throw new HttpError(409, 'There’s no number to change tonight. Type what’s left instead.');
+        from = Math.max(used, used + left + add);
+      } else throw new HttpError(400, 'Nothing to change.');
     }
-    if (takeout !== undefined) await db.query('UPDATE dough_nights SET takeout = $3, takeout_by = $4, takeout_at = now() WHERE restaurant_id = $1 AND day = $2', [rid, today, takeout, staff]);
-    if (!startChanges.length && takeout === undefined) throw new HttpError(400, 'Nothing to change.');
-    return send(res, 200, await doughView(db, rid, today, timezone, square, takeout !== undefined)), true;
+    await db.query(`INSERT INTO dough_nights (restaurant_id, day, ${COUNTS[key]}, changed_by, changed_at) VALUES ($1, $2, $3, $4, now())
+      ON CONFLICT (restaurant_id, day) DO UPDATE SET ${COUNTS[key]} = EXCLUDED.${COUNTS[key]}, changed_by = EXCLUDED.changed_by, changed_at = now()`, [rid, today, from, ctx.who.staffId]);
+    return send(res, 200, await doughView(db, rid, today, timezone, square)), true;
   }
 
   // Settings: managers.
@@ -244,27 +256,12 @@ export async function doughRoutes(db: Db, req: IncomingMessage, res: ServerRespo
   if (method === 'POST') {
     const b = await body(req);
     await db.query('INSERT INTO dough_settings (restaurant_id) VALUES ($1) ON CONFLICT DO NOTHING', [rid]);
-    if ('takeoutByWeekday' in b) {
-      if (!Array.isArray(b.takeoutByWeekday) || b.takeoutByWeekday.length !== 7) throw new HttpError(400, 'A number (or none) for each day of the week, Sunday first.');
-      await db.query('UPDATE dough_settings SET takeout_by_weekday = $2::jsonb, updated_by = $3, updated_at = now() WHERE restaurant_id = $1', [rid, JSON.stringify(b.takeoutByWeekday.map((v) => (v === '' || v === undefined ? null : count(v, 'Takeout pizzas')))), ctx.who.staffId]);
-    }
-    for (const [k, col] of [['doughRecipeId', 'dough_recipe_id'], ['gfRecipeId', 'gf_recipe_id']] as const) {
+    for (const [k, col] of Object.entries(WEEK_KEYS)) {
       if (!(k in b)) continue;
-      const id = b[k];
-      if (id !== null && (typeof id !== 'string' || !/^[0-9a-f-]{36}$/.test(id))) throw new HttpError(400, 'Pick a recipe.');
-      await db.query(`UPDATE dough_settings SET ${col} = $2, updated_by = $3, updated_at = now() WHERE restaurant_id = $1`, [rid, id, ctx.who.staffId]);
-      rulesCache.delete(rid);
-      liveCache.delete(rid);
-    }
-    if ('tonight' in b) {
-      await db.query('INSERT INTO dough_nights (restaurant_id, day) VALUES ($1, $2) ON CONFLICT DO NOTHING', [rid, today]);
-      await db.query('UPDATE dough_nights SET takeout = $3, takeout_by = $4, takeout_at = now() WHERE restaurant_id = $1 AND day = $2', [rid, today, count(b.tonight, 'Takeout pizzas'), ctx.who.staffId]);
+      const v = b[k];
+      if (!Array.isArray(v) || v.length !== 7) throw new HttpError(400, 'A number (or none) for each day of the week, Sunday first.');
+      await db.query(`UPDATE dough_settings SET ${col} = $2::jsonb, updated_by = $3, updated_at = now() WHERE restaurant_id = $1`, [rid, JSON.stringify(v.map((x) => (x === '' || x === undefined || x === null ? null : count(x, 'Each day’s number')))), ctx.who.staffId]);
     }
   } else if (method !== 'GET') throw new HttpError(404, 'Not found.');
-  const settings = await settingsOf(db, rid);
-  const rules = await rulesFor(db, rid, today);
-  const model = await getModel(db, rid, today);
-  const doughs = [...model.book.recipes.values()].filter((r) => /dough|crust/i.test(r.name)).map((r) => ({ id: r.id, name: r.name })).sort((a, b) => a.name.localeCompare(b.name));
-  const night = await nightOf(db, rid, today);
-  return send(res, 200, { today, ...settings, doughRecipeId: rules.doughId ?? null, gfRecipeId: rules.gfId ?? null, chosen: { dough: settings.doughRecipeId !== null, gf: settings.gfRecipeId !== null }, doughs, tonight: night.takeout ?? null }), true;
+  return send(res, 200, { today, ...(await settingsOf(db, rid)) }), true;
 }

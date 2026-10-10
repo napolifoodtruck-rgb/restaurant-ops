@@ -2,9 +2,10 @@
  * The dough count: how many dough balls and gluten-free crusts are left tonight, and how many
  * takeout pizzas. Pure: the server reads Square's orders for today and hands them in.
  *
- * One dough ball per item whose recipe uses the dough recipe, at any depth (a pizza, breadsticks).
- * A gluten-free crust is its own count: a dish rung with it (or made with the gluten-free dough)
- * uses a crust and no dough ball, and doesn't count against the takeout number.
+ * One dough ball per pizza or breadsticks: anything in Square's Pizza category, and the breadsticks.
+ * A gluten-free crust is its own count: a pizza rung gluten-free uses a crust and no dough ball, and
+ * doesn't count against the takeout number; a side of gluten-free bread (meatballs, ricotta) uses a
+ * quarter of a crust.
  *
  * Takeout is anything without a table number: online orders, phone orders, a to-go ticket at the
  * counter. Table tickets are "T9 - 3", "T8 - S2" (a split check: a third of a pizza on each). The
@@ -30,12 +31,8 @@ export interface LiveOrder {
   lines: readonly LiveLine[];
 }
 
-/**
- * What one of a line uses: dough balls and gluten-free crusts, each 0 or 1. `guessed`: no recipe
- * says so, it's counted from its Square category (a pizza); `unknown`: no recipe, and it sells
- * beside dough items (breadsticks among the apps?), so it isn't counted but a manager should look.
- */
-export type DoughOf = (line: LiveLine) => { balls: number; glutenFree: number; guessed?: boolean; unknown?: boolean };
+/** What one of a line uses: dough balls (0 or 1) and gluten-free crusts (0, ¼ or 1). */
+export type DoughOf = (line: LiveLine) => { balls: number; glutenFree: number };
 
 export const isTableTicket = (name?: string) => /^\s*T\s*\d+/i.test(name ?? '');
 export const isOnline = (source?: string) => /online/i.test(source ?? '');
@@ -47,19 +44,15 @@ export interface DoughTally {
   dineIn: number;
   /** Of them, to go. */
   takeout: { online: number; toGo: number; total: number };
-  /** Gluten-free crusts on today's tickets. */
+  /** Gluten-free crusts on today's tickets, to the quarter. */
   glutenFree: number;
   /** Orders read (not cancelled, not drafts). */
   orders: number;
-  /** Items without a recipe: counted as pizzas by their category, or not counted at all. Name → how many. */
-  guessed: Record<string, number>;
-  notCounted: Record<string, number>;
 }
 
 /** Today's orders, open and paid, into dough balls and crusts used. Cancelled orders and unfinished online carts (drafts) don't count. */
 export function tallyDough(orders: readonly LiveOrder[], doughOf: DoughOf): DoughTally {
   let dineIn = 0, online = 0, toGo = 0, gf = 0, n = 0;
-  const guessed: Record<string, number> = {}, notCounted: Record<string, number> = {};
   for (const o of orders) {
     if (o.state === 'CANCELED' || o.state === 'DRAFT') continue;
     n++;
@@ -69,8 +62,6 @@ export function tallyDough(orders: readonly LiveOrder[], doughOf: DoughOf): Doug
       const d = doughOf(l);
       balls += q * d.balls;
       gf += q * d.glutenFree;
-      if (d.guessed) guessed[l.name] = (guessed[l.name] ?? 0) + q;
-      if (d.unknown) notCounted[l.name] = (notCounted[l.name] ?? 0) + q;
     }
     if (isTableTicket(o.ticketName)) dineIn += balls;
     else if (isOnline(o.source)) online += balls;
@@ -79,8 +70,7 @@ export function tallyDough(orders: readonly LiveOrder[], doughOf: DoughOf): Doug
   // Thirds of a pizza on split checks add back up to whole ones.
   const whole = (v: number) => Math.round(v + 1e-6);
   const t = { online: whole(online), toGo: whole(toGo) };
-  const round = (r: Record<string, number>) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, whole(v)]).filter(([, v]) => (v as number) > 0));
-  return { used: whole(dineIn + online + toGo), dineIn: whole(dineIn), takeout: { ...t, total: t.online + t.toGo }, glutenFree: whole(gf), orders: n, guessed: round(guessed), notCounted: round(notCounted) };
+  return { used: whole(dineIn + online + toGo), dineIn: whole(dineIn), takeout: { ...t, total: t.online + t.toGo }, glutenFree: Math.round(gf * 4 + 1e-6) / 4, orders: n };
 }
 
 export interface DoughNumbers {
