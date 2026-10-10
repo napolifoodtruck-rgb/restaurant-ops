@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cleanRead, readInvoice } from '../src/connectors/claudeInvoices.ts';
-import { itemKey, matchInvoice, parsePack, vendorKey, type MatchInput } from '../src/core/invoiceMatch.ts';
+import { autoCountable, itemKey, matchInvoice, parsePack, vendorKey, type MatchInput } from '../src/core/invoiceMatch.ts';
 
 test('packs as printed', () => {
   assert.deepEqual(parsePack('6/5 LB'), { amount: 30, unit: 'lb' });
@@ -73,4 +73,26 @@ test('a page sent again: lines already saved are marked; hand corrections flagge
   const m = matchInvoice(base({ read, invoices: [{ externalId: 'inv-1', source: 'app', vendorKey: 'v-produce', number: 'A-9', total: 80, lines: [{ description: 'Basil fresh', total: 24 }] }] }));
   assert.equal(m.duplicateOf?.source, 'app');
   assert.deepEqual(m.lines.map((l) => l.flags), [['handwritten', 'alreadyIn'], []]);
+});
+
+test('an emailed invoice counts on its own only when nothing on it is new or odd', () => {
+  // Basil from history, tomatoes learned, the total right: counts.
+  const clean = { ...base().read, lines: base().read.lines.slice(0, 2), total: 54 };
+  const learned = new Map([['v-produce|tomatoes roma', { productId: 'p-tom', per: 25 }]]);
+  const ok = autoCountable(matchInvoice(base({ read: clean, learned })));
+  assert.equal(ok.ok, true);
+  assert.deepEqual(ok.ok && ok.lines.map((l) => [l.productId, l.baseQuantity]), [['p-basil', 2], ['p-tom', 25]]);
+  // A new vendor waits for one check.
+  assert.match((autoCountable(matchInvoice(base({ read: { ...clean, vendor: 'Someone New' }, learned }))) as any).why, /^New vendor/);
+  // A line only guessed by its name waits (tomatoes, nothing learned).
+  assert.match((autoCountable(matchInvoice(base({ read: clean }))) as any).why, /^1 new item/);
+  // Lines that don't add up to the printed total wait.
+  assert.match((autoCountable(matchInvoice(base({ read: { ...clean, total: 60 }, learned }))) as any).why, /don’t add up/);
+  // A big price change waits.
+  const jump = { ...clean, lines: [{ ...clean.lines[0]!, unitPrice: 30, total: 60 }, clean.lines[1]!], total: 90 };
+  assert.match((autoCountable(matchInvoice(base({ read: jump, learned }))) as any).why, /price changed a lot/);
+  // Already saved here: what's new on it is checked by hand.
+  assert.match((autoCountable(matchInvoice(base({ read: clean, learned, invoices: [{ externalId: 'i1', source: 'app', vendorKey: 'v-produce', number: 'A-9', total: 54, lines: [] }] }))) as any).why, /Already saved/);
+  // MarginEdge has it: still counts (compared, and ours is the one that counts).
+  assert.equal(autoCountable(matchInvoice(base({ read: clean, learned, invoices: [{ externalId: 'me-1', source: 'marginedge', vendorKey: 'v-produce', number: 'A-9', total: 54 }] }))).ok, true);
 });

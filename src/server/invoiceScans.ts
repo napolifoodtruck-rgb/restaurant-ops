@@ -22,7 +22,8 @@ import { getModel, invalidate, type Model } from './model.ts';
 import { appendAppInvoiceLines, baseOf, createAppInvoice } from './appInvoices.ts';
 import { replaceMarginEdgeCopy } from './meImport.ts';
 import { readInvoice, ReaderError, type ReadInvoice, type ReadPage } from '../connectors/claudeInvoices.ts';
-import { itemKey, matchInvoice, vendorKey, type Learned, type PastLine } from '../core/invoiceMatch.ts';
+import { autoCountable, itemKey, matchInvoice, vendorKey, type Learned, type PastLine } from '../core/invoiceMatch.ts';
+import { localNow } from './online.ts';
 import { packBaseOf } from '../core/purchasing.ts';
 import { claudeSettings } from '../connectors/claude.ts';
 
@@ -39,7 +40,7 @@ async function ourVendors(db: Db, restaurantId: string) {
 }
 
 /** Reads a scan's pages and stores what came back (or why it couldn't). */
-export async function readScan(db: Db, restaurantId: string, scanId: string): Promise<void> {
+export async function readScan(db: Db, restaurantId: string, scanId: string, after?: () => Promise<unknown>): Promise<void> {
   const apiKey = scanSettings.apiKey();
   try {
     if (!apiKey) throw new ReaderError('The invoice reader isn’t connected yet (ANTHROPIC_API_KEY in Render).');
@@ -50,10 +51,12 @@ export async function readScan(db: Db, restaurantId: string, scanId: string): Pr
     const r = await readInvoice(pages.map((p) => ({ mediaType: p.media_type, data: bytes(p.data) })), { apiKey, vendors, fetch: scanSettings.fetch as typeof fetch, ...(model_ ? { model: model_ } : {}), ...(baseUrl ? { baseUrl } : {}) });
     await db.query("UPDATE invoice_scans SET status = 'read', result = $2, usage = $3, error = NULL, updated_at = now() WHERE id = $1", [scanId, JSON.stringify(r.invoice), JSON.stringify({ ...r.usage, model: r.model })]);
   } catch (err) {
+    after = undefined;
     const message = err instanceof ReaderError ? err.message : 'Couldn’t read it. Try again, or type it in.';
     if (!(err instanceof ReaderError)) console.error(`[invoice scan ${scanId}]`, err);
     await db.query("UPDATE invoice_scans SET status = 'failed', error = $2, updated_at = now() WHERE id = $1", [scanId, message]);
   }
+  await after?.().catch((err) => console.error(`[invoice scan ${scanId}] after reading`, err));
 }
 
 /** What the reader saw, matched against what we know: vendors, past lines, learned answers, prices. */
@@ -177,15 +180,27 @@ export async function scanRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     if (scan.status !== 'read' || !result) throw new HttpError(409, 'Still reading.');
     const b = await body(req, 256 * 1024);
     const model = await getModel(db, who.restaurantId, today);
+    const invoiceId = await saveScan(db, who, scan.id, model, result, b, today);
+    return send(res, 200, { ok: true, invoiceId }), true;
+  }
+  throw new HttpError(404, 'Not found.');
+}
+
+/**
+ * A read invoice, saved: a new one of ours (compared with MarginEdge's copy when it has one), or the
+ * rest of one saved before. Each line confirmed is learned for next time.
+ */
+async function saveScan(db: Db, who: Pick<SignedIn, 'restaurantId'> & { staffId: string | null }, scanId: string, model: Model, result: ReadInvoice, b: Record<string, unknown>, today: string): Promise<string> {
+  {
     // The same invoice MarginEdge already has: kept as a check of the reading, not counted twice.
     const check = await matched(db, who.restaurantId, model, result);
     let invoiceId: string;
     if (check.duplicateOf?.source === 'app') {
       // Saved here before (another photo of it): the lines it didn't have go onto it.
       invoiceId = check.duplicateOf.externalId;
-      await appendAppInvoiceLines(db, who, model, invoiceId, b.lines);
+      await appendAppInvoiceLines(db, who as SignedIn, model, invoiceId, b.lines);
     } else {
-      invoiceId = await createAppInvoice(db, who, model, today, b, scan.id);
+      invoiceId = await createAppInvoice(db, who as SignedIn, model, today, b, scanId);
       // MarginEdge has it too: the two are compared, and ours (checked) is the one that counts.
       const theirs = check.duplicateOf ? model.purchasing.invoices.find((i) => i.externalId === check.duplicateOf!.externalId) : undefined;
       if (theirs) await replaceMarginEdgeCopy(db, who.restaurantId, invoiceId, theirs.externalId, theirs,
@@ -201,9 +216,32 @@ export async function scanRoutes(db: Db, req: IncomingMessage, res: ServerRespon
         ON CONFLICT (restaurant_id, vendor_id, item_key) DO UPDATE SET product_id = EXCLUDED.product_id, unit = EXCLUDED.unit, per = EXCLUDED.per, confirmed_at = now()`,
         [who.restaurantId, vendorId, key, String(l.productId), String(l.unit ?? ''), per]);
     }
-    await db.query("UPDATE invoice_scans SET status = 'saved', invoice_id = $2, updated_at = now() WHERE id = $1", [scan.id, invoiceId]);
+    await db.query("UPDATE invoice_scans SET status = 'saved', invoice_id = $2, updated_at = now() WHERE id = $1", [scanId, invoiceId]);
     invalidate(who.restaurantId);
-    return send(res, 200, { ok: true, invoiceId }), true;
+    return invoiceId;
   }
-  throw new HttpError(404, 'Not found.');
+}
+
+/**
+ * An emailed invoice from a vendor we already buy from, every line one we've matched before and
+ * nothing odd on it: counted without anyone checking it. Otherwise it waits with the others to
+ * check, and says why.
+ */
+export async function autoCount(db: Db, restaurantId: string, scanId: string): Promise<{ counted: boolean; why?: string; invoiceId?: string }> {
+  const scan = (await db.query<{ status: string; result: any; tz: string; received: string }>(
+    `SELECT s.status, s.result, r.timezone AS tz, s.created_at::text AS received FROM invoice_scans s JOIN restaurants r ON r.id = s.restaurant_id WHERE s.id = $1 AND s.restaurant_id = $2`, [scanId, restaurantId])).rows[0];
+  if (!scan || scan.status !== 'read' || !scan.result) return { counted: false, why: 'Not read.' };
+  const result: ReadInvoice = typeof scan.result === 'string' ? JSON.parse(scan.result) : scan.result;
+  const today = localNow(scan.tz).date;
+  const model = await getModel(db, restaurantId, today);
+  const mt = await matched(db, restaurantId, model, result);
+  const verdict = autoCountable(mt);
+  if (!verdict.ok) return { counted: false, why: verdict.why };
+  const date = mt.date && mt.date <= today ? mt.date : today;
+  const invoiceId = await saveScan(db, { restaurantId, staffId: null }, scanId, model, result, {
+    vendor: { key: mt.vendor.key }, date, ...(mt.number ? { number: mt.number } : {}), note: 'Counted automatically from an email.',
+    lines: verdict.lines.map((l) => ({ productId: l.productId, quantity: l.baseQuantity, unit: l.baseUnit, total: l.read.total, description: l.read.description, itemKey: l.itemKey,
+      ...(l.read.code ? { code: l.read.code } : {}), ...(l.perQuantity ? { perQuantity: l.perQuantity } : {}) })),
+  }, today);
+  return { counted: true, invoiceId };
 }

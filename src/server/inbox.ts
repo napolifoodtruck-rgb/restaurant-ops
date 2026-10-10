@@ -6,7 +6,8 @@
  *   POST /api/inbox/senders         { address, inbox?: 'invoices' | 'reports' | 'both' } or { address, remove: true }
  *
  * Only senders a manager listed are taken, and only when the email passes its checks (DKIM or
- * DMARC): anything else is noted and dropped. Invoices land with the photos to check (a PDF read by
+ * DMARC): anything else is noted and dropped. Invoices from a vendor we know whose lines were all
+ * matched before count on their own; the rest land with the photos to check (a PDF read by
  * the reader, WebstaurantStore's order email read line by line, any other email's text read as
  * text); OpenTable reports land on tonight's boards (the CSV export straight in, a PDF or the email
  * itself read). Gmail's forwarding confirmation is kept, so its code shows in Settings.
@@ -16,7 +17,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
-import { readScan } from './invoiceScans.ts';
+import { autoCount, readScan } from './invoiceScans.ts';
 import { readReport } from './floor.ts';
 import { localNow } from './online.ts';
 import { readOpenTableCsv } from '../core/reservations.ts';
@@ -105,7 +106,9 @@ async function takeInvoice(db: Db, rid: string, files: { filename: string; conte
   const webstaurant = html ? readWebstaurantEmail(html, receivedAt) : undefined;
   if (webstaurant) {
     const scan = await db.query<{ id: string }>("INSERT INTO invoice_scans (restaurant_id, status, result) VALUES ($1, 'read', $2) RETURNING id", [rid, JSON.stringify(webstaurant)]);
-    return note('read', { scanId: scan.rows[0]!.id, detail: `WebstaurantStore ${webstaurant.invoiceNumber ?? ''}: ${webstaurant.lines.length} lines, $${webstaurant.total ?? ''}`.replace(/\s+/g, ' ') });
+    const out = await note('read', { scanId: scan.rows[0]!.id, detail: `WebstaurantStore ${webstaurant.invoiceNumber ?? ''}: ${webstaurant.lines.length} lines, $${webstaurant.total ?? ''}`.replace(/\s+/g, ' ') });
+    await countOrWait(db, rid, scan.rows[0]!.id);
+    return out;
   }
   // A PDF (or photos) attached: the pages, read like a photographed invoice. No attachment: the email's text.
   const pages = files.filter((f) => PDF.test(f.contentType) || IMAGE.test(f.contentType)).slice(0, 8).map((f) => ({ media: PDF.test(f.contentType) ? 'application/pdf' : f.contentType, data: f.data }));
@@ -116,8 +119,25 @@ async function takeInvoice(db: Db, rid: string, files: { filename: string; conte
   const scan = await db.query<{ id: string }>('INSERT INTO invoice_scans (restaurant_id) VALUES ($1) RETURNING id', [rid]);
   const id = scan.rows[0]!.id;
   for (const [n, p] of pages.entries()) await db.query('INSERT INTO invoice_scan_pages (scan_id, page, media_type, data) VALUES ($1, $2, $3, $4)', [id, n + 1, p.media, p.data]);
-  void readScan(db, rid, id);
-  return note('reading', { scanId: id, detail: `Reading ${pages[0]!.media === 'text/plain' ? 'the email' : `${pages.length} ${pages.length === 1 ? 'page' : 'pages'}`}` });
+  const out = await note('reading', { scanId: id, detail: `Reading ${pages[0]!.media === 'text/plain' ? 'the email' : `${pages.length} ${pages.length === 1 ? 'page' : 'pages'}`}` });
+  void readScan(db, rid, id, () => countOrWait(db, rid, id));
+  return out;
+}
+
+/**
+ * Once read: counted on its own when the vendor is one we know and every line was matched before
+ * (no one needs to check it), else it waits with the others to check, saying why.
+ */
+export async function countOrWait(db: Db, rid: string, scanId: string): Promise<void> {
+  const scan = (await db.query<{ status: string; error: string | null; vendor: string | null; total: string | null }>("SELECT status, error, result->>'vendor' AS vendor, result->>'total' AS total FROM invoice_scans WHERE id = $1", [scanId])).rows[0];
+  if (!scan) return;
+  if (scan.status === 'failed') {
+    await db.query("UPDATE inbox_emails SET status = 'failed', detail = $2 WHERE scan_id = $1", [scanId, scan.error ?? 'Couldn’t read it.']);
+    return;
+  }
+  const r = await autoCount(db, rid, scanId).catch((err) => { console.error(`[inbox] counting ${scanId}`, err); return { counted: false, why: 'Couldn’t count it on its own: check it.' } as const; });
+  const what = `${scan.vendor ?? 'Invoice'}${scan.total ? `, $${Number(scan.total).toFixed(2)}` : ''}`;
+  await db.query('UPDATE inbox_emails SET status = $2, detail = $3 WHERE scan_id = $1', [scanId, r.counted ? 'counted' : 'waiting', r.counted ? `${what}: counted` : `${what} — ${r.why ?? 'to check'}`]);
 }
 
 export function inboxRoutes(db: Db, settings: InboxSettings = {}) {
@@ -150,7 +170,8 @@ export function inboxRoutes(db: Db, settings: InboxSettings = {}) {
         await db.query('INSERT INTO inbox_senders (restaurant_id, address, inbox, added_by) VALUES ($1, $2, $3, $4) ON CONFLICT (restaurant_id, address) DO UPDATE SET inbox = EXCLUDED.inbox', [rid, address, inbox, who.staffId]);
       }
     } else if (req.method !== 'GET' || path !== '/api/inbox') throw new HttpError(404, 'Not found.');
-    const emails = (await db.query('SELECT id, received_at AS "receivedAt", inbox, from_address AS "from", subject, status, detail, scan_id AS "scanId", report_id AS "reportId", code FROM inbox_emails WHERE restaurant_id = $1 ORDER BY received_at DESC LIMIT 30', [rid])).rows;
+    const emails = (await db.query(`SELECT e.id, e.received_at AS "receivedAt", e.inbox, e.from_address AS "from", e.subject, e.status, e.detail, e.scan_id AS "scanId", e.report_id AS "reportId", e.code, s.invoice_id AS "invoiceId", s.status AS "scanStatus"
+       FROM inbox_emails e LEFT JOIN invoice_scans s ON s.id = e.scan_id WHERE e.restaurant_id = $1 ORDER BY e.received_at DESC LIMIT 30`, [rid])).rows;
     const domain = settings.domain ?? 'napolicarrboro.com';
     return send(res, 200, {
       connected: Boolean(settings.apiKey && settings.webhookSecret),

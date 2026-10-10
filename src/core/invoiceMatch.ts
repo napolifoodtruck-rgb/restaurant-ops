@@ -158,3 +158,25 @@ export function matchInvoice(input: MatchInput): MatchedInvoice {
   if (dup) result.duplicateOf = { externalId: dup.externalId, ...(dup.number ? { number: dup.number } : {}), ...(dup.date ? { date: dup.date } : {}), source: dup.source };
   return result;
 }
+
+const WAIT_FLAGS: Partial<Record<LineFlag, string>> = { unsure: 'hard to read', math: 'doesn’t add up', handwritten: 'hand-corrected', noAmount: 'how much is one?', priceJump: 'price changed a lot' };
+
+/**
+ * Whether an invoice that came by email can count without anyone checking it: a vendor we already
+ * buy from, every line one a manager has matched before (or MarginEdge has), nothing hard to read,
+ * no big price change, and the lines adding up to its total. Credits and lines already saved are
+ * left out, as the check screen leaves them unticked. Otherwise, why it waits.
+ */
+export function autoCountable(m: MatchedInvoice): { ok: true; lines: MatchedLine[] } | { ok: false; why: string } {
+  if (m.vendor.how !== 'known') return { ok: false, why: `New vendor (${m.vendor.name}): check this one, and the next ones count themselves.` };
+  if (m.duplicateOf?.source === 'app') return { ok: false, why: 'Already saved: check what’s new on it.' };
+  const lines = m.lines.filter((l) => !l.flags.includes('credit') && !l.flags.includes('alreadyIn'));
+  if (!lines.length) return { ok: false, why: 'Nothing on it to count.' };
+  const fresh = lines.filter((l) => !l.productId || (l.how !== 'learned' && l.how !== 'history'));
+  if (fresh.length) return { ok: false, why: `${fresh.length} new item${fresh.length === 1 ? '' : 's'}: pick ${fresh.length === 1 ? 'its ingredient' : 'their ingredients'} once.` };
+  const odd = lines.flatMap((l) => l.flags.filter((f) => WAIT_FLAGS[f]).map((f) => `${l.read.description}: ${WAIT_FLAGS[f]}`));
+  if (odd.length) return { ok: false, why: `${odd.length === 1 ? 'A line' : `${odd.length} lines`} to look at (${odd.slice(0, 2).join('; ')}${odd.length > 2 ? '…' : ''}).` };
+  if (lines.some((l) => !(l.baseQuantity! > 0) || !l.baseUnit)) return { ok: false, why: 'A line with no amount.' };
+  if (m.totalDifference !== undefined && Math.abs(m.totalDifference) >= 0.05) return { ok: false, why: `The lines don’t add up to its total (${m.totalDifference > 0 ? 'short' : 'over'} $${Math.abs(m.totalDifference).toFixed(2)}).` };
+  return { ok: true, lines };
+}

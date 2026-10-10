@@ -4464,7 +4464,7 @@ async function todayScreen(me, filter = 'all') {
     show(shell(me, 'today', [
       h('header', { class: 'row wrap' },
         h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${longDay(t.today)} · ${me.restaurantName}` }), h('h1', { text: 'Today' }), h('div', { class: 'sub', text: sub })),
-        h('div', { class: 'row wrap today-tools' }, atLeast(me.roleLevel, 'manager') ? captureButton(me) : null, sides)),
+        h('div', { class: 'row wrap today-tools' }, sides, atLeast(me.roleLevel, 'manager') ? captureButton(me) : null)),
       pauseBar,
       page([h('div', { class: 'row wrap todo-head' }, h('h2', { class: 'grow', text: 'To do' })),
         h('section', { class: 'todos', 'aria-label': 'To do' }, sections.length ? sections : h('div', { class: 'card small muted', text: asleep.length ? 'All clear, apart from what’s snoozed.' : 'All clear.' }), asleepBox)],
@@ -4495,7 +4495,7 @@ async function todayScreen(me, filter = 'all') {
       h('header', { class: 'row wrap' },
         h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${longDay(t.today)} · ${me.restaurantName}` }), h('h1', { text: 'Today' }),
           h('div', { class: 'sub', text: fixes.length ? `${fixes.length} thing${fixes.length === 1 ? '' : 's'} need${fixes.length === 1 ? 's' : ''} fixing or an answer, the biggest first.` : 'Nothing needs fixing. The system’s running clean.' })),
-        h('div', { class: 'row wrap today-tools' }, atLeast(me.roleLevel, 'manager') ? captureButton(me) : null, sides)),
+        h('div', { class: 'row wrap today-tools' }, sides, atLeast(me.roleLevel, 'manager') ? captureButton(me) : null)),
       pauseBar,
       todayTiles(me, t, side, routine, go),
       page([h('div', { class: 'row wrap todo-head' }, h('h2', { class: 'grow', text: 'Needs attention' })),
@@ -6461,7 +6461,7 @@ const SOURCES = {
  */
 async function inboxCard(me) {
   const box = h('section', { class: 'card tight', 'aria-label': 'Email inbox' });
-  const STATUS = { read: ['Read', 'ok'], reading: ['Reading', 'blue'], dropped: ['Dropped', 'warn'], failed: ['Failed', 'bad'], code: ['Gmail code', 'blue'] };
+  const STATUS = { read: ['Read', 'ok'], reading: ['Reading', 'blue'], dropped: ['Dropped', 'warn'], failed: ['Failed', 'bad'], code: ['Gmail code', 'blue'], counted: ['Counted', 'ok'], waiting: ['To check', 'blue'] };
   async function draw(data) {
     const r = data ? { ok: true, data } : await api('GET', '/api/inbox');
     if (!r.ok) return fill(box, h('div', { class: 'small muted strong', text: 'Email inbox' }), h('div', { class: 'error small', text: r.data.error ?? 'Couldn’t load.' }));
@@ -6483,6 +6483,7 @@ async function inboxCard(me) {
       h('div', { class: 'list compact' },
         h('div', {}, h('span', { class: 'grow small', text: 'Invoices' }), h('b', { class: 'small', text: d.addresses.invoices })),
         h('div', {}, h('span', { class: 'grow small', text: 'OpenTable reports' }), h('b', { class: 'small', text: d.addresses.reports }))),
+      h('div', { class: 'small muted', text: 'An emailed invoice from a vendor you already buy from counts on its own when every item on it was matched before and nothing looks off. A new vendor, a new item or anything odd waits for you to check.' }),
       code ? h('div', { class: 'note small' }, 'Gmail’s forwarding code: ', h('b', { text: code.code }), ' (type it into Gmail’s Forwarding settings)') : null,
       h('div', { class: 'small strong', text: 'Who may send' }),
       d.senders.length ? h('div', { class: 'list compact' }, d.senders.map((sd) => h('div', {},
@@ -6491,11 +6492,12 @@ async function inboxCard(me) {
       h('div', { class: 'row tight wrap' }, address, which, h('button', { class: 'btn small-btn', text: 'Allow', onclick: (e) => address.value.trim() && save(e.currentTarget, { address: address.value, inbox: which.value }) })),
       err,
       d.emails.length ? [h('div', { class: 'small strong', text: 'Lately' }), h('div', { class: 'list compact' }, d.emails.slice(0, 8).map((m) => {
-        const [label, tone] = STATUS[m.status] ?? [m.status, ''];
+        // Waiting until someone checks it: then it says so.
+        const [label, tone] = m.status === 'waiting' && m.scanStatus === 'saved' ? ['Checked', 'ok'] : m.status === 'waiting' && m.scanStatus === 'discarded' ? ['Thrown away', ''] : STATUS[m.status] ?? [m.status, ''];
         return h('div', { class: 'inbox-row' },
           h('div', { class: 'row tight' }, h('span', { class: `tag ${tone}`, text: label }), h('span', { class: 'small grow', text: m.subject || '(no subject)' }), h('span', { class: 'small muted', text: when(m.receivedAt) })),
-          h('div', { class: 'small muted', text: `${m.from}${m.detail ? ` · ${m.detail}` : ''}` }),
-          m.scanId && m.status !== 'dropped' ? h('button', { class: 'link small', text: 'Check the invoice', onclick: () => scanScreen(me, m.scanId) }) : null);
+          h('div', { class: 'small muted', text: `${m.from}${m.detail ? ` · ${label === 'Checked' ? m.detail.split(' — ')[0] : m.detail}` : ''}` }),
+          m.scanId && m.status !== 'dropped' ? h('button', { class: 'link small', text: m.scanStatus === 'saved' ? 'See the invoice' : 'Check the invoice', onclick: () => scanScreen(me, m.scanId) }) : null);
       }))] : h('div', { class: 'small muted', text: 'Nothing has come in yet.' }));
   }
   await draw();

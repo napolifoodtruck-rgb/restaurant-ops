@@ -95,6 +95,10 @@ test('the inbox, end to end', { skip: !db && 'no PostgreSQL for tests (or runnin
     e2: { id: 'e2', from: 'Someone <deals@spam.example>', to: ['invoices@napolicarrboro.com'], subject: 'Cheap stuff', html: '<p>hi</p>' },
     e3: { id: 'e3', from: 'Fake <orders@webstaurantstore.com>', to: ['invoices@napolicarrboro.com'], subject: 'Pay now', html: ORDER, authentication: { dkim: 'fail', dmarc: 'fail' } },
     e4: { id: 'e4', from: 'Gmail Team <forwarding-noreply@google.com>', to: ['reports@napolicarrboro.com'], subject: '(#987654321) Gmail Forwarding Confirmation', text: 'Confirmation code: 987654321' },
+    e6: { id: 'e6', from: 'WebstaurantStore <orders@webstaurantstore.com>', to: ['invoices@napolicarrboro.com'], subject: 'Thanks for your order #130000001', authentication: { dkim: 'pass' },
+      html: webstaurant(line('Lavex Natural Brown Kraft M-Fold Towel - 4,000/Case', '500MFTN', 2, '$24.49', '$48.98') + line('Carlisle Smart Lid 1/9 Size &quot;Soft&quot; Food Pan Cover', '70090S', 12, '$2.19', '$26.28'), '$75.26', '$5.64', '$80.90').replace(/129910929/g, '130000001') },
+    e7: { id: 'e7', from: 'WebstaurantStore <orders@webstaurantstore.com>', to: ['invoices@napolicarrboro.com'], subject: 'Thanks for your order #130000002', authentication: { dkim: 'pass' },
+      html: webstaurant(line('Lavex Natural Brown Kraft M-Fold Towel - 4,000/Case', '500MFTN', 1, '$24.49', '$24.49') + line('Choice 16 oz. Kraft Pizza Box', 'PB16K', 50, '$0.50', '$25.00'), '$49.49', '$3.71', '$53.20').replace(/129910929/g, '130000002') },
     e5: { id: 'e5', from: 'Napoli <napolifoodtruck@gmail.com>', to: ['reports@napolicarrboro.com'], subject: 'Fwd: Reservations', text: 'see attached', authentication: { dkim: 'pass', dmarc: 'pass' } },
   };
   const files: Record<string, any[]> = { e5: [{ filename: 'reservations.csv', content_type: 'text/csv', size: csv.length, download_url: 'https://files.example/e5.csv' }] };
@@ -147,8 +151,34 @@ test('the inbox, end to end', { skip: !db && 'no PostgreSQL for tests (or runnin
   const rep = (await arrive('e5')).json;
   assert.deepEqual([rep.status, rep.detail], ['read', '2 reservations, 6 covers']);
   inbox = (await call('GET', '/api/inbox')).json;
-  assert.deepEqual(inbox.emails.map((e: any) => e.status).sort(), ['code', 'dropped', 'dropped', 'read', 'read']);
+  assert.deepEqual(inbox.emails.map((e: any) => e.status).sort(), ['code', 'dropped', 'dropped', 'read', 'waiting']);
   assert.equal(inbox.emails.find((e: any) => e.status === 'code').code, '987654321');
+  // A new vendor waits for one check.
+  const first = inbox.emails.find((e: any) => e.status === 'waiting');
+  assert.match(first.detail, /New vendor \(WebstaurantStore\)/);
+
+  // Checked once: the vendor is added and both items are learned.
+  const ing = async (name: string) => (await call('POST', '/api/ingredients', { name, baseUnit: 'each', type: 'other' })).json.id as string;
+  const towels = await ing('Paper towels, M-fold case'), lids = await ing('1/9 pan lids');
+  const saved = await call('POST', `/api/invoices/scan/${first.scanId}/save`, { vendor: { name: 'WebstaurantStore' }, date: '2026-08-22', number: '129910929', lines: [
+    { productId: towels, quantity: 1, unit: 'each', total: 24.49, description: 'Lavex Natural Brown Kraft M-Fold Towel - 4,000/Case', itemKey: '#500mftn', perQuantity: 1 },
+    { productId: lids, quantity: 6, unit: 'each', total: 13.14, description: 'Carlisle Smart Lid', itemKey: '#70090s', perQuantity: 1 }] });
+  assert.equal(saved.status, 200, JSON.stringify(saved.json));
+
+  // The next order, the same two items: counted with no one checking it.
+  await arrive('e6');
+  inbox = (await call('GET', '/api/inbox')).json;
+  const second = inbox.emails.find((e: any) => e.subject.includes('130000001'));
+  assert.equal(second.status, 'counted', second.detail);
+  assert.equal(second.scanStatus, 'saved');
+  const counted = (await db!.query<{ number: string; note: string; created_by: string | null; lines: string; total: string }>(
+    "SELECT number, note, created_by, (SELECT count(*) FROM supplier_invoice_lines l WHERE l.invoice_id = i.id)::text AS lines, (SELECT sum(quantity) FROM supplier_invoice_lines l WHERE l.invoice_id = i.id)::text AS total FROM supplier_invoices i WHERE i.id = $1", [second.invoiceId])).rows[0]!;
+  assert.deepEqual([counted.number, counted.note, counted.created_by, counted.lines, Number(counted.total)], ['130000001', 'Counted automatically from an email.', null, '2', 14]);
+  // One with an item never seen before waits, saying which.
+  await arrive('e7');
+  const third = (await call('GET', '/api/inbox')).json.emails.find((e: any) => e.subject.includes('130000002'));
+  assert.deepEqual([third.status, third.scanStatus], ['waiting', 'read']);
+  assert.match(third.detail, /1 new item/);
   // Removing a sender.
   inbox = (await call('POST', '/api/inbox/senders', { address: '@webstaurantstore.com', remove: true })).json;
   assert.deepEqual(inbox.senders.map((s: any) => s.address), ['napolifoodtruck@gmail.com']);
