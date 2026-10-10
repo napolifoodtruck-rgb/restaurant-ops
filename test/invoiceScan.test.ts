@@ -146,3 +146,13 @@ test('nothing like it on the list: suggested as a new ingredient, counted the wa
   assert.deepEqual([m.lines[2]!.how, m.lines[2]!.productId, m.lines[2]!.suggest], ['guess', 'p-basil', undefined]);
 });
 
+
+test('an item left out before is left out again: kept, not counted, not asked about', () => {
+  const clean = { ...base().read, lines: base().read.lines.slice(0, 2), total: 54 };
+  const learned = new Map<string, any>([['v-produce|tomatoes roma', { productId: null, per: 1 }]]);
+  const m = matchInvoice(base({ read: clean, learned }));
+  assert.deepEqual([m.lines[1]!.how, m.lines[1]!.productId, m.lines[1]!.suggest, m.lines[1]!.flags], ['skip', undefined, undefined, []]);
+  const v = autoCountable(m);
+  assert.equal(v.ok, true);
+  assert.deepEqual(v.ok && [v.lines.map((l) => l.read.description), v.skipped.map((l) => l.read.description)], [['BASIL FRESH'], ['TOMATOES ROMA']]);
+});

@@ -115,7 +115,9 @@ export async function createAppInvoice(db: Db, who: SignedIn, model: Awaited<Ret
     const row = (await db.query<{ id: string; kind: string }>('SELECT id, kind FROM vendors WHERE restaurant_id = $1 AND lower(name) = lower($2) LIMIT 1', [who.restaurantId, vendorName])).rows[0];
     if (row) { vendorId = row.id; kind = row.kind; }
   }
-  const clean = cleanLines(model, b.lines, kind === 'garden');
+  // Every line can be left out (all supplies, say): then only the uncounted ones go on it.
+  const allLeftOut = (!Array.isArray(b.lines) || !b.lines.length) && Array.isArray(b.skipped) && b.skipped.length > 0;
+  const clean = allLeftOut ? [] : cleanLines(model, b.lines, kind === 'garden');
   if (!vendorId) vendorId = (await db.query<{ id: string }>("INSERT INTO vendors (restaurant_id, name, kind, ordering_method) VALUES ($1, $2, $3, 'other') RETURNING id", [who.restaurantId, vendorName, kind])).rows[0]!.id;
   const source = scanId ? 'photo' : kind === 'garden' ? 'garden' : 'typed';
   const total = num(b.total) ?? clean.reduce((a, l) => a + l.total, 0);
@@ -143,6 +145,22 @@ function cleanLines(model: Awaited<ReturnType<typeof getModel>>, raw: unknown, f
 }
 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+
+/**
+ * Lines kept on an invoice but not counted (unticked when it was checked: supplies, a fee, a credit):
+ * no ingredient and no price, so the invoice still adds up to the paper. Returns how many.
+ */
+export async function appendUncountedLines(db: Db, invoiceId: string, raw: unknown): Promise<number> {
+  const lines = (Array.isArray(raw) ? (raw as any[]) : []).slice(0, 200).filter((l) => typeof l?.description === 'string' && l.description.trim() && Number.isFinite(Number(l?.total)));
+  if (!lines.length) return 0;
+  const next = Number((await db.query<{ n: string }>('SELECT coalesce(max(line_number), 0)::text AS n FROM supplier_invoice_lines WHERE invoice_id = $1', [invoiceId])).rows[0]!.n) + 1;
+  for (const [i, l] of lines.entries()) {
+    const quantity = Number.isFinite(Number(l.quantity)) && Number(l.quantity) !== 0 ? Number(l.quantity) : 1, unit = String(l.unit ?? '').trim().slice(0, 20) || 'each';
+    await db.query('INSERT INTO supplier_invoice_lines (invoice_id, line_number, product_id, code, description, quantity, unit, total, per_amount, per_unit, priced) VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, 1, $6, false)',
+      [invoiceId, next + i, typeof l.code === 'string' && l.code ? l.code.slice(0, 60) : null, String(l.description).slice(0, 200), quantity, unit, Math.round(Number(l.total) * 100) / 100]);
+  }
+  return lines.length;
+}
 
 /** Lines as the store keeps them: what came in, in the unit given (one of it is one of it). */
 async function insertLines(db: Db, invoiceId: string, lines: ReturnType<typeof cleanLines>) {

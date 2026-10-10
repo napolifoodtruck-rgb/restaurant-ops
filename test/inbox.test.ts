@@ -91,6 +91,7 @@ test('the inbox, end to end', { skip: !db && 'no PostgreSQL for tests (or runnin
       html: webstaurant(line('Lavex Natural Brown Kraft M-Fold Towel - 4,000/Case', '500MFTN', 2, '$24.49', '$48.98') + line('Carlisle Smart Lid 1/9 Size &quot;Soft&quot; Food Pan Cover', '70090S', 12, '$2.19', '$26.28'), '$75.26', '$5.64', '$80.90').replace(/129910929/g, '130000001') },
     e7: { id: 'e7', from: 'WebstaurantStore <orders@webstaurantstore.com>', to: ['invoices@napolicarrboro.com'], subject: 'Thanks for your order #130000002', authentication: { dkim: 'pass' },
       html: webstaurant(line('Lavex Natural Brown Kraft M-Fold Towel - 4,000/Case', '500MFTN', 1, '$24.49', '$24.49') + line('Choice 16 oz. Kraft Pizza Box', 'PB16K', 50, '$0.50', '$25.00'), '$49.49', '$3.71', '$53.20').replace(/129910929/g, '130000002') },
+    e8: { id: 'e8', from: 'WebstaurantStore <orders@webstaurantstore.com>', to: ['invoices@napolicarrboro.com'], subject: 'Thanks for your order #130000003', authentication: { dkim: 'pass' }, html: ORDER.replace(/129910929/g, '130000003') },
     e5: { id: 'e5', from: 'Napoli <napolifoodtruck@gmail.com>', to: ['reports@napolicarrboro.com'], subject: 'Fwd: Reservations', text: 'see attached', authentication: { dkim: 'pass', dmarc: 'pass' } },
   };
   const files: Record<string, any[]> = { e5: [{ filename: 'reservations.csv', content_type: 'text/csv', size: csv.length, download_url: 'https://files.example/e5.csv' }] };
@@ -107,6 +108,8 @@ test('the inbox, end to end', { skip: !db && 'no PostgreSQL for tests (or runnin
       { code: '70090S', description: 'Carlisle Smart Lid 1/9 Size Soft Food Pan Cover', quantity: 6, unitPrice: 2.19, total: 13.14, item: 'Lids, 1/9 pan', kind: 'other' }],
     '130000001': [{ code: '500MFTN', description: 'Lavex Natural Brown Kraft M-Fold Towel - 4,000/Case', quantity: 2, unitPrice: 24.49, total: 48.98 },
       { code: '70090S', description: 'Carlisle Smart Lid 1/9 Size Soft Food Pan Cover', quantity: 12, unitPrice: 2.19, total: 26.28 }],
+    '130000003': [{ code: '500MFTN', description: 'Lavex Natural Brown Kraft M-Fold Towel - 4,000/Case', quantity: 1, unitPrice: 24.49, total: 24.49 },
+      { code: 'PB16K', description: 'Choice 16 oz. Kraft Pizza Box', quantity: 100, unitPrice: 0.5, total: 50 }],
     '130000002': [{ code: '500MFTN', description: 'Lavex Natural Brown Kraft M-Fold Towel - 4,000/Case', quantity: 1, unitPrice: 24.49, total: 24.49 },
       { code: 'PB16K', description: 'Choice 16 oz. Kraft Pizza Box', quantity: 50, unitPrice: 0.5, total: 25 }],
   };
@@ -203,6 +206,20 @@ test('the inbox, end to end', { skip: !db && 'no PostgreSQL for tests (or runnin
   const third = await settled('130000002');
   assert.deepEqual([third.status, third.scanStatus], ['waiting', 'read']);
   assert.match(third.detail, /1 new item/);
+  // Checked with the pizza boxes left out: they stay on the invoice, not counted, so it adds up.
+  const kept = await call('POST', `/api/invoices/scan/${third.scanId}/save`, { vendor: { name: 'WebstaurantStore' }, date: '2026-08-22', number: '130000002',
+    lines: [{ productId: towels, quantity: 1, unit: 'each', total: 24.49, description: 'Lavex Natural Brown Kraft M-Fold Towel - 4,000/Case', itemKey: '#500mftn', perQuantity: 1 }],
+    skipped: [{ description: 'Choice 16 oz. Kraft Pizza Box', code: 'PB16K', quantity: 50, unit: 'EA', total: 25, itemKey: '#pb16k' }] });
+  assert.equal(kept.status, 200, JSON.stringify(kept.json));
+  const keptLines = (await db!.query<{ product_id: string | null; priced: boolean; total: string }>('SELECT product_id, priced, total FROM supplier_invoice_lines WHERE invoice_id = $1 ORDER BY line_number', [kept.json.invoiceId])).rows;
+  assert.deepEqual(keptLines.map((l) => [l.product_id === towels, l.priced, Number(l.total)]), [[true, true, 24.49], [false, false, 25]]);
+  assert.equal(Number((await db!.query<{ total: string }>('SELECT total FROM supplier_invoices WHERE id = $1', [kept.json.invoiceId])).rows[0]!.total), 49.49, 'the total as printed');
+  // Next time the pizza boxes are left out without asking, and the invoice counts on its own.
+  await arrive('e8');
+  const fourth = await settled('130000003');
+  assert.equal(fourth.status, 'counted', fourth.detail);
+  const fourthLines = (await db!.query<{ product_id: string | null; priced: boolean }>('SELECT product_id, priced FROM supplier_invoice_lines WHERE invoice_id = $1 ORDER BY line_number', [fourth.invoiceId])).rows;
+  assert.deepEqual(fourthLines.map((l) => [l.product_id === towels, l.priced]), [[true, true], [false, false]]);
   // Removing a sender.
   inbox = (await call('POST', '/api/inbox/senders', { address: '@webstaurantstore.com', remove: true })).json;
   assert.deepEqual(inbox.senders.map((s: any) => s.address), ['napolifoodtruck@gmail.com']);

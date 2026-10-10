@@ -19,7 +19,7 @@ import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, invalidate, type Model } from './model.ts';
-import { appendAppInvoiceLines, baseOf, createAppInvoice } from './appInvoices.ts';
+import { appendAppInvoiceLines, appendUncountedLines, baseOf, createAppInvoice } from './appInvoices.ts';
 import { replaceMarginEdgeCopy } from './meImport.ts';
 import { foldLineTax, readInvoice, ReaderError, type ReadInvoice, type ReadPage } from '../connectors/claudeInvoices.ts';
 import { autoCountable, itemKey, matchInvoice, vendorKey, type Learned, type PastLine } from '../core/invoiceMatch.ts';
@@ -73,7 +73,7 @@ async function matched(db: Db, restaurantId: string, model: Model, read: ReadInv
     }
   }
   // Learned per vendor, under the same key the vendors above carry.
-  const learned = new Map<string, Learned>((await db.query<{ vendor_key: string; item_key: string; product_id: string; per: string }>(
+  const learned = new Map<string, Learned>((await db.query<{ vendor_key: string; item_key: string; product_id: string | null; per: string }>(
     `SELECT coalesce(v.me_vendor_id, v.id::text) AS vendor_key, m.item_key, m.product_id, m.per
        FROM vendor_item_matches m JOIN vendors v ON v.id = m.vendor_id WHERE m.restaurant_id = $1`, [restaurantId])).rows
     .map((r) => [`${r.vendor_key}|${r.item_key}`, { productId: r.product_id, per: Number(r.per) }]));
@@ -181,7 +181,7 @@ export async function scanRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     if (scan.status !== 'read' || !result) throw new HttpError(409, 'Still reading.');
     const b = await body(req, 256 * 1024);
     const model = await getModel(db, who.restaurantId, today);
-    const invoiceId = await saveScan(db, who, scan.id, model, result, b, today);
+    const invoiceId = await saveScan(db, who, scan.id, model, result, { ...charges(result), ...b }, today);
     return send(res, 200, { ok: true, invoiceId }), true;
   }
   throw new HttpError(404, 'Not found.');
@@ -199,7 +199,7 @@ async function saveScan(db: Db, who: Pick<SignedIn, 'restaurantId'> & { staffId:
     if (check.duplicateOf?.source === 'app') {
       // Saved here before (another photo of it): the lines it didn't have go onto it.
       invoiceId = check.duplicateOf.externalId;
-      await appendAppInvoiceLines(db, who as SignedIn, model, invoiceId, b.lines);
+      if (Array.isArray(b.lines) && b.lines.length) await appendAppInvoiceLines(db, who as SignedIn, model, invoiceId, b.lines);
     } else {
       invoiceId = await createAppInvoice(db, who as SignedIn, model, today, b, scanId);
       // MarginEdge has it too: the two are compared, and ours (checked) is the one that counts.
@@ -207,8 +207,17 @@ async function saveScan(db: Db, who: Pick<SignedIn, 'restaurantId'> & { staffId:
       if (theirs) await replaceMarginEdgeCopy(db, who.restaurantId, invoiceId, theirs.externalId, theirs,
         new Map(model.purchasing.prices.map((p) => [`${p.invoiceExternalId}|${p.lineNumber}`, p])), new Map(model.purchasing.products.map((p) => [p.externalId, p])));
     }
+    // Lines left out stay on it, not counted, so it adds up to the paper.
+    await appendUncountedLines(db, invoiceId, b.skipped);
     // Learn each confirmed line: this vendor's item is this ingredient, one of them holds this much.
     const vendorId = (await db.query<{ vendor_id: string | null }>('SELECT vendor_id FROM supplier_invoices WHERE id = $1', [invoiceId])).rows[0]?.vendor_id;
+    // And each item left out (not a credit): left out next time too, without asking.
+    for (const l of vendorId && Array.isArray(b.skipped) ? (b.skipped as any[]) : []) {
+      const key = typeof l?.itemKey === 'string' && l.itemKey ? l.itemKey : itemKey({ description: String(l?.description ?? '') });
+      if (!key || Number(l?.total) < 0 || Number(l?.quantity) < 0) continue;
+      await db.query(`INSERT INTO vendor_item_matches (restaurant_id, vendor_id, item_key, product_id, unit, per) VALUES ($1, $2, $3, NULL, '', 1)
+        ON CONFLICT (restaurant_id, vendor_id, item_key) DO UPDATE SET product_id = NULL, unit = '', per = 1, confirmed_at = now()`, [who.restaurantId, vendorId, key]);
+    }
     for (const l of vendorId && Array.isArray(b.lines) ? (b.lines as any[]) : []) {
       const key = typeof l?.itemKey === 'string' && l.itemKey ? l.itemKey : itemKey({ description: String(l?.description ?? '') });
       const per = Number(l?.perQuantity);
@@ -222,6 +231,9 @@ async function saveScan(db: Db, who: Pick<SignedIn, 'restaurantId'> & { staffId:
     return invoiceId;
   }
 }
+
+/** Tax, delivery, other charges and the total, as read: the saved invoice adds up to the paper. */
+const charges = (r: ReadInvoice) => ({ ...(r.tax !== undefined ? { tax: r.tax } : {}), ...(r.delivery !== undefined ? { delivery: r.delivery } : {}), ...(r.otherCharges !== undefined ? { otherCharges: r.otherCharges } : {}), ...(r.total !== undefined ? { total: r.total } : {}) });
 
 /**
  * An emailed invoice from a vendor we already buy from, every line one we've matched before and
@@ -240,9 +252,10 @@ export async function autoCount(db: Db, restaurantId: string, scanId: string): P
   if (!verdict.ok) return { counted: false, why: verdict.why };
   const date = mt.date && mt.date <= today ? mt.date : today;
   const invoiceId = await saveScan(db, { restaurantId, staffId: null }, scanId, model, result, {
-    vendor: { key: mt.vendor.key }, date, ...(mt.number ? { number: mt.number } : {}), note: 'Counted automatically from an email.',
+    vendor: { key: mt.vendor.key }, date, ...(mt.number ? { number: mt.number } : {}), note: 'Counted automatically from an email.', ...charges(result),
     lines: verdict.lines.map((l) => ({ productId: l.productId, quantity: l.baseQuantity, unit: l.baseUnit, total: l.read.total, description: l.read.description, itemKey: l.itemKey,
       ...(l.read.code ? { code: l.read.code } : {}), ...(l.perQuantity ? { perQuantity: l.perQuantity } : {}) })),
+    skipped: verdict.skipped.map((l) => ({ description: l.read.description, quantity: l.read.quantity, unit: l.read.unit, total: l.read.total, itemKey: l.itemKey, ...(l.read.code ? { code: l.read.code } : {}) })),
   }, today);
   return { counted: true, invoiceId };
 }

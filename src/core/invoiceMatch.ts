@@ -17,7 +17,8 @@ import { dimensionOf, normalizeUnit } from './units.ts';
 
 export interface KnownVendor { key: string; name: string }
 export interface PastLine { vendorKey: string; code?: string; description: string; productId: string; perQuantity: number; unitPrice: number; date: string }
-export interface Learned { productId: string; per: number }
+/** A manager's answer for a vendor's item: this ingredient, this much in one; or (no ingredient) left out. */
+export interface Learned { productId: string | null; per: number }
 export interface MatchProduct { id: string; name: string; baseUnit: string }
 export interface PastInvoice { externalId: string; source: 'app' | 'marginedge'; vendorKey?: string; number?: string; date?: string; total: number; lines?: { description: string; total: number }[] }
 
@@ -41,7 +42,8 @@ export type LineFlag = 'unsure' | 'math' | 'noProduct' | 'noAmount' | 'priceJump
 export interface MatchedLine {
   read: ReadLine;
   itemKey: string;
-  how: 'learned' | 'history' | 'guess' | 'none';
+  /** skip: a manager left this item out before; it's kept on the invoice, not counted. */
+  how: 'learned' | 'history' | 'guess' | 'none' | 'skip';
   productId?: string;
   /** Other likely ingredients, best first, when it's a guess. */
   candidates?: { id: string; name: string }[];
@@ -123,7 +125,8 @@ export function matchInvoice(input: MatchInput): MatchedInvoice {
     let candidates: MatchedLine['candidates'];
     const learned = vendor.key ? input.learned.get(`${vendor.key}|${key}`) : undefined;
     const seen = past.find((h) => (l.code && h.code && itemKey(h) === key) || itemKey({ description: h.description }) === itemKey({ description: l.description }));
-    if (learned && product.has(learned.productId)) { how = 'learned'; productId = learned.productId; perQuantity = learned.per; perFrom = 'learned'; }
+    if (learned && learned.productId === null) how = 'skip';
+    else if (learned && learned.productId && product.has(learned.productId)) { how = 'learned'; productId = learned.productId; perQuantity = learned.per; perFrom = 'learned'; }
     else if (seen && product.has(seen.productId)) { how = 'history'; productId = seen.productId; perQuantity = seen.perQuantity; perFrom = 'history'; }
     else {
       const ranked = input.products.map((p) => ({ p, s: Math.max(nameLikeness(l.description, p.name), l.item ? nameLikeness(l.item, p.name) : 0) })).filter((x) => x.s >= 0.34).sort((a, b) => b.s - a.s).slice(0, 4);
@@ -143,7 +146,7 @@ export function matchInvoice(input: MatchInput): MatchedInvoice {
       out.productId = productId;
       out.baseUnit = product.get(productId)!.baseUnit;
       if (candidates) out.candidates = candidates;
-    } else {
+    } else if (how !== 'skip') {
       flags.push('noProduct');
       // Nothing like it on the list: most likely a new ingredient, counted the way it's packed.
       if (!flags.includes('credit')) out.suggest = { name: l.item ?? plainName(l.description, /webstaurant/i.test(read.vendor)), unit: packOf && ['mass', 'volume'].includes(dimensionOf(packOf.unit) ?? '') ? packOf.unit : 'each', kind: l.kind ?? 'food' };
@@ -191,12 +194,13 @@ const WAIT_FLAGS: Partial<Record<LineFlag, string>> = { unsure: 'hard to read', 
  * Whether an invoice that came by email can count without anyone checking it: a vendor we already
  * buy from, every line one a manager has matched before (or MarginEdge has), nothing hard to read,
  * no big price change, and the lines adding up to its total. Credits and lines already saved are
- * left out, as the check screen leaves them unticked. Otherwise, why it waits.
+ * left out, as the check screen leaves them unticked; items a manager left out before stay on the
+ * invoice, not counted. Otherwise, why it waits.
  */
-export function autoCountable(m: MatchedInvoice): { ok: true; lines: MatchedLine[] } | { ok: false; why: string } {
+export function autoCountable(m: MatchedInvoice): { ok: true; lines: MatchedLine[]; skipped: MatchedLine[] } | { ok: false; why: string } {
   if (m.vendor.how !== 'known') return { ok: false, why: `New vendor (${m.vendor.name}): check this one, and the next ones count themselves.` };
   if (m.duplicateOf?.source === 'app') return { ok: false, why: 'Already saved: check what’s new on it.' };
-  const lines = m.lines.filter((l) => !l.flags.includes('credit') && !l.flags.includes('alreadyIn'));
+  const lines = m.lines.filter((l) => !l.flags.includes('credit') && !l.flags.includes('alreadyIn') && l.how !== 'skip');
   if (!lines.length) return { ok: false, why: 'Nothing on it to count.' };
   const fresh = lines.filter((l) => !l.productId || (l.how !== 'learned' && l.how !== 'history'));
   if (fresh.length) return { ok: false, why: `${fresh.length} new item${fresh.length === 1 ? '' : 's'}: pick ${fresh.length === 1 ? 'its ingredient' : 'their ingredients'} once.` };
@@ -204,5 +208,5 @@ export function autoCountable(m: MatchedInvoice): { ok: true; lines: MatchedLine
   if (odd.length) return { ok: false, why: `${odd.length === 1 ? 'A line' : `${odd.length} lines`} to look at (${odd.slice(0, 2).join('; ')}${odd.length > 2 ? '…' : ''}).` };
   if (lines.some((l) => !(l.baseQuantity! > 0) || !l.baseUnit)) return { ok: false, why: 'A line with no amount.' };
   if (m.totalDifference !== undefined && Math.abs(m.totalDifference) >= 0.05) return { ok: false, why: `The lines don’t add up to its total (${m.totalDifference > 0 ? 'short' : 'over'} $${Math.abs(m.totalDifference).toFixed(2)}).` };
-  return { ok: true, lines };
+  return { ok: true, lines, skipped: m.lines.filter((l) => l.how === 'skip' || (l.flags.includes('credit') && !l.flags.includes('alreadyIn'))) };
 }

@@ -6037,7 +6037,10 @@ function renderScan(me, id, x, pagesBox, back) {
   const money = (v) => (v === undefined || v === null ? '' : dollars(v, { cents: true }));
 
   const rows = mt.lines.map((l) => {
-    const line = { l, productId: l.productId, include: Boolean(l.productId && l.baseQuantity > 0 && !l.flags.includes('credit') && !l.flags.includes('alreadyIn')) };
+    // Ticked from the start only when it's sure (green): a guess waits for a tap.
+    const odd = l.flags.some((f) => ['unsure', 'math', 'handwritten', 'noAmount', 'priceJump'].includes(f));
+    const sureOfIt = Boolean(l.productId && (l.how === 'learned' || l.how === 'history') && !odd);
+    const line = { l, productId: l.productId, include: Boolean(sureOfIt && l.baseQuantity > 0 && !l.flags.includes('credit') && !l.flags.includes('alreadyIn')) };
     const tags = h('div', { class: 'scan-flags' });
     const qtyIn = h('input', { inputmode: 'decimal', class: 'amount', value: l.baseQuantity > 0 ? String(l.baseQuantity) : '', placeholder: l.productId ? '' : 'Pick first', 'aria-label': 'How much came in' });
     const unitOut = h('span', { class: 'small muted', text: l.baseUnit ? UNIT_LABEL(l.baseUnit) : '← pick the ingredient above' });
@@ -6049,7 +6052,7 @@ function renderScan(me, id, x, pagesBox, back) {
     qtyIn.addEventListener('input', tickIfReady);
     // How sure: green, matched before; yellow, a guess or something to look at; red, nothing like it on the list.
     const conf = h('div', { class: 'scan-conf' });
-    const sure = (level, text) => { line.row?.classList.remove('conf-green', 'conf-yellow', 'conf-red'); line.row?.classList.add(`conf-${level}`); conf.textContent = text; };
+    const sure = (level, text) => { line.row?.classList.remove('conf-green', 'conf-yellow', 'conf-red', 'conf-grey'); line.row?.classList.add(`conf-${level}`); conf.textContent = text; };
     const picked = (p) => {
       line.productId = p.id; line.unit = p.unit; unitOut.textContent = UNIT_LABEL(p.unit); qtyIn.placeholder = '';
       // How much came in, worked out from the pack when it's printed (2 × 7 oz → 14 oz).
@@ -6068,6 +6071,8 @@ function renderScan(me, id, x, pagesBox, back) {
     // (A guess and a new-looking item are said above the ingredient, in colour: not again as tags.)
     const flags = l.flags.filter((f) => f !== 'noProduct');
     fill(tags, flags.map((f) => h('span', { class: `tag ${SCAN_FLAG[f]?.[1] ?? ''}`, text: f === 'priceJump' && l.was ? `${l.perBase > l.was ? 'Up' : 'Down'} ${Math.round(Math.abs(l.perBase / l.was - 1) * 100)}% (was ${perUnitText(l.was, l.baseUnit)})` : f === 'handwritten' && l.read.handwritten ? `Hand-corrected: ${l.read.handwritten}` : SCAN_FLAG[f]?.[0] ?? f })));
+    // Left out: kept on the invoice, not counted (and left out next time without asking).
+    line.leftOut = () => ({ description: l.read.description, ...(l.read.code ? { code: l.read.code } : {}), quantity: l.read.quantity, unit: l.read.unit ?? '', total: parseAmount(totalIn.value), itemKey: l.itemKey });
     line.get = () => ({ productId: line.productId, quantity: parseAmount(qtyIn.value), unit: line.unit ?? l.baseUnit, total: parseAmount(totalIn.value), description: l.read.description, itemKey: l.itemKey,
       perQuantity: l.read.quantity ? parseAmount(qtyIn.value) / l.read.quantity : undefined });
     line.row = h('div', { class: `scan-line${flags.length ? ' flagged' : ''}` },
@@ -6075,8 +6080,8 @@ function renderScan(me, id, x, pagesBox, back) {
         h('b', { text: l.read.description }),
         h('div', { class: 'small muted', text: [l.read.code ? `#${l.read.code}` : '', `${l.read.quantity} ${l.read.unit ?? ''}`.trim(), l.read.pack, l.read.unitPrice !== undefined ? `@ ${money(l.read.unitPrice)}` : '', `= ${money(l.read.total)}`].filter(Boolean).join(' · ') }))),
       h('div', { class: 'scan-ours' }, conf, pick, chips, suggestBox, h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Came in' }), qtyIn, unitOut, h('span', { class: 'small muted', text: 'for' }), totalIn), tags));
-    const odd = l.flags.some((f) => ['unsure', 'math', 'handwritten', 'noAmount', 'priceJump'].includes(f));
-    if (!l.productId) sure('red', l.suggest ? 'Not on your list: looks like a new ingredient' : 'No ingredient found');
+    if (l.how === 'skip') sure('grey', 'Not counted: you left it out before');
+    else if (!l.productId) sure('red', l.suggest ? 'Not on your list: looks like a new ingredient' : 'No ingredient found');
     else if (l.how === 'guess' || odd) sure('yellow', l.how === 'guess' ? 'Best guess: check it' : 'Matched, but something to look at');
     else sure('green', l.how === 'learned' ? 'Matched: picked before' : 'Matched: bought before');
     return line;
@@ -6098,7 +6103,8 @@ function renderScan(me, id, x, pagesBox, back) {
     const vendor = mt.vendor.key && name === mt.vendor.name ? { key: mt.vendor.key } : { name };
     const lines = rows.filter((r) => r.include).map((r) => r.get());
     if (lines.some((l) => !l.productId)) return (err.textContent = 'Each line you’re counting needs its ingredient.');
-    const res = await api('POST', `/api/invoices/scan/${id}/save`, { vendor, date: dateIn.value, number: numIn.value.trim() || undefined, lines });
+    const skipped = rows.filter((r) => !r.include && !r.l.flags.includes('alreadyIn')).map((r) => r.leftOut());
+    const res = await api('POST', `/api/invoices/scan/${id}/save`, { vendor, date: dateIn.value, number: numIn.value.trim() || undefined, lines, skipped });
     if (!res.ok) return (err.textContent = res.data.error ?? 'That didn’t save.');
     costCache.clear();
     invoicesScreen(me);
@@ -6107,7 +6113,7 @@ function renderScan(me, id, x, pagesBox, back) {
   const main = h('section', { class: 'card' },
     h('div', { class: 'row wrap inv-head' }, h('div', {}, vendorIn, vendorNote), dateIn, numIn),
     ...banners,
-    h('div', { class: 'small muted', text: 'Each line as printed on the left; on the right, the ingredient and how much came in, in the way you count it. Untick a line to leave it out.' }),
+    h('div', { class: 'small muted', text: 'Each line as printed on the left; on the right, the ingredient and how much came in, in the way you count it. Green lines are ticked; tick the others once they look right. A line left unticked stays on the invoice but isn’t counted, and is left out next time too.' }),
     h('div', { class: 'scan-lines' }, rows.map((r) => r.row)),
     extras ? h('div', { class: 'small', text: extras }) : null,
     err,
