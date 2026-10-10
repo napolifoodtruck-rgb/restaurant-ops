@@ -98,7 +98,7 @@ test('the dough count', { skip: !db && 'no PostgreSQL for tests (or running as r
   assert.equal(s.doughByWeekday[(weekday + 1) % 7], null);
   resetDoughCache();
   v = (await call('GET', '/api/floor/dough', { cookies: ipad })).json;
-  assert.deepEqual(v.dough, { used: 6, dineIn: 2, start: 120, left: 114 });
+  assert.deepEqual(v.dough, { used: 6, usedDineIn: 2, usedTakeout: 4, start: 120, left: 114, spare: 5, forDineIn: 108, out: false });
   assert.deepEqual(v.glutenFree, { used: 1.25, start: 10, left: 8.75 }, 'a gluten-free pizza, and a quarter crust for the side');
   assert.deepEqual(v.takeout, { online: 3, toGo: 1, total: 4, cap: 5, left: 1 });
   assert.deepEqual(v.preset, { dough: 120, gf: 10, takeout: 5 });
@@ -110,7 +110,7 @@ test('the dough count', { skip: !db && 'no PostgreSQL for tests (or running as r
   assert.equal((await call('POST', '/api/floor/dough', { cookies: owner, body: { count: 'dough', left: -1 } })).status, 400);
   assert.equal((await call('POST', '/api/floor/dough', { cookies: owner, body: { count: 'flour', left: 3 } })).status, 400);
   v = (await call('POST', '/api/floor/dough', { cookies: owner, body: { count: 'dough', left: 100 } })).json;
-  assert.deepEqual(v.dough, { used: 6, dineIn: 2, start: 106, left: 100 });
+  assert.deepEqual(v.dough, { used: 6, usedDineIn: 2, usedTakeout: 4, start: 106, left: 100, spare: 5, forDineIn: 94, out: false });
   assert.equal(v.changed.dough, true);
   orders.push(at({ ticket_name: 'T4', line_items: [{ catalog_object_id: 'var-marg', name: 'Margherita', quantity: '2' }] }));
   resetDoughCache();
@@ -118,6 +118,13 @@ test('the dough count', { skip: !db && 'no PostgreSQL for tests (or running as r
   // Gluten-free by the quarter, from what's left now.
   v = (await call('POST', '/api/floor/dough', { cookies: owner, body: { count: 'gf', left: 6 } })).json;
   assert.deepEqual(v.glutenFree, { used: 1.25, start: 7.25, left: 6 });
+  // The kitchen's own iPad (a Kitchen post) changes counts with no one signed in; the counter's can't.
+  const kitchen = (await call('POST', '/api/floor/posts', { cookies: owner, body: { name: 'Kitchen', kind: 'kitchen' } })).json.id;
+  const kitchenIpad = (await call('POST', '/api/devices', { cookies: owner, body: { name: 'Pizza iPad', floorPostId: kitchen } })).cookies;
+  assert.equal((await call('GET', '/api/floor/board', { cookies: kitchenIpad })).json.post.kind, 'kitchen');
+  v = (await call('POST', '/api/floor/dough', { cookies: kitchenIpad, body: { count: 'gf', left: 5 } })).json;
+  assert.equal(v.glutenFree.left, 5);
+  assert.equal((await call('POST', '/api/floor/dough', { cookies: ipad, body: { count: 'gf', left: 9 } })).status, 401);
   // Back to the preset.
   v = (await call('POST', '/api/floor/dough', { cookies: owner, body: { count: 'dough', reset: true } })).json;
   assert.equal(v.dough.left, 112);

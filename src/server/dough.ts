@@ -5,13 +5,13 @@
  *   POST /api/floor/dough             { count: 'dough' | 'gf' | 'takeout', left: n } what's really left right now: counts on from there
  *                                     or { count, add: ±n } (takeout's quick buttons) or { count, reset: true } back to the weekday's preset
  *   GET  /api/floor/dough/settings    managers: each weekday's presets
- *   POST /api/floor/dough/settings    { doughByWeekday?, gfByWeekday?, takeoutByWeekday?: (n | null)[7], Sunday first }
+ *   POST /api/floor/dough/settings    { doughByWeekday?, gfByWeekday?, takeoutByWeekday?: (n | null)[7], Sunday first; spare?: n kept back for remakes }
  *
  * Each night starts from the weekday's preset; the kitchen changes it whenever the real count
  * differs ("38 left", not 30): from then on the night counts down from 38.
  *
- * Reading is open to a front-of-house iPad with no one signed in (its board shows the counts);
- * changing a count needs someone signed in. Square is only read: today's orders, at most once a
+ * Reading is open to a Service iPad with no one signed in (its board shows the counts); changing a
+ * count needs someone signed in, or the kitchen's own iPad (a Kitchen post). Square is only read: today's orders, at most once a
  * minute however many iPads ask. When takeout runs out, online ordering stops for the night
  * (onlineCheckout.ts asks takeoutOut); it starts again if the kitchen adds takeout pizzas.
  */
@@ -49,10 +49,10 @@ const WEEK_KEYS = { doughByWeekday: 'dough_by_weekday', gfByWeekday: 'gf_by_week
 type Week = (number | null)[];
 
 /** Each weekday's presets, Sunday first: dough balls, gluten-free crusts, takeout pizzas. */
-async function settingsOf(db: Db, rid: string): Promise<Record<keyof typeof WEEK_KEYS, Week>> {
-  const r = (await db.query<Record<string, unknown>>('SELECT dough_by_weekday, gf_by_weekday, takeout_by_weekday FROM dough_settings WHERE restaurant_id = $1', [rid])).rows[0];
+async function settingsOf(db: Db, rid: string): Promise<Record<keyof typeof WEEK_KEYS, Week> & { spare: number }> {
+  const r = (await db.query<Record<string, unknown>>('SELECT dough_by_weekday, gf_by_weekday, takeout_by_weekday, spare FROM dough_settings WHERE restaurant_id = $1', [rid])).rows[0];
   const week = (v: unknown): Week => ((v ? (typeof v === 'string' ? JSON.parse(v) : v) : null) as Week | null ?? [null, null, null, null, null, null, null]).map((x) => (x === null ? null : Number(x)));
-  return { doughByWeekday: week(r?.dough_by_weekday), gfByWeekday: week(r?.gf_by_weekday), takeoutByWeekday: week(r?.takeout_by_weekday) };
+  return { doughByWeekday: week(r?.dough_by_weekday), gfByWeekday: week(r?.gf_by_weekday), takeoutByWeekday: week(r?.takeout_by_weekday), spare: r ? Number(r.spare) : 5 };
 }
 
 /** Tonight's counts where the kitchen changed them. */
@@ -182,7 +182,7 @@ export async function doughView(db: Db, rid: string, today: string, timezone: st
   const [settings, night, live] = await Promise.all([settingsOf(db, rid), nightOf(db, rid, today), tallyFor(db, rid, today, timezone, square, fresh)]);
   const preset = { dough: takeoutFor(today, settings.doughByWeekday), gf: takeoutFor(today, settings.gfByWeekday), takeout: takeoutFor(today, settings.takeoutByWeekday) };
   const from = { dough: night.dough ?? preset.dough, gf: night.gf ?? preset.gf, takeout: night.takeout ?? preset.takeout };
-  const board = doughBoard({ ...(from.dough !== undefined ? { start: from.dough } : {}), ...(from.gf !== undefined ? { glutenFreeStart: from.gf } : {}), ...(from.takeout !== undefined ? { takeoutCap: from.takeout } : {}), tally: live.tally ?? EMPTY });
+  const board = doughBoard({ ...(from.dough !== undefined ? { start: from.dough } : {}), ...(from.gf !== undefined ? { glutenFreeStart: from.gf } : {}), ...(from.takeout !== undefined ? { takeoutCap: from.takeout } : {}), spare: settings.spare, tally: live.tally ?? EMPTY });
   return {
     day: today,
     ...board,
@@ -227,7 +227,10 @@ export async function doughRoutes(db: Db, req: IncomingMessage, res: ServerRespo
   if (path === '/api/floor/dough') {
     if (method === 'GET') return send(res, 200, await doughView(db, rid, today, timezone, square)), true;
     if (method !== 'POST') throw new HttpError(404, 'Not found.');
-    if (!ctx.who) throw new HttpError(401, 'Sign in to change the counts.');
+    // Someone signed in, or the kitchen's own iPad (a Kitchen post), trusted as it is for check-offs.
+    const kitchenIpad = !ctx.who && ctx.device?.floorPostId
+      ? (await db.query("SELECT 1 FROM floor_posts WHERE restaurant_id = $1 AND id = $2 AND kind = 'kitchen' AND active", [rid, ctx.device.floorPostId])).rows.length > 0 : false;
+    if (!ctx.who && !kitchenIpad) throw new HttpError(401, 'Sign in to change the counts.');
     const b = await body(req);
     if (typeof b.count !== 'string' || !(b.count in COUNTS)) throw new HttpError(400, 'Which count: dough, gluten-free or takeout?');
     const key = b.count as CountKey;
@@ -247,7 +250,7 @@ export async function doughRoutes(db: Db, req: IncomingMessage, res: ServerRespo
       } else throw new HttpError(400, 'Nothing to change.');
     }
     await db.query(`INSERT INTO dough_nights (restaurant_id, day, ${COUNTS[key]}, changed_by, changed_at) VALUES ($1, $2, $3, $4, now())
-      ON CONFLICT (restaurant_id, day) DO UPDATE SET ${COUNTS[key]} = EXCLUDED.${COUNTS[key]}, changed_by = EXCLUDED.changed_by, changed_at = now()`, [rid, today, from, ctx.who.staffId]);
+      ON CONFLICT (restaurant_id, day) DO UPDATE SET ${COUNTS[key]} = EXCLUDED.${COUNTS[key]}, changed_by = EXCLUDED.changed_by, changed_at = now()`, [rid, today, from, ctx.who?.staffId ?? null]);
     return send(res, 200, await doughView(db, rid, today, timezone, square)), true;
   }
 
@@ -262,6 +265,7 @@ export async function doughRoutes(db: Db, req: IncomingMessage, res: ServerRespo
       if (!Array.isArray(v) || v.length !== 7) throw new HttpError(400, 'A number (or none) for each day of the week, Sunday first.');
       await db.query(`UPDATE dough_settings SET ${col} = $2::jsonb, updated_by = $3, updated_at = now() WHERE restaurant_id = $1`, [rid, JSON.stringify(v.map((x) => (x === '' || x === undefined || x === null ? null : count(x, 'Each day’s number')))), ctx.who.staffId]);
     }
+    if ('spare' in b) await db.query('UPDATE dough_settings SET spare = $2, updated_by = $3, updated_at = now() WHERE restaurant_id = $1', [rid, count(b.spare, 'Spare for remakes') ?? 5, ctx.who.staffId]);
   } else if (method !== 'GET') throw new HttpError(404, 'Not found.');
   return send(res, 200, { today, ...(await settingsOf(db, rid)) }), true;
 }

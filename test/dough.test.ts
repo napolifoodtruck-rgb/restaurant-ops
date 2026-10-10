@@ -59,7 +59,7 @@ test('gluten-free is its own count: no dough ball, and not against takeout', () 
 test('what the boards show: left of each count, and takeout out at zero', () => {
   const tally = { used: 40, dineIn: 28, takeout: { online: 8, toGo: 4, total: 12 }, glutenFree: 3, orders: 30 };
   const b = doughBoard({ start: 120, glutenFreeStart: 10, takeoutCap: 30, tally });
-  assert.deepEqual(b.dough, { used: 40, dineIn: 28, start: 120, left: 80 });
+  assert.deepEqual(b.dough, { used: 40, usedDineIn: 28, usedTakeout: 12, start: 120, left: 80, spare: 0, forDineIn: 62, out: false }, '80 left: 18 for takeout, the rest for dine-in');
   assert.deepEqual(b.glutenFree, { used: 3, start: 10, left: 7 });
   assert.equal(b.takeout.left, 18);
   assert.equal(b.takeoutOut, false);
@@ -68,6 +68,16 @@ test('what the boards show: left of each count, and takeout out at zero', () => 
   assert.equal(over.takeout.left, 0);
   assert.ok(over.takeoutOut);
   assert.equal(over.dough.left, undefined, 'no start entered yet: no dough left');
+  // Takeout is part of the whole: never more than the dough left.
+  const short = doughBoard({ start: 50, takeoutCap: 30, tally });
+  assert.equal(short.takeout.left, 10);
+  assert.ok(short.takeout.limitedByDough);
+  assert.equal(short.dough.forDineIn, 0);
+  // Five kept spare for remakes: takeout and the floor share the rest; at the spare, stop seating.
+  const kept = doughBoard({ start: 50, takeoutCap: 30, spare: 5, tally });
+  assert.deepEqual([kept.dough.left, kept.takeout.left, kept.dough.forDineIn, kept.dough.out], [10, 5, 0, false]);
+  const last = doughBoard({ start: 45, takeoutCap: 30, spare: 5, tally });
+  assert.deepEqual([last.dough.left, last.takeout.left, last.dough.forDineIn, last.dough.out, last.takeoutOut], [5, 0, 0, true, true]);
   // No takeout number tonight: never out.
   assert.equal(doughBoard({ tally }).takeoutOut, false);
 });

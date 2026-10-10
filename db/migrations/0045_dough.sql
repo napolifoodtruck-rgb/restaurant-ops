@@ -5,6 +5,7 @@ CREATE TABLE dough_settings (
   dough_by_weekday   jsonb NOT NULL DEFAULT '[null, null, null, null, null, null, null]',
   gf_by_weekday      jsonb NOT NULL DEFAULT '[null, null, null, null, null, null, null]',
   takeout_by_weekday jsonb NOT NULL DEFAULT '[null, null, null, null, null, null, null]',
+  spare           integer NOT NULL DEFAULT 5 CHECK (spare >= 0),   -- dough balls kept back for remakes
   updated_by      uuid,
   updated_at      timestamptz NOT NULL DEFAULT now(),
   CHECK (jsonb_typeof(dough_by_weekday) = 'array' AND jsonb_array_length(dough_by_weekday) = 7),
@@ -25,3 +26,8 @@ CREATE TABLE dough_nights (
   changed_at      timestamptz,
   PRIMARY KEY (restaurant_id, day)
 );
+
+-- A kitchen iPad can be a Service post too: its board opens on the dough count, which it can change
+-- with no one signed in (the iPad is trusted, as for check-offs); prep is a PIN away.
+ALTER TABLE floor_posts DROP CONSTRAINT floor_posts_kind_check;
+ALTER TABLE floor_posts ADD CONSTRAINT floor_posts_kind_check CHECK (kind IN ('room', 'bar', 'counter', 'host', 'kitchen'));

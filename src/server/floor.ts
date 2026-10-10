@@ -302,7 +302,7 @@ export async function floorBoard(db: Db, ctx: FloorContext, asked?: string) {
 
   // Tonight's book: this post's tables (every table at the host stand).
   const tonight = await tonightsBook(db, rid, today);
-  const mine = tonight ? forTables(tonight.book, post.kind === 'host' ? 'all' : post.tables) : [];
+  const mine = tonight ? forTables(tonight.book, post.kind === 'host' || post.kind === 'kitchen' ? 'all' : post.tables) : [];
   const all = tonight?.book.reservations ?? [];
   const hour = (t: string) => Number(t.slice(0, 2));
   const byHour = new Map<number, number>();
@@ -589,7 +589,7 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
     const b = await body(req);
     const name = s(b.name, 80);
     if (!name) throw new HttpError(400, 'Name the post (Patio, Dining room, Bar...).');
-    const kind = ['room', 'bar', 'counter', 'host'].includes(String(b.kind)) ? String(b.kind) : 'room';
+    const kind = ['room', 'bar', 'counter', 'host', 'kitchen'].includes(String(b.kind)) ? String(b.kind) : 'room';
     const tables = (Array.isArray(b.tables) ? b.tables : String(b.tables ?? '').split(/[\s,]+/)).map((t: unknown) => String(t).trim().toUpperCase()).filter((t: string) => /^[A-Z]*\d+$/.test(t));
     const station = typeof b.stationId === 'string' && b.stationId ? b.stationId : null;
     if (typeof b.id === 'string' && b.id) {

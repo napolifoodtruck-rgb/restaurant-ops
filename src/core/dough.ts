@@ -80,16 +80,33 @@ export interface DoughNumbers {
   glutenFreeStart?: number;
   /** Takeout pizzas for tonight: the day's number, or what the kitchen changed it to. */
   takeoutCap?: number;
+  /** Dough balls kept back for remakes (a pizza that goes wrong): not sold, to takeout or the floor. */
+  spare?: number;
   tally: DoughTally;
 }
 
-/** What the boards show: what's left of each count, and whether takeout is out for tonight. */
+/**
+ * What the boards show. One dough number for the night, in two parts: takeout's share, and the
+ * rest for dine-in. Takeout is what the kitchen steers (online ordering stops at zero); it can
+ * never be more than the dough left, less a few kept spare for remakes. Dine-in is whatever's left
+ * of that after takeout's share; at zero, the floor stops seating (the spare is still there).
+ */
 export function doughBoard(n: DoughNumbers) {
-  const takeoutLeft = n.takeoutCap !== undefined ? Math.max(0, n.takeoutCap - n.tally.takeout.total) : undefined;
+  const spare = n.spare ?? 0;
+  const left = n.start !== undefined ? n.start - n.tally.used : undefined;
+  // What can still be sold: the dough left, less the spare kept for remakes.
+  const sellable = left !== undefined ? Math.max(0, left - spare) : undefined;
+  const byCap = n.takeoutCap !== undefined ? n.takeoutCap - n.tally.takeout.total : undefined;
+  const takeoutLeft = byCap === undefined ? undefined : Math.max(0, sellable !== undefined ? Math.min(byCap, sellable) : byCap);
   return {
-    dough: { used: n.tally.used, dineIn: n.tally.dineIn, ...(n.start !== undefined ? { start: n.start, left: n.start - n.tally.used } : {}) },
+    dough: {
+      used: n.tally.used, usedDineIn: n.tally.dineIn, usedTakeout: n.tally.used - n.tally.dineIn,
+      ...(n.start !== undefined ? { start: n.start, left: left!, spare } : {}),
+      // The split of what can still be sold: takeout's share, and the rest for dine-in.
+      ...(sellable !== undefined ? { forDineIn: Math.max(0, sellable - (takeoutLeft ?? 0)), out: sellable <= 0 } : {}),
+    },
     glutenFree: { used: n.tally.glutenFree, ...(n.glutenFreeStart !== undefined ? { start: n.glutenFreeStart, left: n.glutenFreeStart - n.tally.glutenFree } : {}) },
-    takeout: { ...n.tally.takeout, ...(n.takeoutCap !== undefined ? { cap: n.takeoutCap, left: takeoutLeft! } : {}) },
+    takeout: { ...n.tally.takeout, ...(n.takeoutCap !== undefined ? { cap: n.takeoutCap, left: takeoutLeft! } : {}), ...(byCap !== undefined && takeoutLeft! < Math.max(0, byCap) ? { limitedByDough: true } : {}) },
     /** No more takeout tonight: online ordering stops until the kitchen adds some. */
     takeoutOut: takeoutLeft !== undefined && takeoutLeft <= 0,
   };

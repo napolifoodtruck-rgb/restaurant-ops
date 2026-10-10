@@ -1341,7 +1341,6 @@ async function prepHome(me, allStations = false, quiet = false) {
     h('header', {}, h('div', { class: 'kicker', text: dayName(p.today) }), h('h1', { text: 'Prep' }),
       h('div', { class: 'sub', text: 'Each station’s list for today, and tonight’s count.' })),
     page([
-      doughWidget({ canEdit: true }),
       mine ? h('div', { class: 'row' }, h('div', { class: 'grow small muted', text: allStations ? `This iPad is the ${mine.name} station’s.` : `This iPad is the ${mine.name} station’s. Other stations are a tap away.` }),
         h('button', { class: 'link', text: allStations ? `Just ${mine.name}` : 'All stations', onclick: () => prepHome(me, !allStations) })) : null,
       h('div', { class: 'stack' }, cards), addStation ? h('div', {}, addStation) : null,
@@ -2586,8 +2585,10 @@ function takeoutNumbersCard() {
       input.addEventListener('input', () => { status.textContent = 'Not saved yet'; });
       return [wd, input];
     })]);
+    const spareInput = h('input', { class: 'amount', type: 'number', inputmode: 'numeric', min: '0', max: '50', step: '1', value: String(d.spare ?? 5), 'aria-label': 'Dough balls kept for remakes' });
+    spareInput.addEventListener('input', () => { status.textContent = 'Not saved yet'; });
     const saveBtn = h('button', { class: 'btn small-btn dark', text: 'Save', onclick: async (e) => {
-      const body = {};
+      const body = { spare: spareInput.value.trim() === '' ? 5 : Number(spareInput.value) };
       for (const [key, cells] of inputs) { const week = Array(7).fill(null); for (const [wd, input] of cells) week[wd] = input.value.trim() === '' ? null : Number(input.value); body[key] = week; }
       busy(e.currentTarget, true);
       const res = await api('POST', '/api/floor/dough/settings', body);
@@ -2601,6 +2602,7 @@ function takeoutNumbersCard() {
       h('div', { class: 'wgrid-wrap' }, h('table', { class: 'wgrid takeout-grid' },
         h('thead', {}, h('tr', {}, h('th', { text: '' }), order.map((wd) => h('th', { text: WEEKDAYS[wd] })))),
         h('tbody', {}, inputs.map(([key, cells]) => h('tr', {}, h('th', { class: 'small', text: ROWS.find(([k]) => k === key)[1] }), cells.map(([, input]) => h('td', {}, input))))))),
+      h('div', { class: 'row wrap' }, h('label', { class: 'row tight' }, h('span', { class: 'small strong', text: 'Kept for remakes' }), spareInput), h('span', { class: 'small muted grow', text: 'Dough balls held back every night for a pizza that goes wrong; the floor and takeout share the rest.' })),
       h('div', { class: 'row wrap plan-save' }, status, saveBtn),
       h('div', { class: 'small muted', text: 'A dough ball: anything in Square’s Pizza category, and the breadsticks. Takeout: anything without a table number (online, phone, to go). Rung gluten-free, a pizza or breadsticks takes a gluten-free crust instead; a side of gluten-free bread takes a quarter of one.' }),
       err);
@@ -4733,26 +4735,39 @@ function doughWidget({ canEdit = false, compact = false } = {}) {
     const under = (c, used, key) => h('div', { class: 'dough-under', text: d.changed[key] ? `${quarters(used)} used tonight · adjusted` : `of ${quarters(c)} · ${quarters(used)} used` });
     const adjustBtn = (key) => (canEdit ? h('button', { class: 'btn small-btn', text: 'Adjust', 'aria-label': `Adjust ${NAMES[key].toLowerCase()}`, onclick: () => adjust(d, key) }) : null);
     const none = (used) => h('div', { class: 'dough-under', text: `${quarters(used)} used · no number for today` });
+    // The whole night's dough, for information: what's left, split into takeout's share and dine-in.
+    const split = d.dough.forDineIn !== undefined ? h('div', { class: 'dough-split' },
+      h('span', {}, 'Takeout ', h('b', { text: d.takeout.left !== undefined ? String(d.takeout.left) : '–' })),
+      h('span', {}, 'Dine-in ', h('b', { text: String(d.dough.forDineIn) }))) : null;
     const dough = d.dough.left !== undefined
-      ? tile(d.dough.left <= 10 ? 'low' : '', 'Dough left', String(d.dough.left), under(d.dough.start, d.dough.used, 'dough'), canEdit ? h('div', { class: 'row tight dough-steps' }, adjustBtn('dough')) : null)
+      ? tile(d.dough.out ? 'out' : d.dough.forDineIn <= 10 ? 'low' : '', 'Dough left', String(d.dough.left), split,
+        // Said to the kitchen so nobody panics at zero: a few are always kept back for a pizza that goes wrong.
+        d.dough.spare ? h('div', { class: 'dough-under strong', text: `${d.dough.spare} of these kept for remakes` }) : null,
+        under(d.dough.start, d.dough.used, 'dough'), canEdit ? h('div', { class: 'row tight dough-steps' }, adjustBtn('dough')) : null)
       : tile('unset', 'Dough left', '–', none(d.dough.used), canEdit ? h('div', { class: 'row tight dough-steps' }, adjustBtn('dough')) : null);
     const gf = d.glutenFree.left !== undefined
       ? tile(d.glutenFree.left <= 2 ? 'low' : '', 'Gluten-free left', quarters(d.glutenFree.left), under(d.glutenFree.start, d.glutenFree.used, 'gf'), canEdit ? h('div', { class: 'row tight dough-steps' }, adjustBtn('gf')) : null)
       : tile('unset', 'Gluten-free left', '–', none(d.glutenFree.used), canEdit ? h('div', { class: 'row tight dough-steps' }, adjustBtn('gf')) : null);
+    // Takeout: the number the kitchen steers, by the dough left. At zero, online ordering stops.
     const t = d.takeout;
     const step = (n) => h('button', { class: 'btn small-btn', text: n > 0 ? `+${n}` : `−${-n}`, 'aria-label': `${n > 0 ? 'Add' : 'Take off'} ${Math.abs(n)} takeout`, onclick: (e) => save({ count: 'takeout', add: n }, e.currentTarget) });
+    const stop = h('button', { class: 'btn small-btn stop-btn', text: 'Stop takeout', onclick: (e) => confirmText('Stop takeout for tonight? Online ordering turns off; add pizzas or Adjust to start it again.') && save({ count: 'takeout', left: 0 }, e.currentTarget) });
     const takeout = t.cap !== undefined
-      ? tile(d.takeoutOut ? 'out' : t.left <= 3 ? 'low' : '', 'Takeout left', String(t.left),
-        h('div', { class: 'dough-under', text: `${d.changed.takeout ? '' : `of ${t.cap} · `}${t.online} online, ${t.toGo} to go${d.changed.takeout ? ' · adjusted' : ''}` }),
-        d.takeoutOut ? h('div', { class: 'dough-alert', text: canEdit ? 'Sold out: online ordering is off. Add pizzas to turn it back on.' : 'Sold out: online ordering is off.' }) : null,
-        canEdit ? h('div', { class: 'row tight dough-steps' }, step(-1), step(1), step(5), adjustBtn('takeout')) : null)
-      : tile('unset', 'Takeout left', '–', h('div', { class: 'dough-under', text: `${t.total} sold · no number for today` }),
+      ? tile(`main ${d.takeoutOut ? 'out' : t.left <= 3 ? 'low' : ''}`, 'Takeout left', String(t.left),
+        h('div', { class: 'dough-under', text: `${d.changed.takeout ? '' : `of ${t.cap} · `}${t.online} online, ${t.toGo} to go sold${d.changed.takeout ? ' · adjusted' : ''}` }),
+        t.limitedByDough && !d.takeoutOut ? h('div', { class: 'dough-under strong', text: 'Held to the dough left.' }) : null,
+        d.takeoutOut && canEdit ? h('div', { class: 'dough-alert', text: 'Add pizzas to start takeout again.' }) : null,
+        canEdit ? h('div', { class: 'row tight dough-steps' }, step(-1), step(1), step(5), adjustBtn('takeout'), d.takeoutOut ? null : stop) : null)
+      : tile('main unset', 'Takeout left', '–', h('div', { class: 'dough-under', text: `${t.total} sold · no number for today` }),
         canEdit ? h('div', { class: 'row tight dough-steps' }, adjustBtn('takeout')) : null);
     fill(box,
       h('div', { class: 'row dough-head' }, h('h2', { class: 'grow', text: 'Dough' }),
         h('span', { class: 'small muted', text: d.asOf ? `Live from Square · ${at(d.asOf)}` : 'Waiting for Square' })),
       d.problem ? h('div', { class: 'small warn-text', text: d.problem }) : null,
-      h('div', { class: 'dough-tiles' }, dough, takeout, gf));
+      // What it means for the floor: out of dough, stop seating; takeout stopped, no more to-go or phone orders.
+      d.dough.out ? h('div', { class: 'dough-banner', role: 'alert', text: canEdit ? `Out of dough for the floor: stop seating tables. The last ${d.dough.spare} are kept for remakes.` : 'Out of dough: stop seating tables.' })
+        : d.takeoutOut ? h('div', { class: 'dough-banner', role: 'alert', text: 'Takeout stopped: no more to-go or phone orders. Online ordering is off.' }) : null,
+      h('div', { class: 'dough-tiles' }, takeout, dough, gf));
   }
   load();
   return box;
@@ -6773,7 +6788,7 @@ async function floorBoard(ctx = {}) {
     h('button', { class: 'btn', text: 'Allergies', onclick: () => floorAllergyFinder(b) }),
     b.lookup.wines.length ? h('button', { class: 'btn', text: 'Wines', onclick: () => floorWines(b) }) : null,
     floorTasksButton(b, reload),
-    b.post.stationId ? h('button', { class: 'btn', text: 'Bar prep', onclick: async () => { stopFloorTimers(); const d = await api('GET', '/api/devices/staff'); if (d.ok) pinNames(d.data); } }) : null,
+    b.post.stationId || b.post.kind === 'kitchen' ? h('button', { class: 'btn', text: b.post.kind === 'kitchen' ? 'Prep' : 'Bar prep', onclick: async () => { stopFloorTimers(); const d = await api('GET', '/api/devices/staff'); if (d.ok) pinNames(d.data); } }) : null,
     manager && b.posts?.length > 1 ? h('select', { class: 'tool-select', 'aria-label': 'Post', onchange: (e) => floorBoard({ ...ctx, post: e.target.value }) }, b.posts.map((p) => h('option', { value: p.id, text: p.name, selected: p.id === b.post.id ? true : undefined }))) : null,
     manager ? h('button', { class: 'btn dark', text: 'Manage', onclick: () => floorManage(ctx.me) }) : h('button', { class: 'btn', text: 'Manager', onclick: () => floorManagerSignIn() }),
     manager && !inShell ? h('button', { class: 'btn', text: 'Done', title: 'Sign out: back to the board', onclick: async () => { await api('POST', '/api/logout'); start(); } }) : null);
@@ -6820,7 +6835,8 @@ async function floorBoard(ctx = {}) {
   const notes = b.notes.length ? sideBox('From the managers', b.notes.map((n) => h('div', { class: 'floor-note' }, h('div', { text: n.body }), n.by ? h('div', { class: 'small muted', text: n.by }) : null))) : null;
 
   // The counter takes the takeout orders and the host decides on walk-ins: both see the dough count.
-  const dough = b.post.kind === 'counter' || b.post.kind === 'host' ? doughWidget({ canEdit: manager }) : null;
+  // The kitchen changes it; the counter takes the takeout orders and the host decides on seating: all three see it.
+  const dough = b.post.kind === 'kitchen' ? doughWidget({ canEdit: true }) : b.post.kind === 'counter' || b.post.kind === 'host' ? doughWidget({ canEdit: manager }) : null;
   const body = h('div', { class: 'floor-board' }, h('div', { class: 'floor-main' }, dough, knowBox), h('aside', { class: 'floor-side' }, gelato, b.lookup.wines.length ? pairingFinder(b) : null, notes, special, newBox));
   if (inShell) show(shell(ctx.me, 'floor', [head, body]));
   else show(h('div', { class: 'floor' }, head, body));
@@ -7438,13 +7454,13 @@ const addDaysISO = (day, n) => { const x = new Date(`${day}T12:00:00Z`); x.setUT
 
 function floorSetupTab(d, reload) {
   const err = h('div', { class: 'error' });
-  const KINDS = { room: 'Dining room', bar: 'Bar', counter: 'Counter', host: 'Host stand (every table)' };
+  const KINDS = { room: 'Dining room', bar: 'Bar', counter: 'Counter', host: 'Host stand (every table)', kitchen: 'Kitchen (changes the dough count)' };
   const postRow = (p) => {
     const name = h('input', { type: 'text', value: p?.name ?? '', placeholder: 'e.g. Patio', 'aria-label': 'Post name' });
     const kind = h('select', { 'aria-label': 'Kind' }, Object.entries(KINDS).map(([k, v]) => h('option', { value: k, text: v, selected: (p?.kind ?? 'room') === k ? true : undefined })));
     const tables = h('input', { type: 'text', value: (p?.tables ?? []).join(' '), placeholder: 'Tables: T1 T2 T3…', 'aria-label': 'Tables' });
     const station = h('select', { 'aria-label': 'Prep list' }, h('option', { value: '', text: 'No prep list' }), d.stations.map((s) => h('option', { value: s.id, text: `Prep: ${s.name}`, selected: p?.stationId === s.id ? true : undefined })));
-    const showStation = () => { station.hidden = kind.value !== 'bar'; tables.hidden = kind.value === 'host'; };
+    const showStation = () => { station.hidden = kind.value !== 'bar' && kind.value !== 'kitchen'; tables.hidden = kind.value === 'host' || kind.value === 'kitchen'; };
     kind.addEventListener('change', showStation);
     showStation();
     return h('div', { class: 'row wrap post-row' }, name, kind, tables, station,
@@ -7456,7 +7472,7 @@ function floorSetupTab(d, reload) {
       p ? h('button', { class: 'link', text: 'Remove', onclick: () => pageAction(async () => { if (!confirmText(`Remove ${p.name}? Its iPad goes back to not being set.`)) return; await api('POST', '/api/floor/posts', { id: p.id, name: p.name, active: false }); reload(); }) }) : null);
   };
   const posts = h('section', { class: 'card' }, h('h2', { text: 'Posts' }),
-    h('div', { class: 'small muted', text: 'Where an iPad stands. A dining room shows the reservations at its tables; the host stand shows every table; the bar can show a prep list too.' }),
+    h('div', { class: 'small muted', text: 'Where an iPad stands. A dining room shows the reservations at its tables; the host stand shows every table; the bar can show a prep list too. The kitchen’s board opens on the dough count, which it can change; the counter and host stand show it.' }),
     d.posts.map(postRow), postRow(null));
   const deviceRows = d.devices.map((x) => {
     const pick = h('select', { 'aria-label': `What ${x.name} is for` }, h('option', { value: '', text: 'Kitchen (prep)' }), d.posts.map((p) => h('option', { value: p.id, text: `Service: ${p.name}`, selected: x.postId === p.id ? true : undefined })));

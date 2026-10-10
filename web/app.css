@@ -1431,3 +1431,11 @@ input[type=search]:not(.floor-search):not(.search) { height: 48px; border: 1px s
 .takeout-grid th, .takeout-grid td { padding: 4px 3px; }
 .takeout-grid input.amount { width: 60px; padding: 0 4px; font-size: 15px; }
 .takeout-grid tbody th { white-space: normal; max-width: 92px; line-height: 1.2; }
+/* Takeout first and biggest: it's the number the kitchen steers. The whole dough count beside it shows the split. */
+.dough-tiles { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr); }
+.dough-tile.main .dough-big { font-size: 56px; }
+.dough-split { display: flex; gap: 14px; font-size: 14px; }
+.dough-split b { font-size: 18px; margin-left: 2px; }
+.btn.stop-btn { border-color: var(--accent); color: var(--accent); }
+@media (max-width: 700px) { .dough-tiles { grid-template-columns: 1fr; } .dough-tile.main .dough-big { font-size: 44px; } }
+.dough-banner { background: var(--accent); color: #fff; font-weight: 700; font-size: 17px; border-radius: 10px; padding: 10px 14px; }
