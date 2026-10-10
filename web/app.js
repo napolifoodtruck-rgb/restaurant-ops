@@ -5935,6 +5935,27 @@ function captureScreen(me, pages) {
   ]));
 }
 
+/**
+ * The switch: an invoice whose every line is green (matched before, nothing odd, the total right)
+ * is saved without a check, photo or email. Off until a manager turns it on.
+ */
+function autoCountBox(on) {
+  const box = h('input', { type: 'checkbox', checked: Boolean(on), 'aria-label': 'Save all-green invoices without a check' });
+  const note = h('div', { class: 'small muted' });
+  const say = () => { note.textContent = box.checked
+    ? 'On: an invoice where every line is green saves itself, and you see it as saved. Anything new, a guess or anything odd still waits for you.'
+    : 'Off: every invoice waits for you to check it and save. Turn it on once green lines are rarely changed (the score under “The app against MarginEdge”).'; };
+  box.addEventListener('change', async () => {
+    box.disabled = true;
+    const r = await api('POST', '/api/invoices/settings', { autoCount: box.checked });
+    box.disabled = false;
+    if (!r.ok) box.checked = !box.checked;
+    say();
+  });
+  say();
+  return sideBox('Checking invoices', h('label', { class: 'row tight' }, box, h('span', { class: 'strong small', text: 'Save all-green invoices without a check' })), note);
+}
+
 /** Photograph an invoice: one or more pages, then the app reads it. */
 function photoCard(me, connected, opts = {}) {
   const pages = [...(opts.pages ?? [])];
@@ -6259,7 +6280,7 @@ async function invoicesScreen(me, opts = {}) {
   show(shell(me, 'orders', [
     h('header', {}, h('div', { class: 'kicker', text: 'Orders' }), h('h1', { text: 'Invoices' }),
       h('div', { class: 'sub', text: 'Photograph an invoice for the app to read, or type one in. MarginEdge still reads your regular invoices for now.' })),
-    page([photoCard(me, readerConnected), waiting, compareCard(), form, list], [sideBox('', sideActions(h('button', { class: 'btn', text: '← Orders', onclick: () => ordersScreen(me) })))]),
+    page([photoCard(me, readerConnected), waiting, compareCard(), form, list], [autoCountBox(r.data.autoCount), sideBox('', sideActions(h('button', { class: 'btn', text: '← Orders', onclick: () => ordersScreen(me) })))]),
   ]));
 }
 
@@ -6564,7 +6585,7 @@ async function inboxCard(me) {
       h('div', { class: 'list compact' },
         h('div', {}, h('span', { class: 'grow small', text: 'Invoices' }), h('b', { class: 'small', text: d.addresses.invoices })),
         h('div', {}, h('span', { class: 'grow small', text: 'OpenTable reports' }), h('b', { class: 'small', text: d.addresses.reports }))),
-      h('div', { class: 'small muted', text: 'While we test, every emailed invoice waits for you to check it, like a photo. One that says “everything matched” is all green: check it and save.' }),
+      h('div', { class: 'small muted', text: 'Emailed invoices are read like photos and wait for you to check them, unless “Save all-green invoices without a check” is on (Invoices). One that says “everything matched” is all green.' }),
       code ? h('div', { class: 'note small' }, 'Gmail’s forwarding code: ', h('b', { text: code.code }), ' (type it into Gmail’s Forwarding settings)') : null,
       h('div', { class: 'small strong', text: 'Who may send' }),
       d.senders.length ? h('div', { class: 'list compact' }, d.senders.map((sd) => h('div', {},

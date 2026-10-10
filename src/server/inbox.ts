@@ -33,10 +33,7 @@ export interface InboxSettings {
   fetch?: Fetch;
   baseUrl?: string;
   now?: () => number;
-  /**
-   * Count an invoice on its own when every line is matched and nothing's odd. Off while invoices
-   * are being tested (INVOICE_AUTOCOUNT=1 turns it on): then each waits for a manager, one click.
-   */
+  /** Count an invoice on its own even when the restaurant's setting is off (tests). */
   autoCount?: boolean;
 }
 
@@ -129,7 +126,9 @@ async function takeInvoice(db: Db, rid: string, files: { filename: string; conte
  * Once read: counted on its own when the vendor is one we know and every line was matched before
  * (no one needs to check it), else it waits with the others to check, saying why.
  */
-export async function countOrWait(db: Db, rid: string, scanId: string, auto = false): Promise<void> {
+export async function countOrWait(db: Db, rid: string, scanId: string, forced = false): Promise<void> {
+  // A manager's setting (Invoices): save one that's all green without a check. Off by default.
+  const auto = forced || ((await db.query<{ on: boolean }>('SELECT invoice_autocount AS on FROM restaurants WHERE id = $1', [rid])).rows[0]?.on ?? false);
   const scan = (await db.query<{ status: string; error: string | null; vendor: string | null; total: string | null }>("SELECT status, error, result->>'vendor' AS vendor, result->>'total' AS total FROM invoice_scans WHERE id = $1", [scanId])).rows[0];
   if (!scan) return;
   if (scan.status === 'failed') {

@@ -126,8 +126,7 @@ test('the inbox, end to end', { skip: !db && 'no PostgreSQL for tests (or runnin
   }) as any;
   t.after(() => { claudeSettings.fetch = readerWas.fetch; if (readerWas.key === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = readerWas.key; });
 
-  // Counting on its own is off while testing; switched on here to test it.
-  const app = createApp({ db: db!, setupToken: 'setup-secret', secureCookies: false, inbox: { apiKey: 're_test', webhookSecret: SECRET, fetch: fakeFetch as any, domain: 'napolicarrboro.com', autoCount: true } });
+  const app = createApp({ db: db!, setupToken: 'setup-secret', secureCookies: false, inbox: { apiKey: 're_test', webhookSecret: SECRET, fetch: fakeFetch as any, domain: 'napolicarrboro.com' } });
   const server = createServer(app);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());
@@ -194,14 +193,14 @@ test('the inbox, end to end', { skip: !db && 'no PostgreSQL for tests (or runnin
     { productId: lids, quantity: 6, unit: 'each', total: 13.14, description: 'Carlisle Smart Lid', itemKey: '#70090s', perQuantity: 1 }] });
   assert.equal(saved.status, 200, JSON.stringify(saved.json));
 
-  // The next order, the same two items: counted with no one checking it.
+  // The next order, the same two items: all green, but saving without a check is off until a manager turns it on.
+  assert.equal((await call('GET', '/api/invoices')).json.autoCount, false);
   await arrive('e6');
   const second = await settled('130000001');
-  assert.equal(second.status, 'counted', second.detail);
-  assert.equal(second.scanStatus, 'saved');
-  const counted = (await db!.query<{ number: string; note: string; created_by: string | null; lines: string; total: string }>(
-    "SELECT number, note, created_by, (SELECT count(*) FROM supplier_invoice_lines l WHERE l.invoice_id = i.id)::text AS lines, (SELECT sum(quantity) FROM supplier_invoice_lines l WHERE l.invoice_id = i.id)::text AS total FROM supplier_invoices i WHERE i.id = $1", [second.invoiceId])).rows[0]!;
-  assert.deepEqual([counted.number, counted.note, counted.created_by, counted.lines, Number(counted.total)], ['130000001', 'Counted automatically from an email.', null, '2', 14]);
+  assert.deepEqual([second.status, second.scanStatus], ['waiting', 'read']);
+  assert.match(second.detail, /everything matched: check it and save/);
+  assert.equal((await call('POST', '/api/invoices/settings', { autoCount: 'yes' })).status, 400);
+  assert.equal((await call('POST', '/api/invoices/settings', { autoCount: true })).json.autoCount, true);
   // One with an item never seen before waits, saying which.
   await arrive('e7');
   const third = await settled('130000002');
@@ -219,6 +218,8 @@ test('the inbox, end to end', { skip: !db && 'no PostgreSQL for tests (or runnin
   await arrive('e8');
   const fourth = await settled('130000003');
   assert.equal(fourth.status, 'counted', fourth.detail);
+  const counted = (await db!.query<{ number: string; note: string; created_by: string | null }>('SELECT number, note, created_by FROM supplier_invoices WHERE id = $1', [fourth.invoiceId])).rows[0]!;
+  assert.deepEqual([counted.number, counted.note, counted.created_by], ['130000003', 'Saved on its own: every line matched.', null]);
   const fourthLines = (await db!.query<{ product_id: string | null; priced: boolean }>('SELECT product_id, priced FROM supplier_invoice_lines WHERE invoice_id = $1 ORDER BY line_number', [fourth.invoiceId])).rows;
   assert.deepEqual(fourthLines.map((l) => [l.product_id === towels, l.priced]), [[true, true], [false, false]]);
   // Removing a sender.

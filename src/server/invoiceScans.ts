@@ -113,8 +113,9 @@ export async function scanRoutes(db: Db, req: IncomingMessage, res: ServerRespon
     });
     const id = (await db.query<{ id: string }>('INSERT INTO invoice_scans (restaurant_id, created_by) VALUES ($1, $2) RETURNING id', [who.restaurantId, who.staffId])).rows[0]!.id;
     for (const [i, p] of clean.entries()) await db.query('INSERT INTO invoice_scan_pages (scan_id, page, media_type, data) VALUES ($1, $2, $3, $4)', [id, i + 1, p.mediaType, p.data]);
-    // Read in the background; the page asks how it's going.
-    void readScan(db, who.restaurantId, id);
+    // Read in the background; the page asks how it's going. With the setting on, an all-green one saves itself.
+    const auto = (await db.query<{ on: boolean }>('SELECT invoice_autocount AS on FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.on ?? false;
+    void readScan(db, who.restaurantId, id, auto ? () => autoCount(db, who.restaurantId, id) : undefined);
     return send(res, 200, { id, connected: Boolean(scanSettings.apiKey()) }), true;
   }
 
@@ -257,7 +258,7 @@ export async function autoCount(db: Db, restaurantId: string, scanId: string, op
   if (opts.save === false) return { counted: false, ready: true };
   const date = mt.date && mt.date <= today ? mt.date : today;
   const invoiceId = await saveScan(db, { restaurantId, staffId: null }, scanId, model, result, {
-    vendor: { key: mt.vendor.key }, date, ...(mt.number ? { number: mt.number } : {}), note: 'Counted automatically from an email.', ...charges(result),
+    vendor: { key: mt.vendor.key }, date, ...(mt.number ? { number: mt.number } : {}), note: 'Saved on its own: every line matched.', ...charges(result),
     lines: verdict.lines.map((l) => ({ productId: l.productId, quantity: l.baseQuantity, unit: l.baseUnit, total: l.read.total, description: l.read.description, itemKey: l.itemKey,
       ...(l.read.code ? { code: l.read.code } : {}), ...(l.perQuantity ? { perQuantity: l.perQuantity } : {}) })),
     skipped: verdict.skipped.map((l) => ({ description: l.read.description, quantity: l.read.quantity, unit: l.read.unit, total: l.read.total, itemKey: l.itemKey, ...(l.read.code ? { code: l.read.code } : {}) })),

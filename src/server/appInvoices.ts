@@ -8,6 +8,7 @@
  *   POST   /api/invoices              add one: { vendor: { key } | { id } | { name, kind }, date, number?, note?, lines: [{ productId, quantity, unit, total }] }
  *   DELETE /api/invoices/:id          take one back out
  *   GET    /api/invoices/compare      ours against MarginEdge's reading of the same invoices, while both run
+ *   POST   /api/invoices/settings     { autoCount }: save an invoice whose lines are all green without a check
  *
  * Managers and up.
  */
@@ -50,7 +51,9 @@ export async function invoiceRoutes(db: Db, req: IncomingMessage, res: ServerRes
     // Photos still being read or waiting for a check.
     const scans = (await db.query<{ id: string; status: string; error: string | null; vendor: string | null; created_at: string }>(
       "SELECT id, status, error, result->>'vendor' AS vendor, created_at::text AS created_at FROM invoice_scans WHERE restaurant_id = $1 AND status IN ('reading', 'read', 'failed') AND created_at > now() - interval '30 days' ORDER BY created_at DESC", [who.restaurantId])).rows;
+    const auto = (await db.query<{ on: boolean }>('SELECT invoice_autocount AS on FROM restaurants WHERE id = $1', [who.restaurantId])).rows[0]?.on ?? false;
     return send(res, 200, {
+      autoCount: auto,
       scans: scans.map((x) => ({ id: x.id, status: x.status, error: x.error, vendor: x.vendor, createdAt: x.created_at })),
       readerConnected: Boolean(process.env.ANTHROPIC_API_KEY?.trim()),
       vendors: ours.map((v) => ({ id: v.id, name: v.name, kind: v.kind })),
@@ -64,6 +67,14 @@ export async function invoiceRoutes(db: Db, req: IncomingMessage, res: ServerRes
     const id = await createAppInvoice(db, who, model, today, b);
     invalidate(who.restaurantId);
     return send(res, 200, { ok: true, id }), true;
+  }
+
+  // Save all-green invoices without a check: on or off.
+  if (method === 'POST' && path === '/api/invoices/settings') {
+    const b = await body(req);
+    if (typeof b.autoCount !== 'boolean') throw new HttpError(400, 'autoCount: true or false.');
+    await db.query('UPDATE restaurants SET invoice_autocount = $2 WHERE id = $1', [who.restaurantId, b.autoCount]);
+    return send(res, 200, { ok: true, autoCount: b.autoCount }), true;
   }
 
   if (method === 'GET' && path === '/api/invoices/compare') {
