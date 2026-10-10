@@ -8060,17 +8060,35 @@ const addDaysISO = (day, n) => { const x = new Date(`${day}T12:00:00Z`); x.setUT
 function boardsPart(me, d, reload) {
   const KIND = { room: 'Dining room', bar: 'Bar', counter: 'Counter', host: 'Host stand', kitchen: 'Kitchen' };
   const name = (w) => (w.type === 'sales' ? `${w.category} sold tonight` : WIDGET_INFO[w.type]?.[0] ?? w.type);
+  const err = h('div', { class: 'error small' });
   const cards = d.posts.map((p) => {
     const ws = p.widgets ?? [], wide = ws.filter((w) => w.size === 'wide'), small = ws.filter((w) => w.size !== 'wide');
+    const on = d.devices.filter((x) => x.postId === p.id).map((x) => x.name);
     const col = (list, label) => h('div', { class: 'bmap-col' }, h('div', { class: 'small muted strong', text: label }), list.length ? list.map((w) => h('div', { class: 'bmap-w', text: name(w) })) : h('div', { class: 'small muted', text: '–' }));
     return h('section', { class: 'card board-card' },
-      h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, h('h2', { text: p.name }), h('div', { class: 'small muted', text: `${KIND[p.kind] ?? p.kind}${p.widgetsChosen ? '' : ' · the default widgets'}` })),
+      h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, h('h2', { text: p.name }), h('div', { class: 'small muted', text: `${KIND[p.kind] ?? p.kind}${p.widgetsChosen ? '' : ' · the default widgets'} · ${on.length ? `on ${on.join(', ')}` : 'no iPad shows it yet'}` })),
         h('button', { class: 'btn dark', text: 'Edit widgets', onclick: () => boardEditor(p, d, reload) }),
         h('button', { class: 'btn', text: 'Open the board', onclick: () => floorBoard({ me, post: p.id }) })),
       h('div', { class: 'bmap' }, col(wide, 'Wide · left'), col(small, 'Small · right')));
   });
+  // Which board each iPad shows: an iPad on a prep station only shows prep until it's given a board.
+  const ipads = sideBox('iPads', h('div', { class: 'small muted', text: 'Which board each iPad opens on. “Prep only” shows its kitchen prep list and no board.' }),
+    d.devices.length ? d.devices.map((x) => {
+      const pick = h('select', { 'aria-label': `Board for ${x.name}` }, h('option', { value: '', text: 'Prep only (no board)' }), d.posts.map((p) => h('option', { value: p.id, text: p.name, selected: x.postId === p.id ? true : undefined })));
+      pick.addEventListener('change', () => pageAction(async () => { const res = await api('POST', `/api/devices/${x.id}`, { floorPostId: pick.value || null }); if (!res.ok) err.textContent = res.data.error ?? 'Not saved.'; else reload(); }));
+      return h('div', { class: 'ipad-row' }, h('div', { class: 'row tight' }, h('span', { class: 'strong grow', text: x.name }), h('span', { class: 'small muted', text: x.lastSeen ? `Last used ${when(x.lastSeen)}` : 'Not used yet' })), pick);
+    }) : h('div', { class: 'small muted', text: 'No iPads set up yet.' }), err);
+  // No kitchen board yet: one tap makes it (the dough count it can change, online orders, tonight).
+  const noKitchen = d.posts.some((p) => p.kind === 'kitchen') ? null : h('section', { class: 'card' },
+    h('h2', { text: 'No kitchen board yet' }),
+    h('div', { class: 'small muted', text: 'The kitchen iPad shows a board once there’s a Kitchen post: the dough count it can change, online orders, notes and specials. Its prep list stays one tap away.' }),
+    h('div', { class: 'row' }, h('button', { class: 'btn dark', text: '+ Add a Kitchen board', onclick: () => pageAction(async () => {
+      const res = await api('POST', '/api/floor/posts', { name: 'Kitchen', kind: 'kitchen', tables: '' });
+      if (!res.ok) return (err.textContent = res.data.error ?? 'Not added.');
+      reload();
+    }) })));
   return page([h('div', { class: 'small muted', text: 'What each post’s iPad shows. Wide widgets go down the left, small ones stack down the right, each in the order you set; on a phone it’s one column.' }),
-    cards.length ? cards : h('div', { class: 'card small muted', text: 'No posts yet: add them under Posts, iPads & checklists.' })]);
+    noKitchen, cards.length ? cards : h('div', { class: 'card small muted', text: 'No posts yet: add them under Posts, iPads & checklists.' })], [ipads]);
 }
 
 function floorSetupTab(d, reload) {
