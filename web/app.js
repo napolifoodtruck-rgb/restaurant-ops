@@ -6017,12 +6017,15 @@ function renderScan(me, id, x, pagesBox, back) {
   const rows = mt.lines.map((l) => {
     const line = { l, productId: l.productId, include: Boolean(l.productId && l.baseQuantity > 0 && !l.flags.includes('credit') && !l.flags.includes('alreadyIn')) };
     const tags = h('div', { class: 'scan-flags' });
-    const qtyIn = h('input', { inputmode: 'decimal', class: 'amount', value: l.baseQuantity > 0 ? String(l.baseQuantity) : '', 'aria-label': 'How much came in' });
-    const unitOut = h('span', { class: 'small muted', text: l.baseUnit ? UNIT_LABEL(l.baseUnit) : '' });
+    const qtyIn = h('input', { inputmode: 'decimal', class: 'amount', value: l.baseQuantity > 0 ? String(l.baseQuantity) : '', placeholder: l.productId ? '' : 'Pick first', 'aria-label': 'How much came in' });
+    const unitOut = h('span', { class: 'small muted', text: l.baseUnit ? UNIT_LABEL(l.baseUnit) : '← pick the ingredient above' });
     const totalIn = h('input', { inputmode: 'decimal', class: 'amount money-in', value: String(l.read.total), 'aria-label': 'Line total' });
     const keep = h('input', { type: 'checkbox', checked: line.include, 'aria-label': 'Count this line' });
     keep.addEventListener('change', () => { line.include = keep.checked; });
-    const pick = ingredientPick(l.productName ?? '', (p) => { line.productId = p.id; line.unit = p.unit; unitOut.textContent = UNIT_LABEL(p.unit); if (!keep.checked && qtyIn.value) { keep.checked = true; line.include = true; } }, () => { line.productId = null; });
+    // An ingredient and an amount: the line counts (ticked), without a separate tap.
+    const tickIfReady = () => { if (!keep.checked && line.productId && parseAmount(qtyIn.value) > 0) { keep.checked = true; line.include = true; } };
+    qtyIn.addEventListener('input', tickIfReady);
+    const pick = ingredientPick(l.productName ?? '', (p) => { line.productId = p.id; line.unit = p.unit; unitOut.textContent = UNIT_LABEL(p.unit); qtyIn.placeholder = ''; tickIfReady(); qtyIn.focus(); }, () => { line.productId = null; });
     const chips = l.how === 'guess' && l.candidates?.length > 1 ? h('div', { class: 'small scan-alts' }, h('span', { class: 'muted', text: 'Or:' }), l.candidates.slice(1).map((c) => h('button', { class: 'link', type: 'button', text: c.name, onclick: () => { line.productId = c.id; pick.set(c.name); } }))) : null;
     const flags = [...l.flags, ...(l.how === 'guess' ? ['guess'] : [])];
     fill(tags, flags.map((f) => f === 'guess' ? h('span', { class: 'tag blue', text: 'Best guess: check it' }) : h('span', { class: `tag ${SCAN_FLAG[f]?.[1] ?? ''}`, text: f === 'priceJump' && l.was ? `${l.perBase > l.was ? 'Up' : 'Down'} ${Math.round(Math.abs(l.perBase / l.was - 1) * 100)}% (was ${perUnitText(l.was, l.baseUnit)})` : f === 'handwritten' && l.read.handwritten ? `Hand-corrected: ${l.read.handwritten}` : SCAN_FLAG[f]?.[0] ?? f })));
