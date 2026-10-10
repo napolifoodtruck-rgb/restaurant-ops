@@ -3529,6 +3529,20 @@ function soldAsBox(r, reload) {
 
 const KIND_NAMES = { dish: 'Dish', drink: 'Drink', prep: 'Prep', barPrep: 'Bar prep' };
 const UNIT_LABEL = (u) => ({ floz: 'fl oz', each: 'each' }[u] ?? u);
+/** Grams or ml in one of a unit: for working out an amount from a printed pack. */
+const UNIT_SIZE = { g: ['m', 1], kg: ['m', 1000], oz: ['m', 28.349523125], lb: ['m', 453.59237], ml: ['v', 1], l: ['v', 1000], floz: ['v', 29.5735295625], cup: ['v', 236.5882365], qt: ['v', 946.352946], gal: ['v', 3785.411784] };
+/**
+ * How much came in, in `unit`, from an invoice line: its quantity × its pack when the two convert
+ * (2 × 7 oz in oz → 14; in lb → 0.875), or its quantity when it's counted each.
+ */
+function cameIn(l, unit) {
+  const n = l.read?.quantity;
+  if (!(n > 0)) return undefined;
+  if (unit === 'each') return n;
+  const pack = l.packOf, from = pack && UNIT_SIZE[pack.unit], to = UNIT_SIZE[unit];
+  if (!from || !to || from[0] !== to[0]) return undefined;
+  return Math.round(n * pack.amount * from[1] / to[1] * 1000) / 1000;
+}
 const money2 = (v) => (v === undefined || v === null ? '–' : `$${Number(v).toFixed(2)}`);
 
 async function cardsScreen(me, opts = {}) {
@@ -5783,10 +5797,12 @@ function ingredientPick(initial, onPick, onType) {
 }
 
 /** A new ingredient: its name, what it's counted in, and food or drink. */
-function newIngredientForm(name, onAdded) {
+function newIngredientForm(name, onAdded, defaults = {}) {
   const nameIn = h('input', { type: 'text', value: name, 'aria-label': 'Ingredient name' });
   const unit = h('select', { 'aria-label': 'Counted in' }, [['lb', 'pounds'], ['oz', 'ounces'], ['kg', 'kilograms'], ['g', 'grams'], ['each', 'each'], ['gal', 'gallons'], ['qt', 'quarts'], ['l', 'liters'], ['ml', 'milliliters'], ['floz', 'fl oz']].map(([v, t]) => h('option', { value: v, text: t })));
   const type = h('select', { 'aria-label': 'Kind' }, [['food', 'Food'], ['wine', 'Wine'], ['beer', 'Beer'], ['liquor', 'Liquor'], ['na', 'Non-alcoholic drink'], ['other', 'Supplies, other']].map(([v, t]) => h('option', { value: v, text: t })));
+  if (defaults.unit && [...unit.options].some((o) => o.value === defaults.unit)) unit.value = defaults.unit;
+  if (defaults.kind && [...type.options].some((o) => o.value === defaults.kind)) type.value = defaults.kind;
   const err = h('div', { class: 'error' });
   return h('div', { class: 'new-ing' }, h('div', { class: 'small strong', text: 'New ingredient' }), nameIn,
     h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Counted in' }), unit, type), err,
@@ -6025,17 +6041,38 @@ function renderScan(me, id, x, pagesBox, back) {
     // An ingredient and an amount: the line counts (ticked), without a separate tap.
     const tickIfReady = () => { if (!keep.checked && line.productId && parseAmount(qtyIn.value) > 0) { keep.checked = true; line.include = true; } };
     qtyIn.addEventListener('input', tickIfReady);
-    const pick = ingredientPick(l.productName ?? '', (p) => { line.productId = p.id; line.unit = p.unit; unitOut.textContent = UNIT_LABEL(p.unit); qtyIn.placeholder = ''; tickIfReady(); qtyIn.focus(); }, () => { line.productId = null; });
-    const chips = l.how === 'guess' && l.candidates?.length > 1 ? h('div', { class: 'small scan-alts' }, h('span', { class: 'muted', text: 'Or:' }), l.candidates.slice(1).map((c) => h('button', { class: 'link', type: 'button', text: c.name, onclick: () => { line.productId = c.id; pick.set(c.name); } }))) : null;
-    const flags = [...l.flags, ...(l.how === 'guess' ? ['guess'] : [])];
-    fill(tags, flags.map((f) => f === 'guess' ? h('span', { class: 'tag blue', text: 'Best guess: check it' }) : h('span', { class: `tag ${SCAN_FLAG[f]?.[1] ?? ''}`, text: f === 'priceJump' && l.was ? `${l.perBase > l.was ? 'Up' : 'Down'} ${Math.round(Math.abs(l.perBase / l.was - 1) * 100)}% (was ${perUnitText(l.was, l.baseUnit)})` : f === 'handwritten' && l.read.handwritten ? `Hand-corrected: ${l.read.handwritten}` : SCAN_FLAG[f]?.[0] ?? f })));
+    // How sure: green, matched before; yellow, a guess or something to look at; red, nothing like it on the list.
+    const conf = h('div', { class: 'scan-conf' });
+    const sure = (level, text) => { line.row?.classList.remove('conf-green', 'conf-yellow', 'conf-red'); line.row?.classList.add(`conf-${level}`); conf.textContent = text; };
+    const picked = (p) => {
+      line.productId = p.id; line.unit = p.unit; unitOut.textContent = UNIT_LABEL(p.unit); qtyIn.placeholder = '';
+      // How much came in, worked out from the pack when it's printed (2 × 7 oz → 14 oz).
+      if (!qtyIn.value) { const q = cameIn(l, p.unit); if (q !== undefined) qtyIn.value = String(q); }
+      sure('green', 'You picked it');
+      suggestBox.hidden = true;
+      tickIfReady(); qtyIn.focus();
+    };
+    const pick = ingredientPick(l.productName ?? '', picked, () => { line.productId = null; });
+    const chips = l.how === 'guess' && l.candidates?.length > 1 ? h('div', { class: 'small scan-alts' }, h('span', { class: 'muted', text: 'Or:' }), l.candidates.slice(1).map((c) => h('button', { class: 'link', type: 'button', text: c.name, onclick: () => { line.productId = c.id; pick.set(c.name); sure('green', 'You picked it'); } }))) : null;
+    // Nothing like it on the list: most likely new, so it can be added as it reads, in one go.
+    const suggestBox = h('div', { class: 'scan-suggest', hidden: !l.suggest });
+    if (l.suggest) fill(suggestBox, h('button', { class: 'btn small-btn', type: 'button', text: `+ Add “${l.suggest.name}” (${UNIT_LABEL(l.suggest.unit)})`,
+      onclick: () => fill(suggestBox, newIngredientForm(l.suggest.name, (p) => { pick.set(p.name); costCache.clear(); picked(p); }, { unit: l.suggest.unit, kind: l.suggest.kind })) }),
+      h('span', { class: 'small muted', text: 'or pick it above if it’s on your list under another name.' }));
+    // (A guess and a new-looking item are said above the ingredient, in colour: not again as tags.)
+    const flags = l.flags.filter((f) => f !== 'noProduct');
+    fill(tags, flags.map((f) => h('span', { class: `tag ${SCAN_FLAG[f]?.[1] ?? ''}`, text: f === 'priceJump' && l.was ? `${l.perBase > l.was ? 'Up' : 'Down'} ${Math.round(Math.abs(l.perBase / l.was - 1) * 100)}% (was ${perUnitText(l.was, l.baseUnit)})` : f === 'handwritten' && l.read.handwritten ? `Hand-corrected: ${l.read.handwritten}` : SCAN_FLAG[f]?.[0] ?? f })));
     line.get = () => ({ productId: line.productId, quantity: parseAmount(qtyIn.value), unit: line.unit ?? l.baseUnit, total: parseAmount(totalIn.value), description: l.read.description, itemKey: l.itemKey,
       perQuantity: l.read.quantity ? parseAmount(qtyIn.value) / l.read.quantity : undefined });
     line.row = h('div', { class: `scan-line${flags.length ? ' flagged' : ''}` },
       h('div', { class: 'scan-read' }, keep, h('div', {},
         h('b', { text: l.read.description }),
         h('div', { class: 'small muted', text: [l.read.code ? `#${l.read.code}` : '', `${l.read.quantity} ${l.read.unit ?? ''}`.trim(), l.read.pack, l.read.unitPrice !== undefined ? `@ ${money(l.read.unitPrice)}` : '', `= ${money(l.read.total)}`].filter(Boolean).join(' · ') }))),
-      h('div', { class: 'scan-ours' }, pick, chips, h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Came in' }), qtyIn, unitOut, h('span', { class: 'small muted', text: 'for' }), totalIn), tags));
+      h('div', { class: 'scan-ours' }, conf, pick, chips, suggestBox, h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Came in' }), qtyIn, unitOut, h('span', { class: 'small muted', text: 'for' }), totalIn), tags));
+    const odd = l.flags.some((f) => ['unsure', 'math', 'handwritten', 'noAmount', 'priceJump'].includes(f));
+    if (!l.productId) sure('red', l.suggest ? 'Not on your list: looks like a new ingredient' : 'No ingredient found');
+    else if (l.how === 'guess' || odd) sure('yellow', l.how === 'guess' ? 'Best guess: check it' : 'Matched, but something to look at');
+    else sure('green', l.how === 'learned' ? 'Matched: picked before' : 'Matched: bought before');
     return line;
   });
 

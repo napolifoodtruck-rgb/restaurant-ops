@@ -94,7 +94,8 @@ export function readWebstaurantEmail(html: string, receivedAt?: string): ReadInv
   const date = dateText ? new Date(`${dateText} 12:00 UTC`).toISOString().slice(0, 10) : receivedAt?.slice(0, 10);
   return {
     vendor: 'WebstaurantStore', ...(number ? { invoiceNumber: number } : {}), ...(date ? { invoiceDate: date } : {}),
-    lines: lines.map((l) => ({ code: l.code, description: l.description, quantity: l.quantity, unit: 'EA', unitPrice: l.unitPrice, total: l.total })),
+    // WebstaurantStore is mostly packaging, cleaning and equipment: a new item is "other" unless changed.
+    lines: lines.map((l) => ({ code: l.code, description: l.description, quantity: l.quantity, unit: 'EA', unitPrice: l.unitPrice, total: l.total, kind: 'other' as const })),
     ...(tax !== undefined ? { tax } : {}), ...(shipping ? { delivery: shipping } : {}), ...(total !== undefined ? { total } : {}),
     notes: 'From WebstaurantStore’s order email.',
   };

@@ -1106,6 +1106,17 @@ button.donut-row { display: flex; min-width: 0; }
 .scan-lines { display: grid; gap: 0; margin: 8px 0; }
 .scan-line { display: grid; grid-template-columns: minmax(200px, 1fr) minmax(260px, 1.2fr); gap: 14px; padding: 12px 0; border-top: 1px solid var(--line); }
 .scan-line.flagged { background: linear-gradient(90deg, rgba(201,138,20,.06), transparent 60%); }
+/* How sure the match is: green matched before, yellow a guess or something to look at, red nothing found. */
+.scan-line { border-left: 5px solid transparent; padding-left: 12px; }
+.scan-line.conf-green { border-left-color: #2E7D4F; }
+.scan-line.conf-yellow { border-left-color: #D4A017; }
+.scan-line.conf-red { border-left-color: #C0392B; }
+.scan-conf { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; margin-bottom: 4px; }
+.conf-green .scan-conf { color: #2E7D4F; }
+.conf-yellow .scan-conf { color: #9A7300; }
+.conf-red .scan-conf { color: #C0392B; }
+.scan-suggest { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
+.scan-suggest[hidden] { display: none; }
 .scan-read { display: flex; gap: 10px; align-items: flex-start; }
 .scan-ours { display: grid; gap: 6px; }
 .scan-ours .search-wrap input { width: 100%; box-sizing: border-box; }

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cleanRead, readInvoice } from '../src/connectors/claudeInvoices.ts';
-import { autoCountable, itemKey, matchInvoice, parsePack, vendorKey, type MatchInput } from '../src/core/invoiceMatch.ts';
+import { autoCountable, itemKey, matchInvoice, packInName, parsePack, plainName, vendorKey, type MatchInput } from '../src/core/invoiceMatch.ts';
 
 test('packs as printed', () => {
   assert.deepEqual(parsePack('6/5 LB'), { amount: 30, unit: 'lb' });
@@ -124,4 +124,21 @@ test('line totals that already include their tax are taken before tax', () => {
   const plain = cleanRead({ vendor: 'X', lines: [{ description: 'A', quantity: 2, unitPrice: 5, total: 10 }], tax: 0.7, total: 10.7 });
   assert.equal(plain.lines[0]!.total, 10);
   assert.equal(plain.notes, undefined);
+});
+
+test('nothing like it on the list: suggested as a new ingredient, counted the way it is packed', () => {
+  assert.deepEqual(packInName('Regal Whole Star Anise 7 oz.'), { amount: 7, unit: 'oz' });
+  assert.equal(packInName('Lavex Kraft M-Fold Towel - 4,000/Case'), undefined);
+  assert.equal(plainName('Regal Whole Star Anise 7 oz.'), 'Regal Whole Star Anise');
+  assert.equal(plainName('Lavex Natural Brown Kraft M-Fold Towel - 4,000/Case'), 'Lavex Natural Brown Kraft M-Fold Towel');
+  const read = { vendor: 'Produce Co', lines: [
+    { description: 'Regal Whole Star Anise 7 oz.', quantity: 2, unitPrice: 10.49, total: 20.98, item: 'Star anise, whole', kind: 'food' as const },
+    { description: 'Lavex Kraft M-Fold Towel - 4,000/Case', quantity: 1, total: 24.49, kind: 'other' as const },
+    { description: 'Fresh basil 1 lb', quantity: 1, total: 12, item: 'Basil, fresh' }] };
+  const m = matchInvoice(base({ read }));
+  assert.deepEqual(m.lines[0]!.suggest, { name: 'Star anise, whole', unit: 'oz', kind: 'food' });
+  assert.deepEqual(m.lines[0]!.packOf, { amount: 7, unit: 'oz' });
+  assert.deepEqual(m.lines[1]!.suggest, { name: 'Lavex Kraft M-Fold Towel', unit: 'each', kind: 'other' });
+  // On the list under the reader's plain name: a guess, not new.
+  assert.deepEqual([m.lines[2]!.how, m.lines[2]!.productId, m.lines[2]!.suggest], ['guess', 'p-basil', undefined]);
 });

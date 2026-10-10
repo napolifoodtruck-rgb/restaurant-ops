@@ -22,6 +22,10 @@ export interface ReadLine {
   unsure?: boolean;
   /** A handwritten change applied to this line, in a few words ("shorted 1 cs", "qty 2 → 1"). */
   handwritten?: string;
+  /** What it is, as an ingredient list would name it: no brand, no size ("Star anise, whole"). */
+  item?: string;
+  /** Food, a drink, or supplies: for a new ingredient. */
+  kind?: 'food' | 'wine' | 'beer' | 'liquor' | 'na' | 'other';
 }
 
 export interface ReadInvoice {
@@ -79,6 +83,8 @@ const TOOL = {
             unitPrice: { type: 'number' },
             total: { type: 'number', description: 'Extended price for the line. Negative for credits.' },
             unsure: { type: 'boolean', description: 'True if any number on this line was hard to read.' },
+            item: { type: 'string', description: 'What the product is, the way a restaurant ingredient list would name it: no brand, no pack or size, generic first, e.g. "Star anise, whole", "Cinnamon sticks", "Mozzarella, fresh", "Paper towels, M-fold".' },
+            kind: { type: 'string', enum: ['food', 'wine', 'beer', 'liquor', 'na', 'other'], description: 'food; wine, beer, liquor or na (non-alcoholic drink); other for supplies, packaging, cleaning, equipment.' },
             handwritten: { type: 'string', description: 'If a handwritten mark changes this line (crossed out, shorted, a new quantity or price), what it says in a few words, e.g. "shorted 1 cs" or "qty 2 → 1". The quantity and total fields then hold the corrected numbers. Leave out when nothing is handwritten.' },
           },
         },
@@ -125,6 +131,8 @@ export function cleanRead(input: any): ReadInvoice {
     if (unitPrice !== undefined) line.unitPrice = unitPrice;
     if (l.unsure === true) line.unsure = true;
     if (str(l.handwritten)) line.handwritten = str(l.handwritten)!;
+    if (str(l.item)) line.item = str(l.item)!.slice(0, 80);
+    if (['food', 'wine', 'beer', 'liquor', 'na', 'other'].includes(l.kind)) line.kind = l.kind;
     return line;
   }).filter(Boolean);
   const date = str(input?.invoiceDate);

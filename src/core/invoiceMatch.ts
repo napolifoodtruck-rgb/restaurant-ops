@@ -55,6 +55,10 @@ export interface MatchedLine {
   perBase?: number;
   was?: number;
   flags: LineFlag[];
+  /** Nothing on the list looks like it: what to add it as (a name, how to count it, its kind). */
+  suggest?: { name: string; unit: string; kind: string };
+  /** The pack, as printed or read from the description ("7 oz."): for working out how much came in. */
+  packOf?: { amount: number; unit: string };
 }
 
 export interface MatchedInvoice {
@@ -71,6 +75,18 @@ export interface MatchedInvoice {
 /** A vendor's line, as a key: its item code when printed, else its description, tidied. */
 export const itemKey = (l: Pick<ReadLine, 'code' | 'description'>) => (l.code ? `#${l.code.toLowerCase().replace(/\s+/g, '')}` : l.description.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
 export const vendorKey = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\b(inc|llc|co|corp|ltd|company|the)\b/g, '').replace(/\s+/g, ' ').trim();
+
+/** A size in the description itself: "Regal Whole Star Anise 7 oz." → 7 oz. */
+export function packInName(description: string): { amount: number; unit: string } | undefined {
+  const m = description.toLowerCase().match(/(\d+(?:\.\d+)?)\s*(fl\.? ?oz|oz|lbs?|gal|qt|ml|ltr?|l|kg|g)\b\.?/);
+  return m ? parsePack(`${m[1]} ${m[2]!.replace(/\./g, '').replace(/ /g, '')}`) : undefined;
+}
+
+/** A description as an ingredient's name: no size, no case count ("Regal Whole Star Anise 7 oz." → "Regal Whole Star Anise"). */
+export function plainName(description: string): string {
+  const s = description.replace(/\s*-\s*[\d,]+\s*\/\s*case\b.*$/i, '').replace(/\b\d+(?:\.\d+)?\s*(fl\.? ?oz|oz|lbs?|gal|qt|ml|ltr?|l|kg|g|ct|count|pk|pack)\b\.?/gi, '').replace(/\s+/g, ' ').replace(/[\s,.-]+$/, '').trim();
+  return (s || description).slice(0, 80);
+}
 
 /** "6/5 LB" → 30 lb; "4/1 GAL" → 4 gal; "12/750ML" → 9000 ml; "25 LB" → 25 lb; "50#" → 50 lb. */
 export function parsePack(pack: string | undefined): { amount: number; unit: string } | undefined {
@@ -106,22 +122,28 @@ export function matchInvoice(input: MatchInput): MatchedInvoice {
     if (learned && product.has(learned.productId)) { how = 'learned'; productId = learned.productId; perQuantity = learned.per; perFrom = 'learned'; }
     else if (seen && product.has(seen.productId)) { how = 'history'; productId = seen.productId; perQuantity = seen.perQuantity; perFrom = 'history'; }
     else {
-      const ranked = input.products.map((p) => ({ p, s: nameLikeness(l.description, p.name) })).filter((x) => x.s >= 0.34).sort((a, b) => b.s - a.s).slice(0, 4);
+      const ranked = input.products.map((p) => ({ p, s: Math.max(nameLikeness(l.description, p.name), l.item ? nameLikeness(l.item, p.name) : 0) })).filter((x) => x.s >= 0.34).sort((a, b) => b.s - a.s).slice(0, 4);
       if (ranked.length) { how = 'guess'; productId = ranked[0]!.p.id; candidates = ranked.map((x) => ({ id: x.p.id, name: x.p.name })); }
     }
     // How much one quantity holds, when it isn't known yet: the pack, else the unit itself.
+    const packOf = parsePack(l.pack) ?? packInName(l.description);
     if (productId && perQuantity === undefined) {
-      const pack = parsePack(l.pack);
+      const pack = packOf;
       const fromPack = pack ? input.baseOf(productId, pack.unit) : undefined;
       if (pack && fromPack !== undefined) { perQuantity = pack.amount * fromPack; perFrom = 'pack'; }
       else if (l.unit) { const u = input.baseOf(productId, normalizeUnit(l.unit.toLowerCase().replace(/^(lbs?|#|pounds?)$/, 'lb'))); if (u !== undefined) { perQuantity = u; perFrom = 'unit'; } }
     }
     const out: MatchedLine = { read: l, itemKey: key, how, flags };
+    if (packOf) out.packOf = packOf;
     if (productId) {
       out.productId = productId;
       out.baseUnit = product.get(productId)!.baseUnit;
       if (candidates) out.candidates = candidates;
-    } else flags.push('noProduct');
+    } else {
+      flags.push('noProduct');
+      // Nothing like it on the list: most likely a new ingredient, counted the way it's packed.
+      if (!flags.includes('credit')) out.suggest = { name: l.item ?? plainName(l.description), unit: packOf && ['mass', 'volume'].includes(dimensionOf(packOf.unit) ?? '') ? packOf.unit : 'each', kind: l.kind ?? 'food' };
+    }
     if (perQuantity !== undefined && perQuantity > 0) {
       out.perQuantity = perQuantity; out.perFrom = perFrom!;
       out.baseQuantity = Math.round(l.quantity * perQuantity * 1000) / 1000;
