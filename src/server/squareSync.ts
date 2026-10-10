@@ -211,7 +211,7 @@ async function syncOrders(db: Db, api: SquareApi, restaurantId: string, location
         const id = text(r['Orders.order_id']);
         const row = byId.get(id) ?? { cols: [id, orderDay(r, 'Orders'), text(r['Orders.table_name']) || null, text(r['Orders.fulfillment_method']) || null, text(r['Orders.order_source']) || null,
           text(r['Orders.team_member_attributed_to_id']) || null, text(r['Orders.team_member_attributed_to_name']) || null], covers: 0, sales: 0, tips: 0, grat: 0 };
-        row.covers += number(r['Orders.cover_count']); row.sales += number(r['Orders.net_sales_minus_auto_gratuity']);
+        row.covers += number(r['Orders.cover_count']); row.sales += number(r['Orders.net_sales']);
         row.tips += number(r['Orders.tips_amount']); row.grat += number(r['Orders.auto_gratuity_amount']);
         byId.set(id, row);
       }
@@ -239,7 +239,7 @@ async function syncOrders(db: Db, api: SquareApi, restaurantId: string, location
       if (!day || !(hour >= 0 && hour <= 23)) continue;
       const k = `${day}|${hour}`;
       const x = hourly.get(k) ?? { day, hour, orders: 0, covers: 0, sales: 0 };
-      x.orders += number(r['Orders.count']); x.covers += number(r['Orders.cover_count']); x.sales += number(r['Orders.net_sales_minus_auto_gratuity']);
+      x.orders += number(r['Orders.count']); x.covers += number(r['Orders.cover_count']); x.sales += number(r['Orders.net_sales']);
       hourly.set(k, x);
     }
     await db.query('DELETE FROM pos_sales_hourly WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3', [restaurantId, from, to]);
