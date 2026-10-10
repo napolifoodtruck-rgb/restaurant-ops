@@ -4643,8 +4643,8 @@ async function todayScreen(me, filter = 'all') {
           h('div', { class: 'sub', text: fixes.length ? `${fixes.length} thing${fixes.length === 1 ? '' : 's'} need${fixes.length === 1 ? 's' : ''} fixing or an answer, the biggest first.` : 'Nothing needs fixing. The system’s running clean.' })),
         h('div', { class: 'row wrap today-tools' }, sides, atLeast(me.roleLevel, 'manager') ? captureButton(me) : null)),
       pauseBar,
-      todayTiles(me, t, side, routine, go),
-      page([h('div', { class: 'row wrap todo-head' }, h('h2', { class: 'grow', text: 'Needs attention' })),
+      // The tiles across the middle column (wrapping to a second row), so the numbers on the right start at the top.
+      page([todayTiles(me, t, side, routine, go), h('div', { class: 'row wrap todo-head' }, h('h2', { class: 'grow', text: 'Needs attention' })),
         h('section', { class: 'todos attention', 'aria-label': 'Needs attention' }, rows.length ? rows : h('div', { class: 'card small muted', text: 'All clear.' }),
           more > 0 ? h('button', { class: 'link more-link', text: `Show ${more} more`, onclick: () => { showAll = true; draw(); } }) : showAll && fixes.length > limit ? h('button', { class: 'link more-link', text: 'Show fewer', onclick: () => { showAll = false; draw(); } }) : null,
           asleepBox)],
