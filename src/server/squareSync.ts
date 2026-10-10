@@ -8,6 +8,8 @@ import type { Db } from './db.ts';
 import type { SquareApi } from '../connectors/squareApi.ts';
 import type { SquareItemSalesRow } from '../connectors/square.ts';
 import type { RoleLevel } from '../core/stationPrep.ts';
+import { midnightOf } from './dough.ts';
+import { addDays } from '../core/dashboard.ts';
 
 export interface SquareSyncOptions {
   /** Days to fetch on the first sync. Default 120. */
@@ -76,6 +78,39 @@ function merge<K extends string>(rows: { key: string; values: Record<K, number>;
   return [...out.values()];
 }
 
+/** Square's business day starts an hour after midnight (its Reporting setting): a 12:30am sale is the night before's. */
+const DAY_START_MINUTES = 60;
+
+export interface OpenLine { orderId: string; day: string; catalogId: string; itemName: string; variationName: string; quantity: number; netSales: number; modifiers: { id: string; name: string; quantity: number; gross: number }[] }
+
+/**
+ * What's on orders still open in Square with money still to collect, line by line: a gelato at the
+ * counter whose card was authorized but the check never closed. Square's item reports leave them out
+ * (its Net sales doesn't). Each on its business day; net of discounts, before tax.
+ */
+export function openOrderLines(orders: readonly any[], timezone: string): OpenLine[] {
+  const dayOf = (iso: string) => new Date(Date.parse(iso) - DAY_START_MINUTES * 60_000).toLocaleDateString('en-CA', { timeZone: timezone });
+  const cents = (m: any) => Number(m?.amount ?? 0) / 100;
+  // Fully paid ones (an online pickup paid in full) count as closed checks: Square's item report has them already.
+  return orders.filter((o) => o.state === 'OPEN' && o.created_at && Number(o.net_amount_due_money?.amount ?? 0) > 0).flatMap((o) => (o.line_items ?? []).map((l: any) => ({
+    orderId: String(o.id), day: dayOf(o.created_at), catalogId: text(l.catalog_object_id), itemName: text(l.name), variationName: text(l.variation_name),
+    quantity: number(l.quantity), netSales: Math.round((cents(l.total_money) - cents(l.total_tax_money)) * 100) / 100,
+    modifiers: (l.modifiers ?? []).map((m: any) => ({ id: text(m.catalog_object_id), name: text(m.name), quantity: number(m.quantity ?? 1) * number(l.quantity), gross: cents(m.total_price_money) })),
+  })));
+}
+
+/** Open orders' lines for these business days; none if Square won't say (a sync never fails on it). */
+async function openLinesFor(api: SquareApi, locationId: string, from: string, to: string, timezone: string): Promise<OpenLine[]> {
+  try {
+    const shift = (iso: string) => new Date(Date.parse(iso) + DAY_START_MINUTES * 60_000).toISOString();
+    const lines = openOrderLines(await api.openOrders(locationId, shift(midnightOf(from, timezone)), shift(midnightOf(addDays(to, 1), timezone))), timezone);
+    return lines.filter((l) => l.day >= from && l.day <= to);
+  } catch (err) {
+    console.error(`square sync: couldn’t read open orders: ${(err as Error).message}`);
+    return [];
+  }
+}
+
 export async function runSquareSync(db: Db, api: SquareApi, restaurantId: string, options: SquareSyncOptions = {}): Promise<SquareSyncResult> {
   const run = await db.query<{ id: string }>("INSERT INTO sync_runs (restaurant_id, source) VALUES ($1, 'square') RETURNING id", [restaurantId]);
   const runId = run.rows[0]!.id;
@@ -142,25 +177,39 @@ async function sync(db: Db, api: SquareApi, restaurantId: string, options: Squar
   const from = stale && stale < recent ? stale : recent;
   const to = today;
 
-  const items = merge(
-    (await api.itemSalesByDay(location.id, from, to)).filter(rowDay).map((r) => {
+  const tz = location.timezone ?? (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.timezone ?? 'America/New_York';
+  const itemRows = (await api.itemSalesByDay(location.id, from, to)).filter(rowDay);
+  // Orders still open (paid at the counter or online, never marked done) are left out of Square's item
+  // report: added from the orders themselves, with each item's category as Square reports it.
+  const categoryOf = await categoriesFrom(db, restaurantId, catalog, itemRows);
+  const listOf = modifierListsOf(catalog);
+  const open = await openLinesFor(api, location.id, from, to, tz);
+  const items = merge([
+    ...itemRows.map((r) => {
       const cols = [restaurantId, rowDay(r), text(r['ItemSales.item_variation_id']), text(r['ItemSales.item_name']), text(r['ItemSales.item_variation_name']), text(r['ItemSales.category_name'])];
       return { key: cols.join('\u0000'), cols, values: { quantity: quantityOf(r), sales: number(r['ItemSales.item_net_sales']) } };
     }),
-  );
-  const modifiers = merge(
-    (await api.modifierSalesByDay(location.id, from, to)).filter((r) => rowDay(r) && text(r['ItemSales.modifier_name'])).map((r) => {
+    ...open.map((l) => {
+      const cols = [restaurantId, l.day, l.catalogId, l.itemName, l.variationName, categoryOf(l.catalogId)];
+      return { key: cols.join('\u0000'), cols, values: { quantity: l.quantity, sales: l.netSales } };
+    }),
+  ]);
+  const modifiers = merge([
+    ...(await api.modifierSalesByDay(location.id, from, to)).filter((r) => rowDay(r) && text(r['ItemSales.modifier_name'])).map((r) => {
       const cols = [restaurantId, rowDay(r), text(r['ItemSales.item_variation_id']), text(r['ItemSales.item_name']), text(r['ItemSales.item_variation_name']), text(r['ItemSales.modifier_list_name']), text(r['ItemSales.modifier_name'])];
       return { key: cols.join('\u0000'), cols, values: { quantity: number(r['ItemSales.modifier_net_quantity']), sales: number(r['ItemSales.gross_sales']) } };
     }),
-  );
+    ...open.flatMap((l) => l.modifiers.filter((m) => m.name).map((m) => {
+      const cols = [restaurantId, l.day, l.catalogId, l.itemName, l.variationName, listOf.get(m.id) ?? '', m.name];
+      return { key: cols.join('\u0000'), cols, values: { quantity: m.quantity, sales: m.gross } };
+    })),
+  ]);
   await db.query('DELETE FROM pos_item_sales_daily WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3', [restaurantId, from, to]);
   await db.query('DELETE FROM pos_modifier_sales_daily WHERE restaurant_id = $1 AND day BETWEEN $2 AND $3', [restaurantId, from, to]);
   await insertMany(db, 'pos_item_sales_daily', ['restaurant_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'category', 'quantity', 'net_sales', 'true_quantity'], items.map((r) => [...r.cols, Math.round(r.values.quantity * 1000) / 1000, Math.round(r.values.sales * 100) / 100, true]));
   await insertMany(db, 'pos_modifier_sales_daily', ['restaurant_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'modifier_list', 'modifier_name', 'quantity', 'gross_sales'], modifiers.map((r) => [...r.cols, r.values.quantity, Math.round(r.values.sales * 100) / 100]));
 
-  const tz = location.timezone ?? (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.timezone ?? 'America/New_York';
-  const orders = await syncOrders(db, api, restaurantId, location.id, today, options, tz);
+  const orders = await syncOrders(db, api, restaurantId, location.id, today, options, tz, categoryOf);
 
   return {
     locationName: location.name,
@@ -175,6 +224,28 @@ async function sync(db: Db, api: SquareApi, restaurantId: string, options: Squar
   };
 }
 
+/** Each size's category as Square's item report names it: from its rows, what's saved, or the catalog. */
+async function categoriesFrom(db: Db, restaurantId: string, catalog: readonly any[], rows: readonly SquareItemSalesRow[]): Promise<(catalogId: string) => string> {
+  const out = new Map<string, string>();
+  const names = new Map(catalog.filter((o) => o.type === 'CATEGORY').map((o) => [o.id, text(o.category_data?.name)]));
+  for (const o of catalog) {
+    if (o.type !== 'ITEM') continue;
+    const d = o.item_data ?? {};
+    const name = names.get(d.reporting_category?.id ?? d.categories?.[0]?.id ?? d.category_id);
+    if (name) for (const v of d.variations ?? []) out.set(v.id, name);
+  }
+  for (const r of (await db.query<{ catalog_id: string; category: string | null }>('SELECT DISTINCT ON (catalog_id) catalog_id, category FROM pos_item_sales_daily WHERE restaurant_id = $1 ORDER BY catalog_id, day DESC', [restaurantId])).rows) if (r.category) out.set(r.catalog_id, r.category);
+  for (const r of rows) { const id = text(r['ItemSales.item_variation_id']), c = text(r['ItemSales.category_name']); if (id && c) out.set(id, c); }
+  return (id) => (id && out.get(id)) || '';
+}
+
+/** Modifier id → its list's name. */
+function modifierListsOf(catalog: readonly any[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const o of catalog) if (o.type === 'MODIFIER_LIST') for (const m of o.modifier_list_data?.modifiers ?? []) out.set(m.id, text(o.modifier_list_data?.name));
+  return out;
+}
+
 /** How many sold: Square's real quantity (a bottle split four ways is four quarters, one bottle). */
 const quantityOf = (r: SquareItemSalesRow) => number(r['ItemSales.net_quantity'] ?? r['ItemSales.items_sold_count']);
 
@@ -184,7 +255,7 @@ const orderDay = (r: SquareItemSalesRow, cube: string) => text(r[`${cube}.report
  * Orders and what was on them, for reports. The first sync goes back about a year (so a period
  * can be set against the same one last year), a month at a time; later syncs redo the last few days.
  */
-async function syncOrders(db: Db, api: SquareApi, restaurantId: string, locationId: string, today: string, options: SquareSyncOptions, tz: string): Promise<{ count: number; from: string }> {
+async function syncOrders(db: Db, api: SquareApi, restaurantId: string, locationId: string, today: string, options: SquareSyncOptions, tz: string, categoryOf: (catalogId: string) => string): Promise<{ count: number; from: string }> {
   // Each kind keeps its own window, so a kind added later still goes back a year the first time.
   const startFor = async (table: string) => {
     const last = (await db.query<{ day: string | null }>(`SELECT max(day)::text AS day FROM ${table} WHERE restaurant_id = $1`, [restaurantId])).rows[0]?.day;
@@ -217,9 +288,13 @@ async function syncOrders(db: Db, api: SquareApi, restaurantId: string, location
       }
       await insertMany(db, 'pos_orders', ['restaurant_id', 'order_id', 'day', 'table_name', 'fulfillment', 'source', 'server_id', 'server_name', 'covers', 'net_sales', 'tips', 'auto_gratuity'],
         [...byId.values()].map((o) => [restaurantId, ...o.cols, Math.round(o.covers), cents(o.sales), cents(o.tips), cents(o.grat)]));
-      await insertMany(db, 'pos_order_lines', ['restaurant_id', 'order_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'category', 'quantity', 'net_sales', 'true_quantity'],
-        lines.map((r) => [restaurantId, text(r['ItemSales.order_id']), orderDay(r, 'ItemSales'), text(r['ItemSales.item_variation_id']) || null, text(r['ItemSales.item_name']), text(r['ItemSales.item_variation_name']) || null,
-          text(r['ItemSales.category_name']) || null, Math.round(quantityOf(r) * 1000) / 1000, Math.round(number(r['ItemSales.item_net_sales']) * 100) / 100, true]));
+      // What's on orders still open, which Square's item report leaves out (the order itself is in the orders above).
+      const seen = new Set(lines.map((r) => text(r['ItemSales.order_id'])));
+      const open = (await openLinesFor(api, locationId, from, to, tz)).filter((l) => !seen.has(l.orderId));
+      await insertMany(db, 'pos_order_lines', ['restaurant_id', 'order_id', 'day', 'catalog_id', 'item_name', 'variation_name', 'category', 'quantity', 'net_sales', 'true_quantity'], [
+        ...lines.map((r) => [restaurantId, text(r['ItemSales.order_id']), orderDay(r, 'ItemSales'), text(r['ItemSales.item_variation_id']) || null, text(r['ItemSales.item_name']), text(r['ItemSales.item_variation_name']) || null,
+          text(r['ItemSales.category_name']) || null, Math.round(quantityOf(r) * 1000) / 1000, Math.round(number(r['ItemSales.item_net_sales']) * 100) / 100, true]),
+        ...open.map((l) => [restaurantId, l.orderId, l.day, l.catalogId || null, l.itemName, l.variationName || null, categoryOf(l.catalogId) || null, Math.round(l.quantity * 1000) / 1000, l.netSales, true])]);
       count += byId.size;
     }
 

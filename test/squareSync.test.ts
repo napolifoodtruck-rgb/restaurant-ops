@@ -9,7 +9,7 @@ import { migrate } from '../src/server/db.ts';
 import { startTestDb } from './support/psqlDb.ts';
 
 /** A pretend Square account. Records every call. */
-function fakeSquare(state: { team: any[]; items: any[]; modifiers: any[]; orders?: any[]; orderLines?: any[]; timecards?: any[]; hourly?: any[] }) {
+function fakeSquare(state: { team: any[]; items: any[]; modifiers: any[]; orders?: any[]; orderLines?: any[]; timecards?: any[]; hourly?: any[]; openOrders?: any[] }) {
   const calls: { method: string; path: string; body?: any }[] = [];
   let waited = false;
   const json = (status: number, data: unknown) => ({ ok: status < 400, status, json: async () => data, text: async () => JSON.stringify(data) });
@@ -23,6 +23,10 @@ function fakeSquare(state: { team: any[]; items: any[]; modifiers: any[]; orders
       return json(200, { objects: [{ type: 'ITEM', id: 'I1', item_data: { name: 'Margherita', variations: [{ id: 'V1', item_variation_data: { name: 'Regular', price_money: { amount: 1500 } } }] } }, { type: 'ITEM', id: 'GONE', is_deleted: true }] });
     }
     if (path === '/v2/team-members/search') return json(200, { team_members: state.team });
+    if (path === '/v2/orders/search') {
+      const w = body.query.filter.date_time_filter.created_at;
+      return json(200, { orders: (state.openOrders ?? []).filter((o) => o.created_at >= w.start_at && o.created_at < w.end_at) });
+    }
     const wage = path.match(/^\/v2\/team-members\/(.+)\/wage-setting$/);
     if (wage) {
       const m = state.team.find((t) => t.id === decodeURIComponent(wage[1]!));
@@ -110,6 +114,12 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
     ],
     timecards: [{ 'Labor.team_member_id': 'T-MARCO', 'Labor.job_title': 'Pizza Maker', 'Labor.clockin_timestamp': '2026-10-04T15:00:00.000', 'Labor.clockout_timestamp': '2026-10-04T22:30:00.000', 'Labor.hourly_wage': 12, 'Labor.total_hours_worked': 7.5, 'Labor.total_labor_cost': 90 }],
     hourly: [{ 'Orders.reporting_day.day': '2026-10-04T00:00:00.000', 'Orders.local_hour': 18, 'Orders.count': 9, 'Orders.cover_count': 20, 'Orders.net_sales_minus_auto_gratuity': 700 }],
+    // A gelato at the counter, its card authorized but the check never closed: Square's item report leaves it out.
+    // An online pickup paid in full but not marked done is a closed check to Square, already in its item report.
+    openOrders: [
+      { id: 'O2', state: 'OPEN', created_at: '2026-10-04T22:30:00Z', net_amount_due_money: { amount: 1390 }, line_items: [{ catalog_object_id: 'V9', name: '4oz Gelato', variation_name: 'Regular', quantity: '2', total_money: { amount: 1390 }, total_tax_money: { amount: 90 } }] },
+      { id: 'O3', state: 'OPEN', created_at: '2026-10-04T21:00:00Z', net_amount_due_money: { amount: 0 }, line_items: [{ catalog_object_id: 'V1', name: 'Margherita', variation_name: 'Regular', quantity: '1', total_money: { amount: 1612 }, total_tax_money: { amount: 112 } }] },
+    ],
     orderLines: [{ 'ItemSales.reporting_day.day': '2026-10-04T00:00:00.000', 'ItemSales.order_id': 'O1', 'ItemSales.item_variation_id': 'V1', 'ItemSales.item_name': 'Margherita', 'ItemSales.item_variation_name': 'Regular', 'ItemSales.category_name': 'Pizza', 'ItemSales.items_sold_count': 2, 'ItemSales.net_quantity': 1.5000001, 'ItemSales.item_net_sales': 30 }],
   };
   const square = fakeSquare(state);
@@ -120,12 +130,13 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
   assert.equal(first.from, '2026-06-08'); // 120 days back
   assert.equal(first.catalogObjects, 2);
   assert.deepEqual(first.team, { added: 3, updated: 1, deactivated: 0 });
-  assert.equal(first.itemRows, 2); // the two Oct 3 rows merge
+  assert.equal(first.itemRows, 3); // the two Oct 3 rows merge; the open gelato order adds one
   // Orders go back about a year the first time, a month at a time; one row per order.
   assert.deepEqual([first.orders, first.ordersFrom], [2, '2025-09-01']);
   const stored = (await db!.query<{ order_id: string; table_name: string | null; covers: number; net_sales: string; tips: string }>('SELECT order_id, table_name, covers, net_sales, tips FROM pos_orders WHERE restaurant_id = $1 ORDER BY day', [restaurantId])).rows;
   assert.deepEqual(stored.map((o) => [o.order_id, o.table_name, o.covers, Number(o.net_sales), Number(o.tips)]), [['O0', null, 0, 30, 3], ['O1', 'T6', 4, 90, 18]]);
-  assert.deepEqual((await db!.query<{ quantity: string }>('SELECT quantity FROM pos_order_lines WHERE restaurant_id = $1', [restaurantId])).rows.map((x) => Number(x.quantity)), [1.5]); // a pizza split between checks
+  // A pizza split between checks, and the open order's gelato on its business day.
+  assert.deepEqual((await db!.query<{ order_id: string; day: string; quantity: string; net_sales: string }>('SELECT order_id, day::text AS day, quantity, net_sales FROM pos_order_lines WHERE restaurant_id = $1 ORDER BY order_id', [restaurantId])).rows.map((x) => [x.order_id, x.day, Number(x.quantity), Number(x.net_sales)]), [['O1', '2026-10-04', 1.5, 30], ['O2', '2026-10-04', 2, 13]]);
   // Timecards in local clock time, and sales by hour.
   const card = (await db!.query<{ day: string; clock_in: string; hours: string; labor_cost: string }>("SELECT day::text AS day, to_char(clock_in, 'YYYY-MM-DD HH24:MI') AS clock_in, hours, labor_cost FROM pos_timecards WHERE restaurant_id = $1", [restaurantId])).rows;
   assert.deepEqual(card.map((c) => [c.day, c.clock_in, Number(c.hours), Number(c.labor_cost)]), [['2026-10-04', '2026-10-04 15:00', 7.5, 90]]);
@@ -140,7 +151,8 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
 
   // Stored rows read back exactly as square.ts expects them from the API.
   const lines = squareItemSales(await storedItemSales(db!, restaurantId, '2026-10-01', '2026-10-05'));
-  assert.deepEqual(lines.map((l) => [l.date, l.name, l.quantity, l.netSales]), [['2026-10-03', 'Margherita', 22, 330], ['2026-10-04', 'Margherita', 25, 375]]);
+  assert.deepEqual(lines.filter((l) => l.name === 'Margherita').map((l) => [l.date, l.name, l.quantity, l.netSales]), [['2026-10-03', 'Margherita', 22, 330], ['2026-10-04', 'Margherita', 25, 375]]);
+  assert.deepEqual(lines.filter((l) => l.name !== 'Margherita').map((l) => [l.date, l.name, l.quantity, l.netSales]), [['2026-10-04', '4oz Gelato', 2, 13]], 'the open order counts too');
   const mods = squareModifierSales(await storedModifierSales(db!, restaurantId, '2026-10-01', '2026-10-05'));
   assert.deepEqual(mods.map((m) => [m.date, m.modifier.name, m.quantity, m.modifier.price]), [['2026-10-04', '++ Extra Mozzarella', 4, 3]]);
 
@@ -153,7 +165,7 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
   assert.equal((await db!.query('SELECT 1 FROM pos_orders WHERE restaurant_id = $1', [restaurantId])).rows.length, 2);
   assert.deepEqual(second.team, { added: 0, updated: 3, deactivated: 1 });
   const after = squareItemSales(await storedItemSales(db!, restaurantId, '2026-10-01', '2026-10-05'));
-  assert.deepEqual(after.map((l) => [l.date, l.quantity]), [['2026-10-03', 22], ['2026-10-04', 26], ['2026-10-05', 18]]);
+  assert.deepEqual(after.filter((l) => l.name === 'Margherita').map((l) => [l.date, l.quantity]), [['2026-10-03', 22], ['2026-10-04', 26], ['2026-10-05', 18]]);
 
   // Rows saved with the old split-check count are pulled again, from the first of them.
   await db!.query("INSERT INTO pos_item_sales_daily (restaurant_id, day, catalog_id, item_name, variation_name, category, quantity, net_sales) VALUES ($1, '2026-09-01', 'V1', 'Margherita', 'Regular', 'Pizza', 8, 30)", [restaurantId]);
@@ -163,7 +175,7 @@ test('nightly Square sync into the database', { skip: !db && 'no PostgreSQL for 
   assert.equal((await db!.query('SELECT 1 FROM pos_item_sales_daily WHERE restaurant_id = $1 AND NOT true_quantity UNION ALL SELECT 1 FROM pos_order_lines WHERE restaurant_id = $1 AND NOT true_quantity', [restaurantId])).rows.length, 0);
 
   // Nothing but reads went to Square.
-  assert.ok(square.calls.every((c) => c.method === 'GET' || c.path === '/reporting/v1/load' || c.path === '/v2/team-members/search'));
+  assert.ok(square.calls.every((c) => c.method === 'GET' || c.path === '/reporting/v1/load' || c.path === '/v2/team-members/search' || c.path === '/v2/orders/search'));
 
   // The scheduler: due after 4 am local when today's sync hasn't run; quiet otherwise.
   const runs = (await db!.query<{ status: string }>("SELECT status FROM sync_runs WHERE source = 'square'")).rows;

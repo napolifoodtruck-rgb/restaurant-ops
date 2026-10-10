@@ -26,7 +26,7 @@ export interface SquareApiOptions {
 export interface SquareLocation { id: string; name: string; status: string; merchantId: string; timezone?: string }
 export interface SquareTeamMember { id: string; name: string; email?: string; isOwner: boolean; jobTitles: string[] }
 
-const READ_ONLY_POSTS = new Set(['/reporting/v1/load', '/v2/team-members/search']);
+const READ_ONLY_POSTS = new Set(['/reporting/v1/load', '/v2/team-members/search', '/v2/orders/search']);
 
 export class SquareApi {
   readonly #token: string;
@@ -130,6 +130,25 @@ export class SquareApi {
       rows.push(...page);
       if (page.length < pageSize) return rows;
     }
+  }
+
+  /**
+   * Orders still open, created in this window (ISO times): paid at the counter or online but never
+   * marked done, or a tab left open. Square's item reports leave them out; its Net sales doesn't.
+   */
+  async openOrders(locationId: string, startAt: string, endAt: string): Promise<any[]> {
+    const out: any[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 200; page++) {
+      const data = await this.#request('POST', '/v2/orders/search', {
+        location_ids: [locationId], limit: 500, ...(cursor ? { cursor } : {}),
+        query: { filter: { state_filter: { states: ['OPEN'] }, date_time_filter: { created_at: { start_at: startAt, end_at: endAt } } }, sort: { sort_field: 'CREATED_AT', sort_order: 'ASC' } },
+      });
+      out.push(...(data.orders ?? []));
+      cursor = data.cursor;
+      if (!cursor) break;
+    }
+    return out;
   }
 
   /**
