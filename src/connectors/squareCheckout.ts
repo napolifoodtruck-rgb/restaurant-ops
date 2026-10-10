@@ -117,6 +117,25 @@ export class SquareCheckout {
     return out;
   }
 
+  /**
+   * Every order opened or paid at the location since `since` (an ISO time), as Square has it: for the
+   * dough count. Cancelled ones and online carts never finished (drafts) aren't asked for. Read only.
+   */
+  async ordersSince(locationId: string, since: string): Promise<any[]> {
+    const out: any[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const data = await this.#post('/v2/orders/search', {
+        location_ids: [locationId], limit: 500, ...(cursor ? { cursor } : {}),
+        query: { filter: { state_filter: { states: ['OPEN', 'COMPLETED'] }, date_time_filter: { created_at: { start_at: since } } }, sort: { sort_field: 'CREATED_AT', sort_order: 'ASC' } },
+      });
+      out.push(...(data.orders ?? []));
+      cursor = data.cursor;
+      if (!cursor) break;
+    }
+    return out;
+  }
+
   /** The order as Square takes it: catalog items in production, named lines with their prices in the sandbox. */
   #orderBody(o: PickupOrderIn) {
     const byCatalog = this.environment === 'production';

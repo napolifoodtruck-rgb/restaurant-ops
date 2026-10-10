@@ -265,7 +265,7 @@ export const wineBase = (name: string) => name.replace(/\(.*?\)/g, ' ').replace(
 
 // ---------------------------------------------------------------- tonight's book
 
-async function tonightsBook(db: Db, restaurantId: string, today: string): Promise<{ book: Book; asOf: string; source: string } | undefined> {
+export async function tonightsBook(db: Db, restaurantId: string, today: string): Promise<{ book: Book; asOf: string; source: string } | undefined> {
   // Guest details are for the night only.
   await db.query('DELETE FROM floor_reports WHERE restaurant_id = $1 AND day < $2', [restaurantId, today]);
   const reports = (await db.query<{ source: string; result: unknown; uploaded_at: string }>(
