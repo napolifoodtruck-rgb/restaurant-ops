@@ -166,8 +166,8 @@ INSERT INTO floor_checks (restaurant_id, checklist_id, day, done_by) VALUES
 INSERT INTO devices (id, restaurant_id, name, token_hash, floor_post_id) VALUES
   ('82000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000a', 'Patio iPad', 'x', '80000000-0000-0000-0000-000000000001');
 
-SELECT pg_temp.must_fail('a post is a room, the bar, the counter or the host stand',
-  $$INSERT INTO floor_posts (restaurant_id, name, kind) VALUES ('00000000-0000-0000-0000-00000000000a', 'Kitchen', 'kitchen')$$);
+SELECT pg_temp.must_fail('a post is a room, the bar, the counter, the host stand or the kitchen',
+  $$INSERT INTO floor_posts (restaurant_id, name, kind) VALUES ('00000000-0000-0000-0000-00000000000a', 'Office', 'office')$$);
 SELECT pg_temp.must_fail('one post of a name',
   $$INSERT INTO floor_posts (restaurant_id, name) VALUES ('00000000-0000-0000-0000-00000000000a', 'patio')$$);
 SELECT pg_temp.must_fail('an iPad cannot be set to another restaurant''s post',
