@@ -226,7 +226,10 @@ async function saveScan(db: Db, who: Pick<SignedIn, 'restaurantId'> & { staffId:
         ON CONFLICT (restaurant_id, vendor_id, item_key) DO UPDATE SET product_id = EXCLUDED.product_id, unit = EXCLUDED.unit, per = EXCLUDED.per, confirmed_at = now()`,
         [who.restaurantId, vendorId, key, String(l.productId), String(l.unit ?? ''), per]);
     }
-    await db.query("UPDATE invoice_scans SET status = 'saved', invoice_id = $2, updated_at = now() WHERE id = $1", [scanId, invoiceId]);
+    // Green lines, and how many of them the manager changed before saving (none when counted on its own).
+    const greens = (b.greens ?? {}) as { lines?: unknown; changed?: unknown };
+    const gl = Number.isInteger(greens.lines) ? Number(greens.lines) : null, gc = Number.isInteger(greens.changed) ? Number(greens.changed) : null;
+    await db.query("UPDATE invoice_scans SET status = 'saved', invoice_id = $2, green_lines = $3, green_changed = $4, updated_at = now() WHERE id = $1", [scanId, invoiceId, gl, gc]);
     invalidate(who.restaurantId);
     return invoiceId;
   }
@@ -240,7 +243,7 @@ const charges = (r: ReadInvoice) => ({ ...(r.tax !== undefined ? { tax: r.tax } 
  * nothing odd on it: counted without anyone checking it. Otherwise it waits with the others to
  * check, and says why.
  */
-export async function autoCount(db: Db, restaurantId: string, scanId: string): Promise<{ counted: boolean; why?: string; invoiceId?: string }> {
+export async function autoCount(db: Db, restaurantId: string, scanId: string, opts: { save?: boolean } = {}): Promise<{ counted: boolean; ready?: boolean; why?: string; invoiceId?: string }> {
   const scan = (await db.query<{ status: string; result: any; tz: string; received: string }>(
     `SELECT s.status, s.result, r.timezone AS tz, s.created_at::text AS received FROM invoice_scans s JOIN restaurants r ON r.id = s.restaurant_id WHERE s.id = $1 AND s.restaurant_id = $2`, [scanId, restaurantId])).rows[0];
   if (!scan || scan.status !== 'read' || !scan.result) return { counted: false, why: 'Not read.' };
@@ -250,6 +253,8 @@ export async function autoCount(db: Db, restaurantId: string, scanId: string): P
   const mt = await matched(db, restaurantId, model, result);
   const verdict = autoCountable(mt);
   if (!verdict.ok) return { counted: false, why: verdict.why };
+  // While invoices are being tested, nothing is saved without a manager: it's only said that it's ready.
+  if (opts.save === false) return { counted: false, ready: true };
   const date = mt.date && mt.date <= today ? mt.date : today;
   const invoiceId = await saveScan(db, { restaurantId, staffId: null }, scanId, model, result, {
     vendor: { key: mt.vendor.key }, date, ...(mt.number ? { number: mt.number } : {}), note: 'Counted automatically from an email.', ...charges(result),

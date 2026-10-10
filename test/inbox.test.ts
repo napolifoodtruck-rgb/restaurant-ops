@@ -126,7 +126,8 @@ test('the inbox, end to end', { skip: !db && 'no PostgreSQL for tests (or runnin
   }) as any;
   t.after(() => { claudeSettings.fetch = readerWas.fetch; if (readerWas.key === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = readerWas.key; });
 
-  const app = createApp({ db: db!, setupToken: 'setup-secret', secureCookies: false, inbox: { apiKey: 're_test', webhookSecret: SECRET, fetch: fakeFetch as any, domain: 'napolicarrboro.com' } });
+  // Counting on its own is off while testing; switched on here to test it.
+  const app = createApp({ db: db!, setupToken: 'setup-secret', secureCookies: false, inbox: { apiKey: 're_test', webhookSecret: SECRET, fetch: fakeFetch as any, domain: 'napolicarrboro.com', autoCount: true } });
   const server = createServer(app);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => server.close());

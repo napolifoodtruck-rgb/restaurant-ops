@@ -1535,3 +1535,10 @@ section[aria-label="Email inbox"] input[type=text] { width: 100%; }
 .scan-read > input[type="checkbox"] { flex: none; width: 22px; height: 22px; margin: 2px 0 0; }
 .inv-head { align-items: flex-start; }
 .inv-head > input, .inv-head > div > input { height: 48px; box-sizing: border-box; }
+
+/* Checking an invoice: the invoice itself beside the lines, as large as the column allows, in view while scrolling. */
+@media (min-width: 1100px) { .page.wide-side { grid-template-columns: minmax(0, 1.2fr) minmax(380px, 1fr); } }
+.scan-preview { gap: 8px; }
+.scan-preview img { width: 100%; display: block; border: 1px solid var(--line); border-radius: var(--radius); }
+.scan-frame { width: 100%; height: calc(100vh - 170px); min-height: 420px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
+@media (min-width: 1001px) { .page.wide-side.sticky-side > .page-side .scan-preview { max-height: calc(100vh - 110px); overflow: auto; } }

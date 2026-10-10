@@ -33,6 +33,11 @@ export interface InboxSettings {
   fetch?: Fetch;
   baseUrl?: string;
   now?: () => number;
+  /**
+   * Count an invoice on its own when every line is matched and nothing's odd. Off while invoices
+   * are being tested (INVOICE_AUTOCOUNT=1 turns it on): then each waits for a manager, one click.
+   */
+  autoCount?: boolean;
 }
 
 const PDF = /application\/pdf/, CSV = /text\/csv|application\/vnd\.ms-excel|\.csv$/i, IMAGE = /^image\/(jpeg|png|webp)$/;
@@ -79,7 +84,7 @@ export async function takeEmail(db: Db, settings: InboxSettings, emailId: string
   const files = await resend.attachments(emailId).catch(() => []);
   if (inbox === 'reports') return takeReport(db, rid, files, text, mail.subject, (s, x) => note(s, { inbox, ...x }));
   // An invoice email's own layout (its HTML tables), as text for the reader.
-  return takeInvoice(db, rid.id, files, mail.html ? htmlToText(mail.html) : text, (s, x) => note(s, { inbox, ...x }));
+  return takeInvoice(db, rid.id, files, mail.html ? htmlToText(mail.html) : text, Boolean(settings.autoCount), (s, x) => note(s, { inbox, ...x }));
 }
 
 type Note = (status: string, extra?: { detail?: string; scanId?: string; reportId?: string }) => Promise<{ status: string; detail?: string }>;
@@ -105,7 +110,7 @@ async function takeReport(db: Db, r: { id: string; timezone: string }, files: { 
  * Every invoice goes through the same reader, whatever way it came (a photo, a PDF, an order email's
  * text), so the same invoice reads, names and matches the same.
  */
-async function takeInvoice(db: Db, rid: string, files: { filename: string; contentType: string; data: Buffer }[], text: string, note: Note) {
+async function takeInvoice(db: Db, rid: string, files: { filename: string; contentType: string; data: Buffer }[], text: string, auto: boolean, note: Note) {
   // A PDF (or photos) attached: the pages, read like a photographed invoice. No attachment: the email's text.
   const pages = files.filter((f) => PDF.test(f.contentType) || IMAGE.test(f.contentType)).slice(0, 8).map((f) => ({ media: PDF.test(f.contentType) ? 'application/pdf' : f.contentType, data: f.data }));
   if (!pages.length) {
@@ -116,7 +121,7 @@ async function takeInvoice(db: Db, rid: string, files: { filename: string; conte
   const id = scan.rows[0]!.id;
   for (const [n, p] of pages.entries()) await db.query('INSERT INTO invoice_scan_pages (scan_id, page, media_type, data) VALUES ($1, $2, $3, $4)', [id, n + 1, p.media, p.data]);
   const out = await note('reading', { scanId: id, detail: `Reading ${pages[0]!.media === 'text/plain' ? 'the email' : `${pages.length} ${pages.length === 1 ? 'page' : 'pages'}`}` });
-  void readScan(db, rid, id, () => countOrWait(db, rid, id));
+  void readScan(db, rid, id, () => countOrWait(db, rid, id, auto));
   return out;
 }
 
@@ -124,16 +129,16 @@ async function takeInvoice(db: Db, rid: string, files: { filename: string; conte
  * Once read: counted on its own when the vendor is one we know and every line was matched before
  * (no one needs to check it), else it waits with the others to check, saying why.
  */
-export async function countOrWait(db: Db, rid: string, scanId: string): Promise<void> {
+export async function countOrWait(db: Db, rid: string, scanId: string, auto = false): Promise<void> {
   const scan = (await db.query<{ status: string; error: string | null; vendor: string | null; total: string | null }>("SELECT status, error, result->>'vendor' AS vendor, result->>'total' AS total FROM invoice_scans WHERE id = $1", [scanId])).rows[0];
   if (!scan) return;
   if (scan.status === 'failed') {
     await db.query("UPDATE inbox_emails SET status = 'failed', detail = $2 WHERE scan_id = $1", [scanId, scan.error ?? 'Couldn’t read it.']);
     return;
   }
-  const r = await autoCount(db, rid, scanId).catch((err) => { console.error(`[inbox] counting ${scanId}`, err); return { counted: false, why: 'Couldn’t count it on its own: check it.' } as const; });
+  const r = await autoCount(db, rid, scanId, { save: auto }).catch((err) => { console.error(`[inbox] counting ${scanId}`, err); return { counted: false, ready: false, why: 'Couldn’t count it on its own: check it.' }; });
   const what = `${scan.vendor ?? 'Invoice'}${scan.total ? `, $${Number(scan.total).toFixed(2)}` : ''}`;
-  await db.query('UPDATE inbox_emails SET status = $2, detail = $3 WHERE scan_id = $1', [scanId, r.counted ? 'counted' : 'waiting', r.counted ? `${what}: counted` : `${what} — ${r.why ?? 'to check'}`]);
+  await db.query('UPDATE inbox_emails SET status = $2, detail = $3 WHERE scan_id = $1', [scanId, r.counted ? 'counted' : 'waiting', r.counted ? `${what}: counted` : `${what} — ${r.ready ? 'everything matched: check it and save' : r.why ?? 'to check'}`]);
 }
 
 export function inboxRoutes(db: Db, settings: InboxSettings = {}) {

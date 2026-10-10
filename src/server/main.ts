@@ -17,6 +17,7 @@
  *   RESEND_API_KEY               online orders: confirmation emails through Resend; unset = none sent. Also reads email coming in
  *   RESEND_WEBHOOK_SECRET        email coming in: the signing secret of Resend's "email received" webhook; unset = no inbox
  *   EMAIL_DOMAIN                 the domain invoices@ and reports@ are at (default napolicarrboro.com)
+ *   INVOICE_AUTOCOUNT            1 = an emailed invoice whose lines are all matched counts without a check (off while testing)
  *   ORDER_EMAIL_FROM             e.g. "Napoli <orders@napolicarrboro.com>" (domain verified in Resend)
  *   ORDER_EMAIL_REPLY_TO         optional: where customers' replies go
  */
@@ -51,7 +52,7 @@ const checkout = {
   email: { apiKey: process.env.RESEND_API_KEY, from: process.env.ORDER_EMAIL_FROM || undefined, replyTo: process.env.ORDER_EMAIL_REPLY_TO || undefined },
 };
 // Email coming in (invoices@, reports@ at EMAIL_DOMAIN) through Resend's receiving webhook.
-const inbox = { apiKey: process.env.RESEND_API_KEY || undefined, webhookSecret: process.env.RESEND_WEBHOOK_SECRET || undefined, domain: process.env.EMAIL_DOMAIN || 'napolicarrboro.com' };
+const inbox = { apiKey: process.env.RESEND_API_KEY || undefined, webhookSecret: process.env.RESEND_WEBHOOK_SECRET || undefined, domain: process.env.EMAIL_DOMAIN || 'napolicarrboro.com', autoCount: process.env.INVOICE_AUTOCOUNT === '1' };
 const handle = createApp({ db, setupToken: process.env.SETUP_TOKEN || undefined, secureCookies: process.env.NODE_ENV === 'production', sync, checkout, inbox });
 const stopScheduler = startScheduler(db, sync);
 const port = Number(process.env.PORT ?? 3000);

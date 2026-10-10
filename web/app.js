@@ -175,7 +175,7 @@ function page(main, side, opts = {}) {
   const boxes = [side].flat(Infinity).filter((x) => x !== null && x !== undefined && x !== false);
   const middle = h('div', { class: 'page-main' }, main);
   if (!boxes.length) return h('div', { class: 'page solo' }, middle);
-  return h('div', { class: `page${opts.sideFirst ? ' side-first' : ''}${opts.sticky ? ' sticky-side' : ''}` }, middle,
+  return h('div', { class: `page${opts.sideFirst ? ' side-first' : ''}${opts.sticky ? ' sticky-side' : ''}${opts.wideSide ? ' wide-side' : ''}` }, middle,
     h('aside', { class: 'page-side', 'aria-label': opts.label ?? 'At a glance' }, boxes));
 }
 /** A box for the right column: a small heading, then what it holds. */
@@ -5872,7 +5872,7 @@ const samePrint = (a, b) => a && b && a.reduce((t, v, i) => t + Math.abs(v - b[i
 function compareCard() {
   const box = h('section', { class: 'card', hidden: true });
   api('GET', '/api/invoices/compare').then((r) => {
-    if (!r.ok || !r.data.invoices) return;
+    if (!r.ok || (!r.data.invoices && !r.data.greens?.lines)) return;
     const d = r.data;
     const pctOf = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : '–');
     box.hidden = false;
@@ -5880,7 +5880,8 @@ function compareCard() {
       h('div', { class: 'small muted', text: 'Invoices both have read: the same ingredient, quantity and total on each line. When these stay high for a few weeks, MarginEdge isn’t needed.' }),
       h('div', { class: 'cmp-score' },
         h('div', {}, h('b', { text: pctOf(d.matching, d.lines) }), h('span', { class: 'small muted', text: `of ${d.lines} lines the same` })),
-        h('div', {}, h('b', { text: pctOf(d.totalsMatching, d.invoices) }), h('span', { class: 'small muted', text: `of ${d.invoices} invoice${d.invoices === 1 ? '' : 's'} with the same total` }))),
+        h('div', {}, h('b', { text: pctOf(d.totalsMatching, d.invoices) }), h('span', { class: 'small muted', text: `of ${d.invoices} invoice${d.invoices === 1 ? '' : 's'} with the same total` })),
+        d.greens?.lines ? h('div', {}, h('b', { text: pctOf(d.greens.lines - d.greens.changed, d.greens.lines) }), h('span', { class: 'small muted', text: `of ${d.greens.lines} green lines saved as they were (${d.greens.invoices} invoice${d.greens.invoices === 1 ? '' : 's'} checked)` })) : null),
       h('div', { class: 'list' }, d.list.slice(0, 20).map((x) => h('details', { class: 'cmp-row' },
         h('summary', {}, h('span', { class: 'grow', text: `${x.vendor} · ${shortDate(x.date)}${x.number ? ` · #${x.number}` : ''}` }),
           h('span', { class: `small ${x.matching === x.lines && x.totalsMatch ? 'good-text' : ''}`, text: `${x.matching}/${x.lines} lines${x.totalsMatch ? '' : ` · ${dollars(x.oursTotal, { cents: true })} vs ${dollars(x.theirsTotal, { cents: true })}`}` })),
@@ -6071,6 +6072,8 @@ function renderScan(me, id, x, pagesBox, back) {
     // (A guess and a new-looking item are said above the ingredient, in colour: not again as tags.)
     const flags = l.flags.filter((f) => f !== 'noProduct');
     fill(tags, flags.map((f) => h('span', { class: `tag ${SCAN_FLAG[f]?.[1] ?? ''}`, text: f === 'priceJump' && l.was ? `${l.perBase > l.was ? 'Up' : 'Down'} ${Math.round(Math.abs(l.perBase / l.was - 1) * 100)}% (was ${perUnitText(l.was, l.baseUnit)})` : f === 'handwritten' && l.read.handwritten ? `Hand-corrected: ${l.read.handwritten}` : SCAN_FLAG[f]?.[0] ?? f })));
+    line.green = Boolean(line.include);
+    line.changed = () => !line.include || line.productId !== l.productId || Math.abs(parseAmount(qtyIn.value) - l.baseQuantity) > 1e-6 || Math.abs(parseAmount(totalIn.value) - l.read.total) > 0.005;
     // Left out: kept on the invoice, not counted (and left out next time without asking).
     line.leftOut = () => ({ description: l.read.description, ...(l.read.code ? { code: l.read.code } : {}), quantity: l.read.quantity, unit: l.read.unit ?? '', total: parseAmount(totalIn.value), itemKey: l.itemKey });
     line.get = () => ({ productId: line.productId, quantity: parseAmount(qtyIn.value), unit: line.unit ?? l.baseUnit, total: parseAmount(totalIn.value), description: l.read.description, itemKey: l.itemKey,
@@ -6104,7 +6107,10 @@ function renderScan(me, id, x, pagesBox, back) {
     const lines = rows.filter((r) => r.include).map((r) => r.get());
     if (lines.some((l) => !l.productId)) return (err.textContent = 'Each line you’re counting needs its ingredient.');
     const skipped = rows.filter((r) => !r.include && !r.l.flags.includes('alreadyIn')).map((r) => r.leftOut());
-    const res = await api('POST', `/api/invoices/scan/${id}/save`, { vendor, date: dateIn.value, number: numIn.value.trim() || undefined, lines, skipped });
+    // Lines that came up green, and how many were changed before saving: how far green can be trusted.
+    const greenRows = rows.filter((r) => r.green);
+    const greens = { lines: greenRows.length, changed: greenRows.filter((r) => r.changed()).length };
+    const res = await api('POST', `/api/invoices/scan/${id}/save`, { vendor, date: dateIn.value, number: numIn.value.trim() || undefined, lines, skipped, greens });
     if (!res.ok) return (err.textContent = res.data.error ?? 'That didn’t save.');
     costCache.clear();
     invoicesScreen(me);
@@ -6121,9 +6127,26 @@ function renderScan(me, id, x, pagesBox, back) {
       h('button', { class: 'link', text: 'Throw it away', onclick: async () => { await api('POST', `/api/invoices/scan/${id}/discard`); invoicesScreen(me); } })));
   show(shell(me, 'orders', [
     h('header', {}, h('div', { class: 'kicker', text: 'Invoice photo · check it' }), h('h1', { text: mt.vendor.name }),
-      h('div', { class: 'sub', text: `${rows.filter((r) => r.l.flags.length || r.l.how === 'guess').length} of ${rows.length} lines to look at. Tap the photo to open it full size.` })),
-    page([main], [sideBox('', pagesBox), sideBox('', sideActions(back))], { sticky: true }),
+      h('div', { class: 'sub', text: `${rows.filter((r) => r.l.flags.length || r.l.how === 'guess').length} of ${rows.length} lines to look at. The invoice is on the right.` })),
+    page([main], [scanPreview(id, x), sideBox('', sideActions(back))], { sticky: true, wideSide: true }),
   ]));
+}
+
+/**
+ * The invoice itself beside the lines being checked, as large as the column allows: photos full
+ * width, a PDF or an email's text in a viewer you can scroll and zoom. Stays in view while you scroll.
+ */
+function scanPreview(id, x) {
+  const box = h('section', { class: 'card tight scan-preview' });
+  const pages = [...Array(x.pages ?? 0).keys()].map((i) => {
+    const type = x.pageTypes?.[i] ?? 'image/jpeg', url = `/api/invoices/scan/${id}/page/${i + 1}`;
+    return type.startsWith('image/')
+      ? h('a', { href: url, target: '_blank', rel: 'noopener', title: 'Open it full size' }, h('img', { src: url, alt: `Page ${i + 1}` }))
+      : h('iframe', { src: url, title: type === 'application/pdf' ? `The invoice (PDF), page ${i + 1}` : 'The email', class: type === 'application/pdf' ? 'scan-frame' : 'scan-frame text' });
+  });
+  fill(box, pages.length ? pages : h('div', { class: 'small muted', text: 'Came by email: read from the email itself.' }),
+    pages.length ? h('a', { class: 'small', href: `/api/invoices/scan/${id}/page/1`, target: '_blank', rel: 'noopener', text: 'Open it in a new tab' }) : null);
+  return box;
 }
 
 /**
@@ -6541,7 +6564,7 @@ async function inboxCard(me) {
       h('div', { class: 'list compact' },
         h('div', {}, h('span', { class: 'grow small', text: 'Invoices' }), h('b', { class: 'small', text: d.addresses.invoices })),
         h('div', {}, h('span', { class: 'grow small', text: 'OpenTable reports' }), h('b', { class: 'small', text: d.addresses.reports }))),
-      h('div', { class: 'small muted', text: 'An emailed invoice from a vendor you already buy from counts on its own when every item on it was matched before and nothing looks off. A new vendor, a new item or anything odd waits for you to check.' }),
+      h('div', { class: 'small muted', text: 'While we test, every emailed invoice waits for you to check it, like a photo. One that says “everything matched” is all green: check it and save.' }),
       code ? h('div', { class: 'note small' }, 'Gmail’s forwarding code: ', h('b', { text: code.code }), ' (type it into Gmail’s Forwarding settings)') : null,
       h('div', { class: 'small strong', text: 'Who may send' }),
       d.senders.length ? h('div', { class: 'list compact' }, d.senders.map((sd) => h('div', {},

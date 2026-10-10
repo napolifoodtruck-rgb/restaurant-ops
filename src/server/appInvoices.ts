@@ -73,8 +73,12 @@ export async function invoiceRoutes(db: Db, req: IncomingMessage, res: ServerRes
          FROM invoice_comparisons c JOIN supplier_invoices i ON i.id = c.invoice_id WHERE c.restaurant_id = $1 ORDER BY i.invoice_date DESC`, [who.restaurantId])).rows;
     const name = (id?: string) => (id ? model.book.products.get(id)?.name ?? id : undefined);
     const lines = rows.reduce((a, r) => a + r.lines, 0), matching = rows.reduce((a, r) => a + r.matching, 0);
+    // Green on the check screen: how often it was right as it stood.
+    const g = (await db.query<{ lines: string | null; changed: string | null; invoices: string }>(
+      "SELECT sum(green_lines)::text AS lines, sum(green_changed)::text AS changed, count(*)::text AS invoices FROM invoice_scans WHERE restaurant_id = $1 AND status = 'saved' AND green_lines IS NOT NULL", [who.restaurantId])).rows[0]!;
     return send(res, 200, {
       invoices: rows.length, lines, matching, totalsMatching: rows.filter((r) => r.totals_match).length,
+      greens: { lines: Number(g.lines ?? 0), changed: Number(g.changed ?? 0), invoices: Number(g.invoices) },
       list: rows.map((r) => { const c = typeof r.result === 'string' ? JSON.parse(r.result) : r.result;
         return { invoiceId: r.invoice_id, vendor: r.vendor_name, date: r.day, number: r.number, source: r.source, lines: r.lines, matching: r.matching, totalsMatch: r.totals_match, oursTotal: c.oursTotal, theirsTotal: c.theirsTotal,
           detail: c.lines.filter((l: any) => l.match !== 'same').map((l: any) => ({ ...l, name: name(l.productId) ?? l.description })) }; }),
