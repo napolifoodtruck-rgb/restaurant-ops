@@ -6,7 +6,8 @@ import { createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { cleanSender, gmailConfirmCode, htmlToText, inboxOf, readWebstaurantEmail, senderAllowed } from '../src/core/inboundMail.ts';
+import { cleanSender, gmailConfirmCode, htmlToText, inboxOf, senderAllowed } from '../src/core/inboundMail.ts';
+import { claudeSettings } from '../src/connectors/claude.ts';
 import { verifyWebhook } from '../src/connectors/resendInbound.ts';
 import { migrate } from '../src/server/db.ts';
 import { createApp } from '../src/server/app.ts';
@@ -53,19 +54,10 @@ test('Gmail’s forwarding confirmation: the code', () => {
   assert.equal(gmailConfirmCode('someone@else.com', 'Confirmation code: 123456', ''), undefined);
 });
 
-test('WebstaurantStore’s order email, line by line, checked against its subtotal', () => {
-  const inv = readWebstaurantEmail(ORDER)!;
-  assert.equal(inv.vendor, 'WebstaurantStore');
-  assert.equal(inv.invoiceNumber, '129910929');
-  assert.equal(inv.invoiceDate, '2026-08-22');
-  assert.deepEqual(inv.lines.map((l) => [l.code, l.description, l.quantity, l.unitPrice, l.total]), [
-    ['500MFTN', 'Lavex Natural Brown Kraft M-Fold Towel - 4,000/Case', 1, 24.49, 24.49],
-    ['70090S', 'Carlisle Smart Lid 1/9 Size "Soft" Food Pan Cover', 6, 2.19, 13.14],
-  ]);
-  assert.deepEqual([inv.tax, inv.total], [2.82, 40.45]);
-  // Lines that don't add up to the subtotal: not trusted; the reader has a go instead.
-  assert.equal(readWebstaurantEmail(ORDER.replace('$37.63', '$99.00')), undefined);
-  assert.equal(readWebstaurantEmail('<p>Thanks from another shop</p>'), undefined);
+test('an HTML email as text for the reader: its table rows kept, styles gone', () => {
+  const t = htmlToText(ORDER);
+  assert.match(t, /Lavex Natural Brown Kraft M-Fold Towel - 4,000\/Case\n500MFTN/);
+  assert.match(t, /Subtotal\s+\$37\.63/);
   assert.match(htmlToText('<style>x{}</style><table><tr><td>A</td><td>B &amp; C</td></tr></table>'), /A B & C/);
 });
 
@@ -109,6 +101,28 @@ test('the inbox, end to end', { skip: !db && 'no PostgreSQL for tests (or runnin
     if (m && mails[m[1]!]) return m[2] ? reply({ data: files[m[1]!] ?? [] }) : reply(mails[m[1]!]);
     return { ok: false, status: 404, json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) };
   };
+  // The invoice reader, faked: it reads each order email's text the way the real one would.
+  const ORDERS: Record<string, any[]> = {
+    '129910929': [{ code: '500MFTN', description: 'Lavex Natural Brown Kraft M-Fold Towel - 4,000/Case', quantity: 1, unitPrice: 24.49, total: 24.49, item: 'Towels, paper M-fold', kind: 'other' },
+      { code: '70090S', description: 'Carlisle Smart Lid 1/9 Size Soft Food Pan Cover', quantity: 6, unitPrice: 2.19, total: 13.14, item: 'Lids, 1/9 pan', kind: 'other' }],
+    '130000001': [{ code: '500MFTN', description: 'Lavex Natural Brown Kraft M-Fold Towel - 4,000/Case', quantity: 2, unitPrice: 24.49, total: 48.98 },
+      { code: '70090S', description: 'Carlisle Smart Lid 1/9 Size Soft Food Pan Cover', quantity: 12, unitPrice: 2.19, total: 26.28 }],
+    '130000002': [{ code: '500MFTN', description: 'Lavex Natural Brown Kraft M-Fold Towel - 4,000/Case', quantity: 1, unitPrice: 24.49, total: 24.49 },
+      { code: 'PB16K', description: 'Choice 16 oz. Kraft Pizza Box', quantity: 50, unitPrice: 0.5, total: 25 }],
+  };
+  const readerWas = { fetch: claudeSettings.fetch, key: process.env.ANTHROPIC_API_KEY };
+  process.env.ANTHROPIC_API_KEY = 'test-key';
+  const readTexts: string[] = [];
+  claudeSettings.fetch = (async (_url: string, init: any) => {
+    const sent = JSON.parse(init.body);
+    const text = sent.messages[0].content.map((c: any) => c.text ?? '').join('\n');
+    readTexts.push(text);
+    const n = Object.keys(ORDERS).find((k) => text.includes(k))!;
+    const lines = ORDERS[n]!, sum = Math.round(lines.reduce((a: number, l: any) => a + l.total, 0) * 100) / 100;
+    return new Response(JSON.stringify({ content: [{ type: 'tool_use', name: 'record_invoice', input: { vendor: 'WebstaurantStore', invoiceNumber: n, invoiceDate: '2026-08-22', lines, total: sum } }], usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 });
+  }) as any;
+  t.after(() => { claudeSettings.fetch = readerWas.fetch; if (readerWas.key === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = readerWas.key; });
+
   const app = createApp({ db: db!, setupToken: 'setup-secret', secureCookies: false, inbox: { apiKey: 're_test', webhookSecret: SECRET, fetch: fakeFetch as any, domain: 'napolicarrboro.com' } });
   const server = createServer(app);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -135,9 +149,20 @@ test('the inbox, end to end', { skip: !db && 'no PostgreSQL for tests (or runnin
 
   // Not signed: refused, nothing taken.
   assert.equal((await arrive('e1', false)).status, 401);
-  // WebstaurantStore's order: read line by line, waiting with the invoices to check.
-  assert.equal((await arrive('e1')).json.status, 'read');
+  // Read in the background: wait until the email says what became of it.
+  const settled = async (subject: string) => {
+    for (let i = 0; i < 100; i++) {
+      const e = (await call('GET', '/api/inbox')).json.emails.find((m: any) => m.subject.includes(subject));
+      if (e && e.status !== 'reading') return e;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error(`${subject} still reading`);
+  };
+  // WebstaurantStore's order: read from the email's own text by the same reader as a photo.
+  assert.equal((await arrive('e1')).json.status, 'reading');
   assert.equal((await arrive('e1')).json.detail, 'Already taken.', 'taken once, however many times Resend tries');
+  await settled('129910929');
+  assert.match(readTexts[0]!, /Lavex Natural Brown Kraft M-Fold Towel/, 'the reader got the email’s table as text');
   const scan = (await db!.query<{ status: string; result: any }>('SELECT status, result FROM invoice_scans')).rows;
   assert.equal(scan.length, 1);
   assert.equal(scan[0]!.status, 'read');
@@ -167,8 +192,7 @@ test('the inbox, end to end', { skip: !db && 'no PostgreSQL for tests (or runnin
 
   // The next order, the same two items: counted with no one checking it.
   await arrive('e6');
-  inbox = (await call('GET', '/api/inbox')).json;
-  const second = inbox.emails.find((e: any) => e.subject.includes('130000001'));
+  const second = await settled('130000001');
   assert.equal(second.status, 'counted', second.detail);
   assert.equal(second.scanStatus, 'saved');
   const counted = (await db!.query<{ number: string; note: string; created_by: string | null; lines: string; total: string }>(
@@ -176,7 +200,7 @@ test('the inbox, end to end', { skip: !db && 'no PostgreSQL for tests (or runnin
   assert.deepEqual([counted.number, counted.note, counted.created_by, counted.lines, Number(counted.total)], ['130000001', 'Counted automatically from an email.', null, '2', 14]);
   // One with an item never seen before waits, saying which.
   await arrive('e7');
-  const third = (await call('GET', '/api/inbox')).json.emails.find((e: any) => e.subject.includes('130000002'));
+  const third = await settled('130000002');
   assert.deepEqual([third.status, third.scanStatus], ['waiting', 'read']);
   assert.match(third.detail, /1 new item/);
   // Removing a sender.

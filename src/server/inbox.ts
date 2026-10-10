@@ -6,10 +6,9 @@
  *   POST /api/inbox/senders         { address, inbox?: 'invoices' | 'reports' | 'both' } or { address, remove: true }
  *
  * Only senders a manager listed are taken, and only when the email passes its checks (DKIM or
- * DMARC): anything else is noted and dropped. Invoices from a vendor we know whose lines were all
- * matched before count on their own; the rest land with the photos to check (a PDF read by
- * the reader, WebstaurantStore's order email read line by line, any other email's text read as
- * text); OpenTable reports land on tonight's boards (the CSV export straight in, a PDF or the email
+ * DMARC): anything else is noted and dropped. Invoices are read by the same reader as photos (a PDF
+ * attached, else the email's own text); from a vendor we know whose lines were all matched before
+ * they count on their own, the rest land with the photos to check; OpenTable reports land on tonight's boards (the CSV export straight in, a PDF or the email
  * itself read). Gmail's forwarding confirmation is kept, so its code shows in Settings.
  */
 
@@ -21,7 +20,7 @@ import { autoCount, readScan } from './invoiceScans.ts';
 import { readReport } from './floor.ts';
 import { localNow } from './online.ts';
 import { readOpenTableCsv } from '../core/reservations.ts';
-import { bare, cleanSender, gmailConfirmCode, htmlToText, inboxOf, readWebstaurantEmail, senderAllowed, type InboxKind, type Sender } from '../core/inboundMail.ts';
+import { bare, cleanSender, gmailConfirmCode, htmlToText, inboxOf, senderAllowed, type InboxKind, type Sender } from '../core/inboundMail.ts';
 import { ResendInbound, verifyWebhook, type Fetch } from '../connectors/resendInbound.ts';
 
 export interface InboxSettings {
@@ -79,7 +78,8 @@ export async function takeEmail(db: Db, settings: InboxSettings, emailId: string
 
   const files = await resend.attachments(emailId).catch(() => []);
   if (inbox === 'reports') return takeReport(db, rid, files, text, mail.subject, (s, x) => note(s, { inbox, ...x }));
-  return takeInvoice(db, rid.id, files, mail.html, text, mail.createdAt, (s, x) => note(s, { inbox, ...x }));
+  // An invoice email's own layout (its HTML tables), as text for the reader.
+  return takeInvoice(db, rid.id, files, mail.html ? htmlToText(mail.html) : text, (s, x) => note(s, { inbox, ...x }));
 }
 
 type Note = (status: string, extra?: { detail?: string; scanId?: string; reportId?: string }) => Promise<{ status: string; detail?: string }>;
@@ -101,15 +101,11 @@ async function takeReport(db: Db, r: { id: string; timezone: string }, files: { 
   return note('reading', { reportId: row.rows[0]!.id, detail: pdf ? 'Reading the PDF' : 'Reading the email' });
 }
 
-async function takeInvoice(db: Db, rid: string, files: { filename: string; contentType: string; data: Buffer }[], html: string | undefined, text: string, receivedAt: string | undefined, note: Note) {
-  // WebstaurantStore's order email: read line by line, nothing to guess.
-  const webstaurant = html ? readWebstaurantEmail(html, receivedAt) : undefined;
-  if (webstaurant) {
-    const scan = await db.query<{ id: string }>("INSERT INTO invoice_scans (restaurant_id, status, result) VALUES ($1, 'read', $2) RETURNING id", [rid, JSON.stringify(webstaurant)]);
-    const out = await note('read', { scanId: scan.rows[0]!.id, detail: `WebstaurantStore ${webstaurant.invoiceNumber ?? ''}: ${webstaurant.lines.length} lines, $${webstaurant.total ?? ''}`.replace(/\s+/g, ' ') });
-    await countOrWait(db, rid, scan.rows[0]!.id);
-    return out;
-  }
+/**
+ * Every invoice goes through the same reader, whatever way it came (a photo, a PDF, an order email's
+ * text), so the same invoice reads, names and matches the same.
+ */
+async function takeInvoice(db: Db, rid: string, files: { filename: string; contentType: string; data: Buffer }[], text: string, note: Note) {
   // A PDF (or photos) attached: the pages, read like a photographed invoice. No attachment: the email's text.
   const pages = files.filter((f) => PDF.test(f.contentType) || IMAGE.test(f.contentType)).slice(0, 8).map((f) => ({ media: PDF.test(f.contentType) ? 'application/pdf' : f.contentType, data: f.data }));
   if (!pages.length) {

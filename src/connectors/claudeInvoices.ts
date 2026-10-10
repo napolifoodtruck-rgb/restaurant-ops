@@ -58,6 +58,11 @@ export interface ReaderOptions {
 
 export { DEFAULT_MODEL, ReaderError } from './claude.ts';
 
+/** How a line's ingredient is named and sorted: the same rule whether it came in a photo, a PDF or an email. */
+const ITEM_NAME_RULE = 'The pure ingredient name: the plain thing first, then at most a word or two that matters ("Cinnamon, sticks", "Star anise, whole", "Salt, sea", "Mozzarella, fresh", "Towels, paper M-fold"). Never a brand, size, pack, count, grade or marketing word ("Regal", "Acopa", "Bulk", "Fine", "7 oz", "6/Case", "Premium").';
+const KIND_RULE = 'food; wine, beer, liquor or na (non-alcoholic drink); other for supplies, packaging, cleaning, equipment.';
+const KINDS = ['food', 'wine', 'beer', 'liquor', 'na', 'other'] as const;
+
 const TOOL = {
   name: 'record_invoice',
   description: 'Record everything printed on this supplier invoice, exactly as printed.',
@@ -83,8 +88,8 @@ const TOOL = {
             unitPrice: { type: 'number' },
             total: { type: 'number', description: 'Extended price for the line. Negative for credits.' },
             unsure: { type: 'boolean', description: 'True if any number on this line was hard to read.' },
-            item: { type: 'string', description: 'The pure ingredient name: the plain thing first, then at most a word or two that matters ("Cinnamon, sticks", "Star anise, whole", "Salt, sea", "Mozzarella, fresh", "Towels, paper M-fold"). Never a brand, size, pack, count, grade or marketing word ("Regal", "Acopa", "Bulk", "Fine", "7 oz", "6/Case", "Premium").' },
-            kind: { type: 'string', enum: ['food', 'wine', 'beer', 'liquor', 'na', 'other'], description: 'food; wine, beer, liquor or na (non-alcoholic drink); other for supplies, packaging, cleaning, equipment.' },
+            item: { type: 'string', description: ITEM_NAME_RULE },
+            kind: { type: 'string', enum: [...KINDS], description: KIND_RULE },
             handwritten: { type: 'string', description: 'If a handwritten mark changes this line (crossed out, shorted, a new quantity or price), what it says in a few words, e.g. "shorted 1 cs" or "qty 2 → 1". The quantity and total fields then hold the corrected numbers. Leave out when nothing is handwritten.' },
           },
         },
@@ -132,7 +137,7 @@ export function cleanRead(input: any): ReadInvoice {
     if (l.unsure === true) line.unsure = true;
     if (str(l.handwritten)) line.handwritten = str(l.handwritten)!;
     if (str(l.item)) line.item = str(l.item)!.slice(0, 80);
-    if (['food', 'wine', 'beer', 'liquor', 'na', 'other'].includes(l.kind)) line.kind = l.kind;
+    if (KINDS.includes(l.kind)) line.kind = l.kind;
     return line;
   }).filter(Boolean);
   const date = str(input?.invoiceDate);
@@ -158,3 +163,4 @@ export function foldLineTax(inv: ReadInvoice): ReadInvoice {
   return { ...inv, lines: inv.lines.map((l) => ({ ...l, total: cents(l.unitPrice! * l.quantity) })),
     notes: [inv.notes, 'Line totals included tax: counted before tax.'].filter(Boolean).join(' ') };
 }
+
