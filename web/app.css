@@ -1489,7 +1489,9 @@ section[aria-label="Email inbox"] input[type=text] { width: 100%; }
 
 /* Capture an invoice. A computer: a button at the top of Today. A phone: a round chip in the bottom-right
    corner on every screen, where Logout was (Log out is in Settings on a phone). */
-.capture-bar { margin: 4px 0 14px; }
+.capture-bar { margin: 0; }
+.today-tools { align-items: center; gap: 10px; }
+.capture-bar .error:empty { display: none; }
 .capture-btn { display: inline-flex; align-items: center; gap: 10px; --lens: #000; }
 .capture-btn .cam-icon { width: 20px; height: 20px; }
 .capture-corner { display: none; }
