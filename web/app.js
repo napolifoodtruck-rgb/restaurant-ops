@@ -2051,10 +2051,11 @@ async function menuScreen(me) {
   const chipKey = `menuChip:${side}`;
   const canPlan = atLeast(me.roleLevel, 'chef') && side === 'kitchen';
   const canOnline = manager && side === 'kitchen';
-  const valid = (k) => k === 'needs' ? needCount > 0 : k === 'coming' ? canPlan : k === 'online' || k === 'windows' ? canOnline : sections.includes(k);
+  const valid = (k) => k === 'needs' ? needCount > 0 : k === 'coming' ? canPlan : k === 'online' ? canOnline : sections.includes(k);
   let chip = recall(chipKey);
+  if (chip === 'windows') chip = 'online';  // online ordering's settings moved to Service
   if (!valid(chip)) chip = needCount ? 'needs' : sections[0] ?? (canPlan ? 'coming' : 'needs');
-  let coming = null, online = null, windows = null, orderPage = null, takeoutCard = null;
+  let coming = null, online = null;
   const pickChip = (k) => { chip = k; remember(chipKey, k); draw(); };
 
   // The side: what's on, what came off (each can be put back), adding a dish back, buttons kept apart, answers.
@@ -2080,8 +2081,8 @@ async function menuScreen(me) {
         sec, h('span', { class: 'chip-count', text: String(m.current.filter((x) => baseOf(x.section) === sec).length) }))),
       needCount ? h('button', { class: `chip needs${chip === 'needs' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'needs'), onclick: () => pickChip('needs') }, 'Needs you', h('span', { class: 'chip-count', text: String(needCount) })) : null,
       canPlan ? h('button', { class: `chip${chip === 'coming' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'coming'), onclick: () => pickChip('coming') }, 'Coming up') : null,
-      // Online's settings (the order page, pickup windows) open from a button on it, under the same chip.
-      canOnline ? h('button', { class: `chip${chip === 'online' || chip === 'windows' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'online' || chip === 'windows'), onclick: () => pickChip('online') }, 'Online') : null);
+      // What's sold online; online ordering's settings (pickup windows, the order page) are in Service → Settings.
+      canOnline ? h('button', { class: `chip${chip === 'online' ? ' on' : ''}`, role: 'tab', 'aria-selected': String(chip === 'online'), onclick: () => pickChip('online') }, 'Online') : null);
     let main;
     if (chip === 'needs') {
       main = [quietCard, questionRows.length ? h('section', { class: 'card', id: 'menu-questions' },
@@ -2089,13 +2090,9 @@ async function menuScreen(me) {
         h('div', { class: 'asks' }, questionRows)) : null];
       if (!quietCard && !questionRows.length) main = [h('section', { class: 'card small muted', text: 'Nothing needs you.' })];
     } else if (chip === 'online') {
-      online ??= await onlineMenuCard(me, () => pickChip('windows'));
+      // Its Settings button: online ordering's settings, in Service.
+      online ??= await onlineMenuCard(me, () => { floorTab = 'setup'; floorSettingsPart = 'online'; floorManage(me); });
       main = [online];
-    } else if (chip === 'windows') {
-      windows ??= await pickupWindowsCard(me);
-      orderPage ??= await orderPageCard();
-      takeoutCard ??= takeoutNumbersCard();
-      main = [h('div', { class: 'row online-settings-head' }, h('button', { class: 'btn small-btn', text: '← Items sold online', onclick: () => pickChip('online') }), h('h2', { class: 'grow', text: 'Online settings' })), orderPage, takeoutCard, windows];
     } else if (chip === 'coming') {
       coming ??= await comingUpCard(me);
       main = [coming ?? h('section', { class: 'card small muted', text: 'Couldn’t load what’s coming up.' })];
@@ -2496,7 +2493,7 @@ async function onlineMenuCard(me, openSettings) {
     h('div', { class: 'small muted', text: 'Names, prices and options come from Square. Under Options, set “Partially cooked” to Always on and hide fully cooked and gluten-sensitive crust: an option changes everywhere it’s used.' }),
     h('div', { class: 'small' }, h('b', { text: 'Pause online tonight' }), ' only takes an item off the online order page. To 86 it everywhere, mark it sold out in Square.'),
     h('div', { class: 'tag warn sync-warn', text: 'No Square menu yet: run the Square sync under Settings.', hidden: true }),
-    h('div', { class: 'row tight online-find' }, search, browse, arrange, h('button', { class: 'btn small-btn', text: 'Settings', onclick: openSettings })),
+    h('div', { class: 'row tight online-find' }, search, browse, arrange, h('button', { class: 'btn small-btn', text: 'Ordering settings', title: 'Pickup windows, the order page, turning online orders off: in Service → Settings', onclick: openSettings })),
     results, err, list);
   await load();
   return box;
@@ -7324,18 +7321,37 @@ async function floorManage(me) {
   if (!r.ok) return show(shell(me, 'floor', [h('header', {}, h('h1', { text: 'Service' })), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const d = r.data;
   const reload = () => refreshInPlace(() => floorManage(me));
-  const tabs = h('div', { class: 'seg', role: 'tablist' }, [['tonight', 'Tonight'], ['setup', 'Setup'], ['allergens', 'Allergens & names'], ['wine', 'Wine'], ['quiz', 'Quiz']].map(([k, label]) =>
+  const tabs = h('div', { class: 'seg', role: 'tablist' }, [['tonight', 'Tonight'], ['allergens', 'Allergens & names'], ['wine', 'Wine'], ['quiz', 'Quiz'], ['setup', 'Settings']].map(([k, label]) =>
     h('button', { class: floorTab === k ? 'on' : '', role: 'tab', 'aria-selected': String(floorTab === k), text: label, onclick: () => { floorTab = k; floorManage(me); } })));
   const onDevice = Boolean(me.device?.floorPostId);
   const header = h('header', { class: 'row wrap' }, h('div', { class: 'grow' }, h('div', { class: 'kicker', text: 'Front of house' }), h('h1', { text: 'Service' })), tabs,
     h('button', { class: 'btn', text: onDevice ? '← The board' : 'Open a board', onclick: () => floorBoard({ me }) }));
   let content;
-  if (floorTab === 'setup') content = floorSetupTab(d, reload);
+  if (floorTab === 'setup') content = await floorSettingsTab(me, d, reload);
   else if (floorTab === 'allergens') content = await floorAllergensTab(reload);
   else if (floorTab === 'wine') content = await floorWineTab(reload);
   else if (floorTab === 'quiz') content = await floorQuizTab(reload);
   else content = floorTonightTab(d, reload);
   show(shell(me, 'floor', [header, content]));
+}
+
+/**
+ * Service settings, for managers: the posts, iPads and checklists; the dough and takeout numbers;
+ * online ordering (pickup windows, the order page, turning it off). What's sold online is a version
+ * of the menu, so it stays in Menu, a link away.
+ */
+let floorSettingsPart = 'posts';
+async function floorSettingsTab(me, d, reload) {
+  const PARTS = [['posts', 'Posts, iPads & checklists'], ['dough', 'Dough & takeout'], ['online', 'Online ordering']];
+  const nav = h('div', { class: 'chips-row', role: 'tablist', 'aria-label': 'Settings' }, PARTS.map(([k, label]) =>
+    h('button', { class: `chip${floorSettingsPart === k ? ' on' : ''}`, role: 'tab', 'aria-selected': String(floorSettingsPart === k), text: label, onclick: () => { floorSettingsPart = k; floorManage(me); } })));
+  if (floorSettingsPart === 'dough') return [nav, page([takeoutNumbersCard()], [])];
+  if (floorSettingsPart === 'online') {
+    const toMenu = sideBox('Items sold online', h('div', { class: 'small muted', text: 'Which dishes are online, in what order, and what counts as a pizza: a version of the menu, so it lives in Menu.' }),
+      sideActions(h('button', { class: 'btn small-btn', text: 'Open in Menu', onclick: () => { me.side = 'kitchen'; remember('menuChip:kitchen', 'online'); menuScreen(me); } })));
+    return [nav, page([onlinePauseBar(), await orderPageCard(), await pickupWindowsCard(me)], [toMenu])];
+  }
+  return [nav, floorSetupTab(d, reload)];
 }
 
 function floorTonightTab(d, reload) {
