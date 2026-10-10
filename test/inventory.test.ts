@@ -46,7 +46,8 @@ test('inventory: lists, sections, placing and moving, and a count worth dollars'
   }
   // Flour bought by the 50 lb bag at $25: 50 cents a pound.
   const vendor = (await db!.query<{ id: string }>("INSERT INTO vendors (restaurant_id, name) VALUES ($1, 'Ferraro') RETURNING id", [rid])).rows[0]!.id;
-  const today = new Date().toISOString().slice(0, 10);
+  // The restaurant's day (America/New_York), as the app reads it: after 8pm Eastern the UTC date is already tomorrow.
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
   const inv = (await db!.query<{ id: string }>("INSERT INTO supplier_invoices (restaurant_id, vendor_id, vendor_name, invoice_date, source, total) VALUES ($1, $2, 'Ferraro', $3, 'typed', 25) RETURNING id", [rid, vendor, today])).rows[0]!.id;
   await db!.query("INSERT INTO supplier_invoice_lines (invoice_id, line_number, product_id, description, quantity, unit, unit_price, total, per_amount, per_unit) VALUES ($1, 1, 'flour', 'FLOUR 00 50LB', 1, 'BAG', 25, 25, 50, 'lb')", [inv]);
   // Gin and pizza boxes are in no recipe, but they're bought: they're counted too.

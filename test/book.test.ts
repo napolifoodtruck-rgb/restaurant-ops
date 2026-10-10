@@ -122,7 +122,8 @@ test('the kitchen book moves into its tables: same recipes, ids instead of names
   // A real change from today on: days before it keep the recipe as it read just before.
   const current = (await loadBook(db!, rid)).recipeCards!;
   await saveRecipeCards(db!, rid, current.map((c) => (c.name === 'Margherita' ? { ...c, ingredients: c.ingredients.map((i, k) => (k === 1 ? { ...i, amount: 2.75 } : i)) } : c)), staffId, { dated: new Set([id['Margherita']!]) });
-  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  // The restaurant's yesterday (America/New_York), as the app reads days, not UTC's.
+  const yesterday = new Date(Date.now() - 86_400_000).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
   const thenCards = (await recipeCardsOn(db!, rid, yesterday))!;
   assert.deepEqual(thenCards.find((c) => c.name === 'Margherita')!.ingredients.map((i) => [i.name, i.amount]), [['Neapolitan Dough', 1], ['Cheese, Mozzarella', 3], ['spice, sea salt', 1]]);
   assert.equal(thenCards.find((c) => c.id === id['Pizza Dough'])!.name, 'Neapolitan Dough'); // the rename was a fix: it reads the new name then too
