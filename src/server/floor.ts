@@ -795,7 +795,9 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
     return send(res, 200, {
       wines: rows.map((w) => {
         const last = w.catalog_ids.map((c) => lastSold.get(c)).filter(Boolean).sort().at(-1);
-        return { ...wineView(w, buttons, byId, firstSold, ctx.today), suggested: w.suggested ? js<{ recipeId: string; why: string }[]>(w.suggested).map((p) => ({ ...p, name: byId.get(p.recipeId)?.name })).filter((p) => p.name) : null,
+        const view = wineView(w, buttons, byId, firstSold, ctx.today);
+        // Here the approved pairings and the suggestions are kept apart (the board falls back to suggestions).
+        return { ...view, pairings: view.pairings.filter((p) => !('suggested' in p)), suggested: w.suggested ? js<{ recipeId: string; why: string }[]>(w.suggested).map((p) => ({ ...p, name: byId.get(p.recipeId)?.name })).filter((p) => p.name) : null,
           ...(last ? { lastSold: last } : {}), stopped: Boolean(last && last < addDays(ctx.today, -30)), unlinked: !w.catalog_ids.length };
       }),
       buttons: buttons.map((b) => ({ catalogId: b.catalogId, name: b.name, price: b.price })), notCarded: [...new Set(buttons.filter((b) => !linked.has(b.catalogId) && (lastSold.get(b.catalogId) ?? '') >= addDays(ctx.today, -60)).map((b) => wineBase(b.itemName)))].sort().map((name) => ({ name })), scans, dishes: dishes.filter((d) => d.kind === 'dish').map((d) => ({ id: d.id, name: d.name })),
@@ -879,8 +881,11 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
     }
     const b = await body(req, 8 * 1024 * 1024);
     if (winePath[2] === 'pairings') {
-      const list = (Array.isArray(b.pairings) ? b.pairings : []).filter((p: any) => /^[0-9a-f-]{36}$/.test(String(p?.recipeId))).map((p: any) => ({ recipeId: String(p.recipeId), why: s(p.why, 200) ?? '' })).slice(0, 10);
-      await db.query('UPDATE wine_cards SET pairings = $3, suggested = NULL, updated_at = now() WHERE restaurant_id = $1 AND id = $2', [rid, id, JSON.stringify(list)]);
+      const clean = (v: unknown) => (Array.isArray(v) ? v : []).filter((p: any) => /^[0-9a-f-]{36}$/.test(String(p?.recipeId))).map((p: any) => ({ recipeId: String(p.recipeId), why: s(p.why, 200) ?? '' }));
+      const list = clean(b.pairings).filter((p, i, a) => a.findIndex((x) => x.recipeId === p.recipeId) === i).slice(0, 12);
+      // Suggestions still waiting stay, unless they're now approved (or none are sent).
+      const waiting = Array.isArray(b.suggested) ? clean(b.suggested).filter((p) => !list.some((x) => x.recipeId === p.recipeId)) : [];
+      await db.query('UPDATE wine_cards SET pairings = $3, suggested = $4, updated_at = now() WHERE restaurant_id = $1 AND id = $2', [rid, id, JSON.stringify(list), waiting.length ? JSON.stringify(waiting) : null]);
       return send(res, 200, { ok: true }), true;
     }
     if (b.active === false) { await db.query('UPDATE wine_cards SET active = false, updated_at = now() WHERE restaurant_id = $1 AND id = $2', [rid, id]); return send(res, 200, { ok: true }), true; }

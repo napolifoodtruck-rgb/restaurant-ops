@@ -1397,3 +1397,11 @@ input[type=search]:not(.floor-search):not(.search) { height: 48px; border: 1px s
   .rail .logo, .rail .logo .brand-logo, .brand-logo.rail { width: 80px; }
   .rail .me-chip { padding: 2px 0 4px; }
 }
+/* A wine's pairings, edited one by one. */
+.pair-edit { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid var(--soft); }
+.pair-edit .pair-name { min-width: 140px; }
+.pair-edit input[type=text] { flex: 1; min-width: 180px; height: 40px; }
+.pair-add select { min-width: 180px; }
+.pair-add { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; }
+.pair-hits { display: flex; flex-wrap: wrap; gap: 6px; }
+.pair-editor > .btn { align-self: flex-start; }

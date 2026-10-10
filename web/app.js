@@ -7500,6 +7500,51 @@ async function floorQuizTab(reload) {
   return page([err, mine, menu], []);
 }
 
+/**
+ * A wine's pairings, one dish at a time: the approved ones with their reasons (edit, remove), the
+ * suggestions waiting (approve or drop each, or all), and any dish on the menu added by hand.
+ */
+function pairingEditor(w, d, err, reload) {
+  const approved = w.pairings.map((p) => ({ recipeId: p.recipeId, why: p.why ?? '', name: p.name }));
+  const waiting = (w.suggested ?? []).map((p) => ({ recipeId: p.recipeId, why: p.why ?? '', name: p.name }));
+  const strip = (list) => list.map(({ recipeId, why }) => ({ recipeId, why }));
+  const save = (a, s) => pageAction(async () => {
+    const res = await api('POST', `/api/floor/wines/${w.id}/pairings`, { pairings: strip(a), suggested: strip(s) });
+    if (!res.ok) return (err.textContent = res.data.error ?? 'That didn’t save.');
+    reload();
+  });
+  const rows = approved.map((p, k) => {
+    const why = h('input', { type: 'text', value: p.why, placeholder: 'Why they go together', 'aria-label': `Why ${p.name}` });
+    why.addEventListener('change', () => save(approved.map((x, n) => (n === k ? { ...x, why: why.value } : x)), waiting));
+    return h('div', { class: 'pair-edit' }, h('span', { class: 'strong pair-name', text: p.name }), why,
+      h('button', { class: 'link', text: 'Remove', 'aria-label': `Remove ${p.name}`, onclick: () => save(approved.filter((_, n) => n !== k), waiting) }));
+  });
+  const suggestions = waiting.length ? h('div', { class: 'card tight suggest' },
+    h('div', { class: 'row' }, h('div', { class: 'small strong grow', text: 'Suggested, waiting for you' }),
+      h('button', { class: 'btn small-btn dark', text: 'Approve all', onclick: () => save([...approved, ...waiting], []) })),
+    waiting.map((p, k) => h('div', { class: 'pair-edit' }, h('span', { class: 'strong pair-name', text: p.name }), h('span', { class: 'small muted grow', text: p.why }),
+      h('button', { class: 'btn small-btn', text: 'Approve', onclick: () => save([...approved, p], waiting.filter((_, n) => n !== k)) }),
+      h('button', { class: 'link', text: 'Drop', 'aria-label': `Drop ${p.name}`, onclick: () => save(approved, waiting.filter((_, n) => n !== k)) })))) : null;
+  // Add a dish: search the menu, tap one, and it joins the list (its reason can be typed there).
+  const find = h('input', { type: 'search', placeholder: 'Search the menu to add a dish…', 'aria-label': `Add a dish to ${w.name}` });
+  const hits = h('div', { class: 'pair-hits' });
+  find.addEventListener('input', () => {
+    const t = find.value.trim().toLowerCase();
+    const list = t ? d.dishes.filter((x) => x.name.toLowerCase().includes(t) && !approved.some((p) => p.recipeId === x.id)).slice(0, 8) : [];
+    fill(hits, list.map((x) => h('button', { class: 'btn small-btn', text: `+ ${x.name}`, onclick: () => save([...approved, { recipeId: x.id, why: waiting.find((p) => p.recipeId === x.id)?.why ?? '' }], waiting.filter((p) => p.recipeId !== x.id)) })),
+      t && !list.length ? h('span', { class: 'small muted', text: 'No dish by that name (or it’s already on the list).' }) : null);
+  });
+  const add = h('div', { class: 'pair-add' }, find, hits);
+  const suggest = d.canRead ? h('button', { class: 'btn small-btn', text: approved.length || waiting.length ? 'Suggest more' : 'Suggest pairings', onclick: () => pageAction(async () => {
+    const res = await api('POST', `/api/floor/wines/${w.id}/suggest`);
+    if (!res.ok) return (err.textContent = res.data.error);
+    reload();
+  }) }) : null;
+  return h('div', { class: 'stack tight pair-editor' }, h('div', { class: 'small strong', text: 'Pairs with' }),
+    rows.length ? rows : h('div', { class: 'small muted', text: w.sheetPairings.length ? `None approved yet. The sheet says: ${w.sheetPairings.join(', ')}` : 'None approved yet.' }),
+    suggestions, add, suggest);
+}
+
 async function floorWineTab(reload) {
   const r = await api('GET', '/api/floor/wines');
   if (!r.ok) return h('div', { class: 'error', text: r.data.error });
@@ -7548,12 +7593,7 @@ async function floorWineTab(reload) {
         w.stopped ? h('span', { class: 'tag warn', text: `Not sold since ${shortDate(w.lastSold)}` }) : null, w.unlinked ? h('span', { class: 'tag', text: 'No Square button' }) : null),
       w.stopped ? h('div', { class: 'note small' }, 'Off the list? ', h('button', { class: 'link', text: 'Remove its card', onclick: () => pageAction(async () => { await api('POST', `/api/floor/wines/${w.id}`, { active: false }); reload(); }) })) : null,
       w.tastingNotes ? h('div', { class: 'small', text: w.tastingNotes }) : null,
-      h('div', { class: 'small strong', text: 'Pairs with' }),
-      w.pairings.length ? h('div', { class: 'small', text: w.pairings.map((p) => `${p.name} (${p.why})`).join(' · ') }) : h('div', { class: 'small muted', text: w.sheetPairings.length ? `The sheet says: ${w.sheetPairings.join(', ')}` : 'None yet.' }),
-      w.suggested ? h('div', { class: 'card tight suggest' }, h('div', { class: 'small strong', text: 'Claude suggests' }), w.suggested.map((p) => h('div', { class: 'small' }, h('b', { text: p.name }), ` · ${p.why}`)),
-        h('div', { class: 'row' }, h('button', { class: 'btn small-btn dark', text: 'Use these', onclick: () => pageAction(async () => { await api('POST', `/api/floor/wines/${w.id}/pairings`, { pairings: w.suggested }); reload(); }) }),
-          h('button', { class: 'btn small-btn', text: 'No thanks', onclick: () => pageAction(async () => { await api('POST', `/api/floor/wines/${w.id}/pairings`, { pairings: w.pairings }); reload(); }) })))
-        : d.canRead ? h('button', { class: 'btn small-btn', text: w.pairings.length ? 'Suggest again' : 'Suggest pairings', onclick: () => pageAction(async () => { const res = await api('POST', `/api/floor/wines/${w.id}/suggest`); if (!res.ok) return (err.textContent = res.data.error); reload(); }) }) : null,
+      pairingEditor(w, d, err, reload),
       h('details', {}, h('summary', { class: 'small', text: `Square buttons (${w.catalogIds.length})` }), h('div', { class: 'button-picks' }, links),
         h('button', { class: 'btn small-btn', text: 'Save buttons', onclick: () => pageAction(async () => { await api('POST', `/api/floor/wines/${w.id}`, { catalogIds: links.map((l) => l.querySelector('input')).filter((c) => c.checked).map((c) => c.value) }); reload(); }) })),
       h('label', { class: 'small' }, w.hasPhoto ? 'Replace the bottle photo' : 'Add a bottle photo', photo));
