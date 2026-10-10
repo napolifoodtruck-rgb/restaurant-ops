@@ -82,9 +82,13 @@ export function packInName(description: string): { amount: number; unit: string 
   return m ? parsePack(`${m[1]} ${m[2]!.replace(/\./g, '').replace(/ /g, '')}`) : undefined;
 }
 
-/** A description as an ingredient's name: no size, no case count ("Regal Whole Star Anise 7 oz." → "Regal Whole Star Anise"). */
-export function plainName(description: string): string {
-  const s = description.replace(/\s*-\s*[\d,]+\s*\/\s*case\b.*$/i, '').replace(/\b\d+(?:\.\d+)?\s*(fl\.? ?oz|oz|lbs?|gal|qt|ml|ltr?|l|kg|g|ct|count|pk|pack)\b\.?/gi, '').replace(/\s+/g, ' ').replace(/[\s,.-]+$/, '').trim();
+/**
+ * A description as a pure ingredient name, when the reader didn't give one: no size, no case or pack
+ * count, and (for vendors that start every title with their brand: WebstaurantStore's Regal, Acopa,
+ * Lavex...) no brand. "Regal Cinnamon Sticks 4 oz." → "Cinnamon Sticks".
+ */
+export function plainName(description: string, brandFirst = false): string {
+  const s = description.replace(/\s*-\s*[\d,]+\s*\/\s*(case|pack|box|bag|ct|count|roll|sleeve)\b.*$/i, '').replace(brandFirst ? /^\s*\S+\s+(?=\S+)/ : /^$/, '').replace(/\b\d+(?:\.\d+)?\s*(fl\.? ?oz|oz|lbs?|gal|qt|ml|ltr?|l|kg|g|ct|count|pk|pack)\b\.?/gi, '').replace(/\s+/g, ' ').replace(/[\s,.-]+$/, '').trim();
   return (s || description).slice(0, 80);
 }
 
@@ -142,7 +146,7 @@ export function matchInvoice(input: MatchInput): MatchedInvoice {
     } else {
       flags.push('noProduct');
       // Nothing like it on the list: most likely a new ingredient, counted the way it's packed.
-      if (!flags.includes('credit')) out.suggest = { name: l.item ?? plainName(l.description), unit: packOf && ['mass', 'volume'].includes(dimensionOf(packOf.unit) ?? '') ? packOf.unit : 'each', kind: l.kind ?? 'food' };
+      if (!flags.includes('credit')) out.suggest = { name: l.item ?? plainName(l.description, /webstaurant/i.test(read.vendor)), unit: packOf && ['mass', 'volume'].includes(dimensionOf(packOf.unit) ?? '') ? packOf.unit : 'each', kind: l.kind ?? 'food' };
     }
     if (perQuantity !== undefined && perQuantity > 0) {
       out.perQuantity = perQuantity; out.perFrom = perFrom!;

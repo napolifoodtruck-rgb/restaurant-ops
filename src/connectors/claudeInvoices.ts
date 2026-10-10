@@ -83,7 +83,7 @@ const TOOL = {
             unitPrice: { type: 'number' },
             total: { type: 'number', description: 'Extended price for the line. Negative for credits.' },
             unsure: { type: 'boolean', description: 'True if any number on this line was hard to read.' },
-            item: { type: 'string', description: 'What the product is, the way a restaurant ingredient list would name it: no brand, no pack or size, generic first, e.g. "Star anise, whole", "Cinnamon sticks", "Mozzarella, fresh", "Paper towels, M-fold".' },
+            item: { type: 'string', description: 'The pure ingredient name: the plain thing first, then at most a word or two that matters ("Cinnamon, sticks", "Star anise, whole", "Salt, sea", "Mozzarella, fresh", "Towels, paper M-fold"). Never a brand, size, pack, count, grade or marketing word ("Regal", "Acopa", "Bulk", "Fine", "7 oz", "6/Case", "Premium").' },
             kind: { type: 'string', enum: ['food', 'wine', 'beer', 'liquor', 'na', 'other'], description: 'food; wine, beer, liquor or na (non-alcoholic drink); other for supplies, packaging, cleaning, equipment.' },
             handwritten: { type: 'string', description: 'If a handwritten mark changes this line (crossed out, shorted, a new quantity or price), what it says in a few words, e.g. "shorted 1 cs" or "qty 2 → 1". The quantity and total fields then hold the corrected numbers. Leave out when nothing is handwritten.' },
           },

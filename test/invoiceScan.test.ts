@@ -131,6 +131,9 @@ test('nothing like it on the list: suggested as a new ingredient, counted the wa
   assert.equal(packInName('Lavex Kraft M-Fold Towel - 4,000/Case'), undefined);
   assert.equal(plainName('Regal Whole Star Anise 7 oz.'), 'Regal Whole Star Anise');
   assert.equal(plainName('Lavex Natural Brown Kraft M-Fold Towel - 4,000/Case'), 'Lavex Natural Brown Kraft M-Fold Towel');
+  // WebstaurantStore starts every title with its brand: that goes too.
+  assert.equal(plainName('Regal Cinnamon Sticks 4 oz.', true), 'Cinnamon Sticks');
+  assert.equal(plainName('Lavex 9" x 6" Dark Green Scouring Pad - 10/Pack', true), '9" x 6" Dark Green Scouring Pad');
   const read = { vendor: 'Produce Co', lines: [
     { description: 'Regal Whole Star Anise 7 oz.', quantity: 2, unitPrice: 10.49, total: 20.98, item: 'Star anise, whole', kind: 'food' as const },
     { description: 'Lavex Kraft M-Fold Towel - 4,000/Case', quantity: 1, total: 24.49, kind: 'other' as const },
