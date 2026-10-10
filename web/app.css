@@ -1503,6 +1503,12 @@ section[aria-label="Email inbox"] input[type=text] { width: 100%; }
 .capture-bar { margin: 0; }
 .today-tools { align-items: center; gap: 10px; }
 .capture-bar .error:empty { display: none; }
+/* Every other page: the button sits at the top right of its header, which makes room for it. */
+@media (min-width: 701px) {
+  header.has-capture { position: relative; padding-right: 250px; }
+  header.has-capture > .capture-bar { position: absolute; top: 0; right: 0; }
+  header.has-capture > .capture-bar .error { max-width: 240px; }
+}
 .capture-btn { display: inline-flex; align-items: center; gap: 10px; --lens: #000; }
 .capture-btn .cam-icon { width: 20px; height: 20px; }
 .capture-corner { display: none; }

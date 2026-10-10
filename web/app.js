@@ -413,6 +413,12 @@ function shell(me, active, content) {
   const nav = [
     ['today', 'Today', todayScreen], ['ideas', 'Ideas', manager && ideasScreen], ['prep', 'Prep', prepHome], ['floor', 'Service', manager && floorManage], ['recipes', 'Recipes', recipesScreen], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['reports', 'Reports', manager && reportsScreen], ['orders', 'Orders', manager && ordersScreen], ['inventory', 'Inventory', atLeast(me.roleLevel, 'chef') && inventoryHome],
   ];
+  // Managers on a computer: Capture an invoice at the top right of every page's header (Today has its own,
+  // beside Both / Kitchen / Bar; on a phone it's the corner button).
+  if (manager && active !== 'today' && active !== 'capture') {
+    const head = [content].flat(Infinity).find((x) => x instanceof HTMLElement && x.tagName === 'HEADER');
+    if (head && !head.querySelector('.capture-bar')) { head.classList.add('has-capture'); head.append(captureButton(me)); }
+  }
   return h('div', { class: 'shell', 'data-active': active },
     h('nav', { class: 'rail', 'aria-label': 'Main' },
       h('div', { class: 'logo' }, brandMark('rail')),
