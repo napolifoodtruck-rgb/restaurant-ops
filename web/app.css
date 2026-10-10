@@ -1439,3 +1439,19 @@ input[type=search]:not(.floor-search):not(.search) { height: 48px; border: 1px s
 .btn.stop-btn { border-color: var(--accent); color: var(--accent); }
 @media (max-width: 700px) { .dough-tiles { grid-template-columns: 1fr; } .dough-tile.main .dough-big { font-size: 44px; } }
 .dough-banner { background: var(--accent); color: #fff; font-weight: 700; font-size: 17px; border-radius: 10px; padding: 10px 14px; }
+
+/* The daily report: dine-in, to go and online side by side; the menu by category, folding open to its items. */
+.way-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.way-tile { background: var(--soft); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+.way-big { font-size: 28px; font-weight: 800; }
+.day-cat { border-top: 1px solid var(--soft); }
+.day-cat > summary { display: flex; align-items: center; gap: 12px; padding: 10px 0; cursor: pointer; list-style: none; }
+.day-cat > summary::-webkit-details-marker { display: none; }
+.day-cat > summary::before { content: '›'; color: var(--muted); transition: transform .15s; display: inline-block; width: 10px; }
+.day-cat[open] > summary::before { transform: rotate(90deg); }
+.day-items { padding: 0 0 10px 22px; }
+.day-item { display: grid; grid-template-columns: minmax(0, 1fr) 56px 150px 90px; gap: 10px; padding: 4px 0; font-size: 14px; border-top: 1px dashed var(--soft); }
+.day-item.head { border-top: none; }
+.day-item .num { text-align: right; }
+@media (max-width: 700px) { .way-tiles { grid-template-columns: 1fr; } .day-item { grid-template-columns: minmax(0, 1fr) 40px 70px; } .day-item > :nth-child(3) { display: none; } }
+@media print { .day-cat:not([open]) > .day-items { display: block; } }

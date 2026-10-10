@@ -312,6 +312,16 @@ test('sign-ins from setup to a locked PIN', { skip: !db && 'no PostgreSQL for te
   assert.deepEqual(report.current.byType.map((t: any) => t.type), ['table', 'online']);
   const menuReport = (await call('GET', `/api/reports/menu?from=${thisWeek.from}&to=${thisWeek.to}&area=kitchen`, { cookies: ownerSession })).json;
   assert.deepEqual(menuReport.categories.map((c: any) => [c.name, c.items[0].name, c.items[0].byType.table]), [['Pizza', 'Margherita', 4]]);
+  // The daily report: the last service by default; dine-in, to go and online; the menu; servers; the days either side.
+  assert.equal((await call('GET', '/api/reports/day', { cookies: marcoOnExpo })).status, 403);
+  const daily = (await call('GET', '/api/reports/day', { cookies: ownerSession })).json;
+  assert.equal(daily.day, '2026-10-03');
+  assert.equal(daily.prevDay, '2026-09-21');
+  assert.deepEqual([daily.totals.sales, daily.byType.map((t: any) => [t.type, t.sales])], [160, [['table', 120], ['online', 40]]]);
+  assert.deepEqual(daily.menu.map((c: any) => [c.name, c.area, c.items.map((i: any) => [i.name, i.quantity, i.byType.table])]), [['Pizza', 'kitchen', [['Margherita', 4, 4]]]]);
+  assert.deepEqual(daily.servers.map((sv: any) => [sv.name, sv.covers, sv.sales]), [['Ava', 4, 120]]);
+  assert.equal((await call('GET', '/api/reports/day?day=2026-09-21', { cookies: ownerSession })).json.nextDay, '2026-10-03');
+  assert.equal((await call('GET', '/api/reports/day?day=2999-01-01', { cookies: ownerSession })).status, 400);
 
   // Snoozing a line: set aside for whoever snoozed it, never past its day; deadlines today can't be.
   const waits = ownerToday.items.find((i: any) => i.snooze?.length && !i.due);

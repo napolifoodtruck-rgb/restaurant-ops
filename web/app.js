@@ -4569,7 +4569,7 @@ function dashboardCards(me, d) {
   const report = (state) => () => reportsScreen(me, state);
   const boxes = [];
   const l = d.lastService;
-  if (l) boxes.push(dashBox(`Last service · ${weekdayName(l.day)} ${shortDate(l.day)}`, report({ report: 'sales', range: { from: l.day, to: l.day } }), null,
+  if (l) boxes.push(dashBox(`Last service · ${weekdayName(l.day)} ${shortDate(l.day)}`, report({ report: 'day', day: l.day }), null,
     h('div', { class: 'big', text: dollars(l.sales, { exact: true }) }),
     l.usual ? versusText(l.sales, l.usual.sales, `vs a usual ${weekdayName(l.day)} (${dollars(l.usual.sales, { exact: true })})`) : h('span', { class: 'small muted', text: 'Not enough weeks yet to say what’s usual.' }),
     h('div', { class: 'dash-stats' },
@@ -5016,6 +5016,11 @@ async function reportsScreen(me, state = {}) {
   const range = state.range ?? presets.find(([k]) => k === state.preset)?.[2] ?? presets[1][2];
   if (state.report === 'prices') return pricesScreen(me, state, presets, range);
   loadingScreen(me, 'reports', 'Reports');
+  if (state.report === 'day') {
+    const r = await api('GET', `/api/reports/day${state.day ? `?day=${state.day}` : ''}`);
+    if (!r.ok) return show(shell(me, 'reports', [h('header', {}, h('h1', { text: 'Reports' })), reportToolbar(me, state, range, presets, (c) => reportsScreen(me, { ...state, ...c })), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+    return renderDailyReport(me, { ...state, day: r.data.day ?? state.day }, r.data, presets, range);
+  }
   const side = sideOf(me);
   const path = { sales: '/api/reports/sales?', menu: `/api/reports/menu?area=${side}&`, prime: '/api/reports/prime?', usage: `/api/reports/usage?area=${side}&`, hours: '/api/reports/hours?' }[state.report] ?? '/api/reports/sales?';
   const r = await api('GET', `${path}from=${range.from}&to=${range.to}`);
@@ -5092,14 +5097,90 @@ function reportToolbar(me, state, range, presets, again) {
   return h('section', { class: 'card toolbar one-row' },
     h('div', { class: 'tool-field' }, h('span', { class: 'tool-label', text: 'Report' }), report),
     info.period ? periodPicker(presets, custom ? 'custom' : state.preset, range, (key, r) => again(key === 'custom' ? { range: r, preset: undefined } : { preset: key, range: undefined })) : null,
+    info.day ? dayPicker(state, again) : null,
     info.compares ? h('div', { class: 'tool-field' }, h('span', { class: 'tool-label', text: 'Against' }),
       seg('Against', [['Period before', !lastYearOf(state), () => again({ compare: 'previous' })], ['Last year', lastYearOf(state), () => again({ compare: 'lastYear' })]])) : null,
     info.sided ? h('div', { class: 'tool-end' }, sideSwitch(me, () => again({}))) : null);
 }
 const lastYearOf = (state) => state.compare === 'lastYear';
 
+/** The daily report's day: back and forward through the days with sales, or any date. */
+function dayPicker(state, again) {
+  const input = h('input', { type: 'date', value: state.day ?? '', max: iso(new Date()), 'aria-label': 'Day' });
+  input.addEventListener('change', () => input.value && again({ day: input.value }));
+  return h('div', { class: 'tool-field' }, h('span', { class: 'tool-label', text: 'Day' }),
+    h('div', { class: 'row tight' },
+      h('button', { class: 'btn small-btn', text: '‹', title: 'The service before', 'aria-label': 'The service before', disabled: state.prevDay ? undefined : true, onclick: () => again({ day: state.prevDay }) }),
+      input,
+      h('button', { class: 'btn small-btn', text: '›', title: 'The next service', 'aria-label': 'The next service', disabled: state.nextDay ? undefined : true, onclick: () => again({ day: state.nextDay }) })));
+}
+
+/**
+ * The daily report: one service, for the morning after. Dine-in, to go and online against the same
+ * night last week; the menu by category with every item and how it was ordered (kitchen open, bar
+ * folded); each server; the headline numbers beside.
+ */
+function renderDailyReport(me, state, d, presets, range) {
+  state = { ...state, prevDay: d.prevDay, nextDay: d.nextDay };
+  const again = (changes) => reportsScreen(me, { ...state, ...changes });
+  const toolbar = reportToolbar(me, state, range, presets, again);
+  if (!d.day) return show(shell(me, 'reports', [h('header', {}, h('h1', { text: 'Daily report' })), toolbar, h('div', { class: 'card small muted', text: 'No orders from Square yet. They come with the nightly sync; Sync now from Settings to start sooner.' })]));
+  const t = d.totals;
+  const header = h('header', { class: 'row wrap' },
+    h('div', { class: 'grow' }, h('div', { class: 'kicker', text: longDay(d.day) }), h('h1', { text: 'Daily report' }), h('div', { class: 'sub', text: REPORTS.day.sub })),
+    h('button', { class: 'btn', text: 'Print', onclick: () => window.print() }));
+  const lw = d.lastWeek;
+  const NAMES = { table: 'Dine-in', register: 'To go', online: 'Online' };
+  // How the money came in: one tile each, against the same night last week.
+  const ways = h('section', { class: 'card' }, h('h2', { text: 'How the money came in' }),
+    h('div', { class: 'way-tiles' }, ['table', 'register', 'online'].map((k) => {
+      const x = d.byType.find((b) => b.type === k), was = lw?.byType.find((b) => b.type === k);
+      return h('div', { class: 'way-tile' },
+        h('div', { class: 'dough-label', text: NAMES[k] }),
+        h('div', { class: 'way-big', text: dollars(x?.sales ?? 0, { exact: true }) }),
+        h('div', { class: 'small muted', text: x ? `${x.orders} ${x.orders === 1 ? 'order' : 'orders'} · ${dollars(x.average ?? 0, { cents: true })} each · ${Math.round(x.share * 100)}%` : 'none' }),
+        lw ? h('div', { class: 'row tight' }, versusCell(x?.sales ?? 0, was?.sales), h('span', { class: 'small muted', text: `vs last ${weekdayName(d.day)}` })) : null);
+    })),
+    h('div', { class: 'small muted', text: 'Dine-in has a table number; to go is everything else rung at the register (phone, counter); online is online ordering.' }));
+  // The menu: each category, its items with how they were ordered.
+  const areaName = { kitchen: 'Kitchen', bar: 'Bar' };
+  const areas = [...new Set(d.menu.map((c) => c.area))];
+  const menuTotal = d.menu.reduce((a, c) => a + c.sales, 0);
+  const catBlock = (c) => {
+    const mix = (i) => [['table', 'mix-table'], ['register', 'mix-togo'], ['online', 'mix-online']].map(([k]) => qty(Math.round(i.byType[k] * 100) / 100)).join(' | ');
+    return h('details', { class: 'day-cat', ...(c.area === 'kitchen' ? { open: true } : {}) },
+      h('summary', {}, h('span', { class: 'strong grow', text: c.name }), h('span', { class: 'small muted', text: `${c.items.length} items · ${menuTotal ? Math.round((c.sales / menuTotal) * 100) : 0}%` }), h('b', { text: dollars(c.sales, { exact: true }) })),
+      h('div', { class: 'day-items' },
+        h('div', { class: 'day-item head small muted' }, h('span', { text: 'Item' }), h('span', { class: 'num', text: 'Sold' }), h('span', { class: 'num', text: 'Dine-in | to go | online' }), h('span', { class: 'num', text: 'Sales' })),
+        c.items.map((i) => h('div', { class: 'day-item' }, h('span', { text: i.name }), h('span', { class: 'num strong', text: qty(Math.round(i.quantity * 100) / 100) }), h('span', { class: 'num small muted', text: mix(i) }), h('span', { class: 'num', text: dollars(i.sales, { exact: true }) })))));
+  };
+  const menu = h('section', { class: 'card' }, h('h2', { text: 'The menu' }),
+    areas.map((a) => [areas.length > 1 ? h('h3', { text: areaName[a] ?? a }) : null, d.menu.filter((c) => c.area === a).map(catBlock)]),
+    h('div', { class: 'small muted', text: 'Each category opens to its items. A split check counts its share of a pizza.' }));
+  // Servers: dine-in only.
+  const servers = d.servers.length ? h('section', { class: 'card' }, h('h2', { text: 'Servers' }),
+    h('div', { class: 'small muted', text: 'Dine-in orders. Tip rate includes automatic gratuity.' }),
+    h('div', { class: 'rtable' }, sortableRows('servers', [
+      { key: 'name', label: 'Server', value: (sv) => sv.name, cell: (sv) => h('div', { class: 'strong', text: sv.name }) },
+      { key: 'covers', label: 'Covers', num: true, value: (sv) => sv.covers, cell: (sv) => h('div', { class: 'num', text: sv.covers.toLocaleString() }) },
+      { key: 'sales', label: 'Sales', num: true, value: (sv) => sv.sales, cell: (sv) => h('div', { class: 'num', text: dollars(sv.sales, { exact: true }) }) },
+      { key: 'coverRate', label: 'Per cover', num: true, value: (sv) => sv.coverRate, cell: (sv) => h('div', { class: 'num', text: sv.coverRate !== undefined ? dollars(sv.coverRate, { cents: true }) : '–' }) },
+      { key: 'tipRate', label: 'Tip rate', num: true, value: (sv) => sv.tipRate, cell: (sv) => h('div', { class: 'num', text: pct0(sv.tipRate) }) },
+      { key: 'winePerCover', label: 'Wine per cover', num: true, value: (sv) => sv.winePerCover, cell: (sv) => h('div', { class: 'num', text: sv.winePerCover !== undefined ? dollars(sv.winePerCover, { cents: true }) : '–' }) },
+    ], d.servers, { sort: state.sorts?.servers, onSort: (sort) => renderDailyReport(me, { ...state, sorts: { ...(state.sorts ?? {}), servers: sort } }, d, presets, range) }, { key: 'sales', dir: 'desc' }))) : null;
+  const side = [
+    statBox('Net sales', dollars(t.sales, { exact: true }), d.usual ? h('div', { class: 'row tight' }, versusCell(t.sales, d.usual.sales), h('span', { class: 'small muted', text: `vs a usual ${weekdayName(d.day)} (${dollars(d.usual.sales, { exact: true })})` })) : null),
+    statBox('Orders', t.orders.toLocaleString(), t.orders ? h('div', { class: 'small muted', text: `${dollars(t.sales / t.orders, { cents: true })} per order` }) : null),
+    statBox('Covers · dine-in', t.covers.toLocaleString(), t.coverRate !== undefined ? h('div', { class: 'small muted', text: `${dollars(t.coverRate, { cents: true })} per cover` }) : null),
+    d.labor ? statBox('Labor', d.labor.share !== undefined ? pct0(d.labor.share) : dollars(d.labor.cost, { exact: true }), h('div', { class: 'small muted', text: `${dollars(d.labor.cost, { exact: true })} · ${qty(Math.round(d.labor.hours * 10) / 10)} hours, hourly staff` })) : null,
+    statBox('Tips', dollars(t.tips, { exact: true }), t.tipRate !== undefined ? h('div', { class: 'small muted', text: `${pct0(t.tipRate)} on dine-in, with automatic gratuity` }) : null),
+  ];
+  show(shell(me, 'reports', [header, toolbar, h('div', { class: 'report-print' }, page([ways, menu, servers], side, { label: 'Summary' }))]));
+}
+
 /** The reports, in the order they're offered. */
 const REPORTS = {
+  day: { title: 'Daily report', day: true, sub: 'One service: how the money came in, the menu by category and item, and each server. Automatic gratuity counts as tips, not sales.' },
   sales: { title: 'Team and sales', period: true, compares: true, sub: 'How the money came in, each server on table orders, and every table. Automatic gratuity counts as tips, not sales. Click a column title to sort.' },
   menu: { title: 'Menu items', period: true, compares: true, sided: true, sub: 'Every item, ranked within its category, by how it was ordered. Specials are judged by what they sold a day while they were on. Click a column title to sort.' },
   prime: { title: 'Prime cost', period: true, compares: true, sub: 'Food and bar bought, plus hourly labor, as a share of sales, week by week. Weeks run Monday to Sunday.' },

@@ -1,6 +1,7 @@
 /**
  * Reports, for managers, over any period:
  *
+ *   GET /api/reports/day?day=               one service: dine-in, to go and online, the menu by category and item, servers
  *   GET /api/reports/sales?from=&to=        how the money came in, tables, servers
  *   GET /api/reports/menu?from=&to=&area=   every item by how it was ordered, by category
  *   GET /api/reports/prime?from=&to=        prime cost by week: food and bar bought, labor, sales
@@ -102,10 +103,52 @@ export function usageFor(model: Model, area: 'kitchen' | 'bar', areaOf: (categor
   return usageGaps(expected, purchases, names, kinds);
 }
 
+/**
+ * One service, for the morning after: the totals against a usual night of that weekday, how the money
+ * came in (dine-in, to go, online) against the same night last week, every category of the menu with
+ * its items by how they were ordered, and each server. The day defaults to the last one with sales.
+ */
+async function dayReport(db: Db, res: ServerResponse, url: URL, who: SignedIn, today: string): Promise<boolean> {
+  const rid = who.restaurantId;
+  const asked = url.searchParams.get('day');
+  if (asked && (!DATE.test(asked) || asked > today)) throw new HttpError(400, 'Pick a day that’s happened.');
+  const day = asked ?? (await db.query<{ day: string | null }>('SELECT max(day)::text AS day FROM pos_orders WHERE restaurant_id = $1 AND day < $2', [rid, today])).rows[0]?.day;
+  if (!day) return send(res, 200, { day: null }), true;
+  const near = (await db.query<{ prev: string | null; next: string | null }>(
+    'SELECT (SELECT max(day)::text FROM pos_orders WHERE restaurant_id = $1 AND day < $2) AS prev, (SELECT min(day)::text FROM pos_orders WHERE restaurant_id = $1 AND day > $2) AS next', [rid, day])).rows[0]!;
+  const shiftDay = (d: string, n: number) => new Date(Date.parse(`${d}T12:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+  const cur = await load(db, rid, day, day);
+  const weekAgo = await load(db, rid, shiftDay(day, -7), shiftDay(day, -7));
+  const wineDaysLeftOut = discountWineDays(cur.lines);
+  const now = salesReport(cur.orders, cur.lines, { wineDaysLeftOut });
+  const then = weekAgo.orders.length ? salesReport(weekAgo.orders, weekAgo.lines, { wineDaysLeftOut }) : undefined;
+  // A usual night of this weekday: the four before it with sales, when there are at least two.
+  const usualDays = (await db.query<{ sales: string; orders: string }>(
+    'SELECT sum(net_sales) AS sales, count(*) AS orders FROM pos_orders WHERE restaurant_id = $1 AND day < $2 AND day >= $2::date - 28 AND extract(dow FROM day) = extract(dow FROM $2::date) GROUP BY day HAVING sum(net_sales) > 0', [rid, day])).rows;
+  const avg = (k: 'sales' | 'orders') => usualDays.reduce((a, r) => a + Number(r[k]), 0) / usualDays.length;
+  const labor = (await db.query<{ cost: string | null; hours: string | null }>('SELECT sum(labor_cost) AS cost, sum(hours) AS hours FROM pos_timecards WHERE restaurant_id = $1 AND day = $2', [rid, day])).rows[0];
+  const laborCost = labor?.cost !== null && labor?.cost !== undefined ? Number(labor.cost) : undefined;
+  // The menu: every category, kitchen first, each with its items by how they were ordered.
+  const areaOf = await loadAreas(db, rid);
+  const menu = menuReport(cur.orders, cur.lines).categories.map((c) => ({ name: c.name, area: areaOf(c.name), sales: c.sales,
+    items: c.items.map((i) => ({ name: i.name, quantity: i.quantity, sales: i.sales, byType: i.byType, ...(i.variations ? { variations: i.variations } : {}) })) }))
+    .sort((a, b) => (a.area === b.area ? b.sales - a.sales : a.area === 'kitchen' ? -1 : 1));
+  return send(res, 200, {
+    day, ...(near.prev ? { prevDay: near.prev } : {}), ...(near.next && near.next < today ? { nextDay: near.next } : {}),
+    totals: now.totals,
+    ...(usualDays.length >= 2 ? { usual: { sales: Math.round(avg('sales') * 100) / 100, orders: Math.round(avg('orders')), nights: usualDays.length } } : {}),
+    ...(laborCost !== undefined ? { labor: { cost: laborCost, hours: Number(labor!.hours ?? 0), ...(now.totals.sales > 0 ? { share: laborCost / now.totals.sales } : {}) } } : {}),
+    byType: now.byType, ...(then ? { lastWeek: { day: shiftDay(day, -7), totals: then.totals, byType: then.byType } } : {}),
+    servers: now.servers, wineDaysLeftOut: now.wineDaysLeftOut,
+    menu,
+  }), true;
+}
+
 export async function reportRoutes(db: Db, res: ServerResponse, url: URL, who: SignedIn, today: string): Promise<boolean> {
   const path = url.pathname;
-  if (!['/api/reports/sales', '/api/reports/menu', '/api/reports/prime', '/api/reports/hours', '/api/reports/usage'].includes(path)) return false;
+  if (!['/api/reports/day', '/api/reports/sales', '/api/reports/menu', '/api/reports/prime', '/api/reports/hours', '/api/reports/usage'].includes(path)) return false;
   if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
+  if (path === '/api/reports/day') return dayReport(db, res, url, who, today);
   const from = url.searchParams.get('from') ?? '', to = url.searchParams.get('to') ?? '';
   if (!DATE.test(from) || !DATE.test(to) || from > to) throw new HttpError(400, 'Pick a period: from and to dates.');
   if (to > today) throw new HttpError(400, 'That period hasn’t happened yet.');
