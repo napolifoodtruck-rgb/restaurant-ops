@@ -7349,7 +7349,8 @@ async function floorSettingsTab(me, d, reload) {
   if (floorSettingsPart === 'online') {
     const toMenu = sideBox('Items sold online', h('div', { class: 'small muted', text: 'Which dishes are online, in what order, and what counts as a pizza: a version of the menu, so it lives in Menu.' }),
       sideActions(h('button', { class: 'btn small-btn', text: 'Open in Menu', onclick: () => { me.side = 'kitchen'; remember('menuChip:kitchen', 'online'); menuScreen(me); } })));
-    return [nav, page([onlinePauseBar(), await orderPageCard(), await pickupWindowsCard(me)], [toMenu])];
+    // What changes night to night first; the order page's look and words, changed rarely, at the bottom.
+    return [nav, page([onlinePauseBar(), await pickupWindowsCard(me), await orderPageCard()], [toMenu])];
   }
   return [nav, floorSetupTab(d, reload)];
 }
