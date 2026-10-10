@@ -4,7 +4,7 @@
  * the shape asked for. Used for invoices, OpenTable reports, wine tech sheets and suggestions.
  */
 
-export interface ClaudePage { mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'application/pdf'; data: Buffer }
+export interface ClaudePage { mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'application/pdf' | 'text/plain'; data: Buffer }
 
 export interface ClaudeOptions {
   apiKey: string;
@@ -29,8 +29,10 @@ export interface ClaudeAnswer<T> { input: T; usage: { input: number; output: num
 /** Sends the pages and the prompt; returns what Claude put in the tool call. */
 export async function askWithTool<T = any>(pages: readonly ClaudePage[], prompt: string, tool: ClaudeTool, opts: ClaudeOptions, what = 'The reader'): Promise<ClaudeAnswer<T>> {
   const model = opts.model ?? DEFAULT_MODEL;
+  // A PDF as a document, a photo as an image, an email's text as text.
   const content: unknown[] = pages.map((p) => p.mediaType === 'application/pdf'
     ? { type: 'document', source: { type: 'base64', media_type: p.mediaType, data: p.data.toString('base64') } }
+    : p.mediaType === 'text/plain' ? { type: 'text', text: p.data.toString('utf8').slice(0, 200_000) }
     : { type: 'image', source: { type: 'base64', media_type: p.mediaType, data: p.data.toString('base64') } });
   content.push({ type: 'text', text: prompt });
   const res = await (opts.fetch ?? fetch)(`${opts.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {

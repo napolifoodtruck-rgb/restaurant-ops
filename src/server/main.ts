@@ -14,7 +14,9 @@
  *   SQUARE_APPLICATION_ID        online orders: the Square app the card form belongs to
  *   SQUARE_CHECKOUT_LOCATION_ID  online orders: the location they're placed at
  *   SQUARE_ENVIRONMENT           'production' to take real payments; anything else is Square's sandbox
- *   RESEND_API_KEY               online orders: confirmation emails through Resend; unset = none sent
+ *   RESEND_API_KEY               online orders: confirmation emails through Resend; unset = none sent. Also reads email coming in
+ *   RESEND_WEBHOOK_SECRET        email coming in: the signing secret of Resend's "email received" webhook; unset = no inbox
+ *   EMAIL_DOMAIN                 the domain invoices@ and reports@ are at (default napolicarrboro.com)
  *   ORDER_EMAIL_FROM             e.g. "Napoli <orders@napolicarrboro.com>" (domain verified in Resend)
  *   ORDER_EMAIL_REPLY_TO         optional: where customers' replies go
  */
@@ -48,7 +50,9 @@ const checkout = {
   version: process.env.SQUARE_VERSION || undefined,
   email: { apiKey: process.env.RESEND_API_KEY, from: process.env.ORDER_EMAIL_FROM || undefined, replyTo: process.env.ORDER_EMAIL_REPLY_TO || undefined },
 };
-const handle = createApp({ db, setupToken: process.env.SETUP_TOKEN || undefined, secureCookies: process.env.NODE_ENV === 'production', sync, checkout });
+// Email coming in (invoices@, reports@ at EMAIL_DOMAIN) through Resend's receiving webhook.
+const inbox = { apiKey: process.env.RESEND_API_KEY || undefined, webhookSecret: process.env.RESEND_WEBHOOK_SECRET || undefined, domain: process.env.EMAIL_DOMAIN || 'napolicarrboro.com' };
+const handle = createApp({ db, setupToken: process.env.SETUP_TOKEN || undefined, secureCookies: process.env.NODE_ENV === 'production', sync, checkout, inbox });
 const stopScheduler = startScheduler(db, sync);
 const port = Number(process.env.PORT ?? 3000);
 const server = createServer(handle);

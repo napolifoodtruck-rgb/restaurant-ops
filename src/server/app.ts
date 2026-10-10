@@ -30,6 +30,7 @@
  *   GET  /api/menu               the menu from sales, what came off, to-dos (manager or up)
  *   POST /api/answers            answer a menu question: link, new dish, not food, dismiss (manager or up)
  *   /api/prep/…                  station prep lists: see prep.ts
+ *   /api/inbound/resend          email coming in (public, signed by Resend); /api/inbox: who may send, what came: see inbox.ts
  *   /api/floor/…                 the front of house board on each POS iPad, and its setup: see floor.ts; the dough count: see dough.ts
  *   /api/plans/…                 dishes coming to the menu: see plans.ts
  *   GET  /api/today              what needs someone today: see today.ts
@@ -71,6 +72,7 @@ import { orderRoutes } from './orders.ts';
 import { onlineRoutes } from './online.ts';
 import { checkoutFrom, checkoutRoutes, type CheckoutSettings } from './onlineCheckout.ts';
 import { doughRoutes, type DoughSquare } from './dough.ts';
+import { inboxRoutes, type InboxSettings } from './inbox.ts';
 import { reportRoutes } from './reports.ts';
 import { costRoutes } from './costs.ts';
 import { ideaRoutes } from './ideas.ts';
@@ -87,6 +89,8 @@ export interface AppConfig {
   sync?: SyncSettings;
   /** Square for online orders: unset = the ordering page shows but doesn't take orders. */
   checkout?: CheckoutSettings;
+  /** Email coming in (invoices@, reports@) through Resend. */
+  inbox?: InboxSettings;
 }
 
 const SESSION_COOKIE = 'ops_session';
@@ -136,6 +140,7 @@ export function createApp(config: AppConfig) {
   const { db, secureCookies } = config;
 
   const orderRoute = checkoutRoutes(db, config.checkout);
+  const inboxRoute = inboxRoutes(db, config.inbox);
   // The dough count reads today's orders through online ordering's Square connection (read only).
   const live = checkoutFrom(config.checkout);
   const doughSquare: DoughSquare | undefined = live ? { square: live.square, locationId: live.locationId } : undefined;
@@ -183,6 +188,9 @@ export function createApp(config: AppConfig) {
       return;
     }
     if (path.startsWith('/api/order/') && await orderRoute(req, res, path)) return;
+    // Email coming in: Resend's webhook is public (it's signed); the inbox's settings are for managers.
+    if (path === '/api/inbound/resend' && await inboxRoute(req, res, path)) return;
+    if (path.startsWith('/api/inbox') && await inboxRoute(req, res, path, await signedIn(req))) return;
 
     // What the home screen shows: the restaurant's name under its icon, opening full screen.
     if (method === 'GET' && path === '/manifest.webmanifest') {

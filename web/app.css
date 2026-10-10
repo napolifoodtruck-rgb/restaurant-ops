@@ -1482,3 +1482,7 @@ input[type=search]:not(.floor-search):not(.search) { height: 48px; border: 1px s
 .ipad-row select { width: 100%; }
 .online-actions .big-btn { width: 100%; min-width: 0; padding: 0 8px; white-space: normal; line-height: 1.15; }
 .wedit-row .grow { flex: 1 1 100%; }
+.inbox-row { display: flex; flex-direction: column; align-items: stretch !important; gap: 2px; }
+section[aria-label="Email inbox"] .list.compact > div { flex-wrap: wrap; }
+section[aria-label="Email inbox"] .grow { min-width: 0; overflow-wrap: anywhere; }
+section[aria-label="Email inbox"] input[type=text] { width: 100%; }

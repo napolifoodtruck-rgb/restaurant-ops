@@ -418,7 +418,7 @@ export async function floorBoard(db: Db, ctx: FloorContext, asked?: string) {
 
 // ---------------------------------------------------------------- reading reports and sheets
 
-async function readReport(db: Db, id: string): Promise<void> {
+export async function readReport(db: Db, id: string): Promise<void> {
   const r = (await db.query<{ file: unknown; media_type: string; uploaded_at: string; day: string }>('SELECT file, media_type, uploaded_at::text AS uploaded_at, day::text AS day FROM floor_reports WHERE id = $1', [id])).rows[0];
   if (!r) return;
   const opts = claudeOptions();

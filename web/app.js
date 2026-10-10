@@ -416,7 +416,8 @@ function shell(me, active, content) {
   return h('div', { class: 'shell', 'data-active': active },
     h('nav', { class: 'rail', 'aria-label': 'Main' },
       h('div', { class: 'logo' }, brandMark('rail')),
-      nav.map(([key, label, go]) => h('button', { class: active === key ? 'on' : '', 'data-key': key, disabled: !go, title: go ? label : 'Coming next', onclick: go ? () => go(me) : undefined }, icon(key), label)),
+      // Only what this person can open: a button they can't use isn't shown at all.
+      nav.filter(([, , go]) => go).map(([key, label, go]) => h('button', { class: active === key ? 'on' : '', 'data-key': key, title: label, onclick: () => go(me) }, icon(key), label)),
       h('button', { class: active === 'settings' ? 'on' : '', 'data-key': 'settings', onclick: () => home(me) }, icon('settings'), 'Settings'),
       h('div', { class: 'spacer' }),
       whoAmI(me),
@@ -5927,8 +5928,10 @@ async function scanScreen(me, id) {
     const r = await api('GET', `/api/invoices/scan/${id}`);
     if (!r.ok) return show(shell(me, 'orders', [h('h1', { text: 'Invoice' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' }), back]));
     const x = r.data;
-    const pagesBox = h('div', { class: 'scan-pages' }, [...Array(x.pages).keys()].map((i) => h('a', { href: `/api/invoices/scan/${id}/page/${i + 1}`, target: '_blank', rel: 'noopener' },
-      h('img', { src: `/api/invoices/scan/${id}/page/${i + 1}`, alt: `Page ${i + 1}`, loading: 'lazy' }))));
+    // Photos or a PDF; an invoice that came by email as text (WebstaurantStore's order email) has none.
+    const pagesBox = x.pages ? h('div', { class: 'scan-pages' }, [...Array(x.pages).keys()].map((i) => h('a', { href: `/api/invoices/scan/${id}/page/${i + 1}`, target: '_blank', rel: 'noopener' },
+      h('img', { src: `/api/invoices/scan/${id}/page/${i + 1}`, alt: `Page ${i + 1}`, loading: 'lazy' }))))
+      : h('div', { class: 'small muted', text: 'Came by email: read from the email itself, no photo.' });
     if (x.status === 'reading') {
       show(shell(me, 'orders', [h('header', {}, h('div', { class: 'kicker', text: 'Invoice photo' }), h('h1', { text: 'Reading…' }), h('div', { class: 'sub', text: 'Usually 20 to 40 seconds. You can leave this page; it’ll be under Photos to check.' })),
         page([h('section', { class: 'card' }, h('div', { class: 'spinner' }))], [sideBox('', pagesBox), sideBox('', sideActions(back))])]));
@@ -6394,7 +6397,7 @@ async function home(me) {
   const unitsCard = h('section', { class: 'card' }, h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: 'Units and containers' }), h('button', { class: 'btn small-btn', text: 'Open', onclick: () => unitsScreen(me, () => home(me)) })),
     h('div', { class: 'small muted', text: 'The fixed conversions, and the containers everyone shares (1/9 pan, deep 1/9 pan, deli quart, Cambros…).' }));
   const main = manager ? [await teamCard(me), unitsCard, await areasCard(), await deviceCard(), await importCard(), await prepImportCard()] : [h('div', { class: 'card small muted', text: 'Nothing to set up here yet.' })];
-  const side = [you, manager ? await syncCard('square') : null, manager ? await syncCard('marginedge') : null, await passwordCard(me), ownPinCard(me), canAdminister(me) ? brandCard(me) : null];
+  const side = [you, manager ? await syncCard('square') : null, manager ? await syncCard('marginedge') : null, manager ? await inboxCard(me) : null, await passwordCard(me), ownPinCard(me), canAdminister(me) ? brandCard(me) : null];
   show(shell(me, 'settings', [header, page(main, side)]));
 }
 
@@ -6402,6 +6405,53 @@ const SOURCES = {
   square: { name: 'Square', secret: 'SQUARE_ACCESS_TOKEN', what: 'sales, menu and team', summary: (d) => `sales ${shortDate(d.from)} – ${shortDate(d.to)}, ${d.itemRows} item rows, ${d.modifierRows} modifier rows, ${d.catalogObjects} catalog entries${d.orders !== undefined ? `, ${d.orders} orders from ${shortDate(d.ordersFrom)}` : ''}. Team: ${d.team?.added ?? 0} added, ${d.team?.updated ?? 0} updated, ${d.team?.deactivated ?? 0} no longer active.` },
   marginedge: { name: 'MarginEdge', secret: 'MARGINEDGE_API_KEY', what: 'invoices, products and pack sizes', summary: (d) => `${d.invoices} invoices since ${shortDate(d.from)}, ${d.products} products, ${d.vendorItems} vendor items.` },
 };
+
+/**
+ * The email inbox: invoices@ and reports@, who may send to them, and what came in lately (read,
+ * reading, dropped and why). Gmail's forwarding confirmation code shows here, to type into Gmail.
+ */
+async function inboxCard(me) {
+  const box = h('section', { class: 'card tight', 'aria-label': 'Email inbox' });
+  const STATUS = { read: ['Read', 'ok'], reading: ['Reading', 'blue'], dropped: ['Dropped', 'warn'], failed: ['Failed', 'bad'], code: ['Gmail code', 'blue'] };
+  async function draw(data) {
+    const r = data ? { ok: true, data } : await api('GET', '/api/inbox');
+    if (!r.ok) return fill(box, h('div', { class: 'small muted strong', text: 'Email inbox' }), h('div', { class: 'error small', text: r.data.error ?? 'Couldn’t load.' }));
+    const d = r.data;
+    const err = h('div', { class: 'error small' });
+    const save = async (btn, body) => {
+      busy(btn, true);
+      const res = await api('POST', '/api/inbox/senders', body);
+      busy(btn, false);
+      if (!res.ok) { err.textContent = res.data.error ?? 'Not saved.'; return; }
+      draw(res.data);
+    };
+    const address = h('input', { type: 'text', placeholder: 'orders@vendor.com or @vendor.com', 'aria-label': 'Sender to allow' });
+    const which = h('select', { class: 'small-select', 'aria-label': 'For' }, [['both', 'Both'], ['invoices', 'Invoices'], ['reports', 'Reports']].map(([k, t]) => h('option', { value: k, text: t })));
+    const code = d.emails.find((e) => e.status === 'code' && Date.now() - Date.parse(e.receivedAt) < 2 * 86_400_000);
+    fill(box,
+      h('div', { class: 'small muted strong', text: 'Email inbox' }),
+      d.connected ? null : h('div', { class: 'small warn-text', text: 'Not receiving yet: it needs the MX record and Resend’s webhook (RESEND_WEBHOOK_SECRET in Render).' }),
+      h('div', { class: 'list compact' },
+        h('div', {}, h('span', { class: 'grow small', text: 'Invoices' }), h('b', { class: 'small', text: d.addresses.invoices })),
+        h('div', {}, h('span', { class: 'grow small', text: 'OpenTable reports' }), h('b', { class: 'small', text: d.addresses.reports }))),
+      code ? h('div', { class: 'note small' }, 'Gmail’s forwarding code: ', h('b', { text: code.code }), ' (type it into Gmail’s Forwarding settings)') : null,
+      h('div', { class: 'small strong', text: 'Who may send' }),
+      d.senders.length ? h('div', { class: 'list compact' }, d.senders.map((sd) => h('div', {},
+        h('span', { class: 'grow small', text: sd.address }), h('span', { class: 'small muted', text: sd.inbox === 'both' ? 'both' : sd.inbox }),
+        h('button', { class: 'link small', text: 'Remove', onclick: (e) => save(e.currentTarget, { address: sd.address, remove: true }) })))) : h('div', { class: 'small muted', text: 'No one yet: anything sent is dropped.' }),
+      h('div', { class: 'row tight wrap' }, address, which, h('button', { class: 'btn small-btn', text: 'Allow', onclick: (e) => address.value.trim() && save(e.currentTarget, { address: address.value, inbox: which.value }) })),
+      err,
+      d.emails.length ? [h('div', { class: 'small strong', text: 'Lately' }), h('div', { class: 'list compact' }, d.emails.slice(0, 8).map((m) => {
+        const [label, tone] = STATUS[m.status] ?? [m.status, ''];
+        return h('div', { class: 'inbox-row' },
+          h('div', { class: 'row tight' }, h('span', { class: `tag ${tone}`, text: label }), h('span', { class: 'small grow', text: m.subject || '(no subject)' }), h('span', { class: 'small muted', text: when(m.receivedAt) })),
+          h('div', { class: 'small muted', text: `${m.from}${m.detail ? ` · ${m.detail}` : ''}` }),
+          m.scanId && m.status !== 'dropped' ? h('button', { class: 'link small', text: 'Check the invoice', onclick: () => scanScreen(me, m.scanId) }) : null);
+      }))] : h('div', { class: 'small muted', text: 'Nothing has come in yet.' }));
+  }
+  await draw();
+  return box;
+}
 
 async function syncCard(source) {
   const info = SOURCES[source];

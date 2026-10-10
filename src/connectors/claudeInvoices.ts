@@ -40,7 +40,7 @@ export interface ReadInvoice {
 
 import { askWithTool, DEFAULT_MODEL, ReaderError } from './claude.ts';
 
-export interface ReadPage { mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'application/pdf'; data: Buffer }
+export interface ReadPage { mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'application/pdf' | 'text/plain'; data: Buffer }
 
 export interface ReaderOptions {
   apiKey: string;
