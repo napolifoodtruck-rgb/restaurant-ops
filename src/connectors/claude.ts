@@ -35,12 +35,18 @@ export async function askWithTool<T = any>(pages: readonly ClaudePage[], prompt:
     : p.mediaType === 'text/plain' ? { type: 'text', text: p.data.toString('utf8').slice(0, 200_000) }
     : { type: 'image', source: { type: 'base64', media_type: p.mediaType, data: p.data.toString('base64') } });
   content.push({ type: 'text', text: prompt });
-  const res = await (opts.fetch ?? fetch)(`${opts.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
+  const send = (choice: object, extra?: string) => (opts.fetch ?? fetch)(`${opts.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': opts.apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model, max_tokens: opts.maxTokens ?? 8000, tools: [tool], tool_choice: { type: 'tool', name: tool.name }, messages: [{ role: 'user', content }] }),
+    body: JSON.stringify({ model, max_tokens: opts.maxTokens ?? 8000, tools: [tool], tool_choice: choice, messages: [{ role: 'user', content: extra ? [...content, { type: 'text', text: extra }] : content }] }),
   });
-  const data: any = await res.json().catch(() => ({}));
+  let res = await send({ type: 'tool', name: tool.name });
+  let data: any = await res.json().catch(() => ({}));
+  // Some models won't be made to call a tool: then it's asked to, in words.
+  if (res.status === 400 && /tool_choice/i.test(String(data?.error?.message ?? ''))) {
+    res = await send({ type: 'auto' }, `Answer only by calling the ${tool.name} tool, once, with everything above.`);
+    data = await res.json().catch(() => ({}));
+  }
   if (!res.ok) throw new ReaderError(data?.error?.message ?? `${what} answered ${res.status}.`, res.status);
   const call = (data.content ?? []).find((c: any) => c.type === 'tool_use' && c.name === tool.name);
   if (!call?.input) throw new ReaderError(`${what} didn’t send back an answer.`);

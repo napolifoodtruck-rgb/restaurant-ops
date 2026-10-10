@@ -5975,8 +5975,14 @@ async function scanScreen(me, id) {
     if (!r.ok) return show(shell(me, 'orders', [h('h1', { text: 'Invoice' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' }), back]));
     const x = r.data;
     // Photos or a PDF; an invoice that came by email as text (WebstaurantStore's order email) has none.
-    const pagesBox = x.pages ? h('div', { class: 'scan-pages' }, [...Array(x.pages).keys()].map((i) => h('a', { href: `/api/invoices/scan/${id}/page/${i + 1}`, target: '_blank', rel: 'noopener' },
-      h('img', { src: `/api/invoices/scan/${id}/page/${i + 1}`, alt: `Page ${i + 1}`, loading: 'lazy' }))))
+    // A photo shows as itself; a PDF or an email's text as a tile that opens it.
+    const pageTile = (i) => {
+      const type = x.pageTypes?.[i] ?? 'image/jpeg', url = `/api/invoices/scan/${id}/page/${i + 1}`;
+      return h('a', { href: url, target: '_blank', rel: 'noopener' }, type.startsWith('image/')
+        ? h('img', { src: url, alt: `Page ${i + 1}`, loading: 'lazy' })
+        : h('div', { class: 'scan-pdf', text: type === 'application/pdf' ? `PDF · open it` : 'The email’s text · open it' }));
+    };
+    const pagesBox = x.pages ? h('div', { class: 'scan-pages' }, [...Array(x.pages).keys()].map(pageTile))
       : h('div', { class: 'small muted', text: 'Came by email: read from the email itself, no photo.' });
     if (x.status === 'reading') {
       show(shell(me, 'orders', [h('header', {}, h('div', { class: 'kicker', text: 'Invoice photo' }), h('h1', { text: 'Reading…' }), h('div', { class: 'sub', text: 'Usually 20 to 40 seconds. You can leave this page; it’ll be under Photos to check.' })),

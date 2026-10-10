@@ -96,3 +96,16 @@ test('an emailed invoice counts on its own only when nothing on it is new or odd
   // MarginEdge has it: still counts (compared, and ours is the one that counts).
   assert.equal(autoCountable(matchInvoice(base({ read: clean, learned, invoices: [{ externalId: 'me-1', source: 'marginedge', vendorKey: 'v-produce', number: 'A-9', total: 54 }] }))).ok, true);
 });
+
+test('a model that won’t be made to call the tool is asked to in words', async () => {
+  const sent: any[] = [];
+  const fetch = (async (_url: string, init: any) => {
+    const b = JSON.parse(init.body); sent.push(b);
+    if (b.tool_choice.type === 'tool') return { ok: false, status: 400, json: async () => ({ error: { message: 'tool_choice: type "tool" and "any" are not supported for this model.' } }) };
+    return { ok: true, status: 200, json: async () => ({ content: [{ type: 'text', text: 'Here it is.' }, { type: 'tool_use', name: 'record_invoice', input: { vendor: 'Produce Co', lines: [{ description: 'BASIL', quantity: 1, total: 12 }] } }], usage: { input_tokens: 10, output_tokens: 5 } }) };
+  }) as any;
+  const r = await readInvoice([{ mediaType: 'image/jpeg', data: Buffer.from('jpegdata') }], { apiKey: 'k', fetch });
+  assert.deepEqual(sent.map((b) => b.tool_choice.type), ['tool', 'auto']);
+  assert.match(sent[1].messages[0].content.at(-1).text, /calling the record_invoice tool/);
+  assert.equal(r.invoice.lines[0]!.description, 'BASIL');
+});

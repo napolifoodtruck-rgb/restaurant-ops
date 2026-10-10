@@ -154,8 +154,9 @@ export async function scanRoutes(db: Db, req: IncomingMessage, res: ServerRespon
          FROM invoice_scans s WHERE s.restaurant_id = $1 AND s.id <> $2 AND s.status = 'read' AND s.created_at > now() - interval '14 days'`, [who.restaurantId, scan.id])).rows
       .filter((o) => vendorKey(o.vendor ?? '') === vendorKey(result.vendor) && (o.number ?? '').replace(/\W/g, '').toLowerCase() === result.invoiceNumber!.replace(/\W/g, '').toLowerCase())
       .map((o) => ({ id: o.id, pages: Number(o.pages), createdAt: o.created_at })) : [];
+    const pageTypes = (await db.query<{ media_type: string }>('SELECT media_type FROM invoice_scan_pages WHERE scan_id = $1 ORDER BY page', [scan.id])).rows.map((p) => p.media_type);
     return send(res, 200, {
-      id: scan.id, status: scan.status, error: scan.error, pages: Number(scan.pages), createdAt: scan.created_at,
+      id: scan.id, status: scan.status, error: scan.error, pages: Number(scan.pages), pageTypes, createdAt: scan.created_at,
       ...(scan.invoice_id ? { invoiceId: scan.invoice_id } : {}),
       ...(result ? { read: result } : {}),
       ...(model && result ? { matched: await matched(db, who.restaurantId, model, result) } : {}),
