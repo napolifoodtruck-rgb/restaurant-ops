@@ -411,7 +411,7 @@ function pinPad(person, device) {
 function shell(me, active, content) {
   const manager = atLeast(me.roleLevel, 'manager');
   const nav = [
-    ['today', 'Today', todayScreen], ['ideas', 'Ideas', manager && ideasScreen], ['prep', 'Prep', prepHome], ['floor', 'Service', manager && floorManage], ['recipes', 'Recipes', recipesScreen], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['reports', 'Reports', manager && reportsScreen], ['orders', 'Orders', manager && ordersScreen], ['inventory', 'Inventory', atLeast(me.roleLevel, 'chef') && inventoryHome],
+    ['today', 'Today', todayScreen], ['ideas', 'Ideas', manager && ideasScreen], ['prep', 'Prep', prepHome], ['floor', 'Service', manager && floorManage], ['recipes', manager ? 'Recipes & ingredients' : 'Recipes', recipesScreen], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['reports', 'Reports', manager && reportsScreen], ['orders', 'Orders & invoices', manager && ordersScreen], ['inventory', 'Inventory', atLeast(me.roleLevel, 'chef') && inventoryHome],
   ];
   // Managers on a computer: Capture an invoice at the top right of every page's header (Today has its own,
   // beside Both / Kitchen / Bar; on a phone it's the corner button).
@@ -423,7 +423,8 @@ function shell(me, active, content) {
     h('nav', { class: 'rail', 'aria-label': 'Main' },
       h('div', { class: 'logo' }, brandMark('rail')),
       // Only what this person can open: a button they can't use isn't shown at all.
-      nav.filter(([, , go]) => go).map(([key, label, go]) => h('button', { class: active === key ? 'on' : '', 'data-key': key, title: label, onclick: () => go(me) }, icon(key), label)),
+      nav.filter(([, , go]) => go).map(([key, label, go]) => h('button', { class: active === key ? 'on' : '', 'data-key': key, title: label, onclick: () => go(me) }, icon(key), h('span', { class: 'rail-label', text: label }),
+        key === 'orders' ? waitingBadge() : null)),
       h('button', { class: active === 'settings' ? 'on' : '', 'data-key': 'settings', onclick: () => home(me) }, icon('settings'), 'Settings'),
       h('div', { class: 'spacer' }),
       whoAmI(me),
@@ -431,6 +432,13 @@ function shell(me, active, content) {
     ),
     h('main', {}, content),
   );
+}
+
+/** The number on Orders & invoices: invoices waiting for a check. Fills in after the menu is drawn. */
+function waitingBadge() {
+  const b = h('span', { class: 'rail-badge', hidden: !invoicesWaiting.n, text: String(invoicesWaiting.n || '') });
+  refreshInvoicesWaiting().then((n) => { b.textContent = n ? String(n) : ''; b.hidden = !n; });
+  return b;
 }
 
 const LEVEL_NAMES = { line: 'Line', lead: 'Lead', sous: 'Sous chef', chef: 'Chef', manager: 'Manager', owner: 'Owner' };
@@ -2922,6 +2930,68 @@ function treeSearch(me, side, open) {
   return h('div', { class: 'search-wrap' }, input, out);
 }
 
+/**
+ * The sections inside a menu button: Recipes & ingredients, Orders & invoices. A number on a tab
+ * says how many wait there (invoices to check).
+ */
+function sectionTabs(tabs, on) {
+  return h('nav', { class: 'section-tabs', 'aria-label': 'Sections' }, tabs.map(([key, label, go, count]) =>
+    h('button', { class: key === on ? 'on' : '', 'aria-current': key === on ? 'page' : undefined, onclick: go }, label, count ? h('span', { class: 'count-badge', text: String(count) }) : null)));
+}
+const recipeTabs = (me, on) => sectionTabs([['recipes', 'Recipes', () => recipesScreen(me)], ['ingredients', 'Ingredients', () => ingredientsScreen(me)]], on);
+const orderTabs = (me, on) => sectionTabs([['orders', 'Orders', () => ordersScreen(me)], ['invoices', 'Invoices', () => invoicesScreen(me), invoicesWaiting.n]], on);
+
+/** Invoices waiting for a check, for the number on Orders & invoices; asked again at most once a minute. */
+const invoicesWaiting = { n: 0, at: 0 };
+async function refreshInvoicesWaiting() {
+  if (Date.now() - invoicesWaiting.at < 60_000) return invoicesWaiting.n;
+  invoicesWaiting.at = Date.now();
+  const r = await api('GET', '/api/invoices/waiting');
+  if (r.ok) invoicesWaiting.n = r.data.waiting;
+  return invoicesWaiting.n;
+}
+
+/**
+ * Every ingredient on the list, for managers: what it costs now, when and from whom it was last
+ * bought, and the last 90 days' spend. Food, bar or supplies; find one by typing. One opens its page
+ * (prices over time, vendors, the recipes that use it).
+ */
+async function ingredientsScreen(me, state = {}) {
+  loadingScreen(me, 'recipes', 'Ingredients');
+  const r = await costGet('/api/costs/ingredients');
+  if (!r.ok) return show(shell(me, 'recipes', [h('h1', { text: 'Ingredients' }), recipeTabs(me, 'ingredients'), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const all = r.data.ingredients;
+  let kind = state.kind ?? 'all', q = '';
+  const KINDS = [['all', 'All'], ['food', 'Food'], ['bar', 'Bar'], ['other', 'Supplies']];
+  const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Food, bar or supplies' });
+  const search = h('input', { type: 'search', class: 'search-big', placeholder: 'Find an ingredient', 'aria-label': 'Find an ingredient' });
+  const list = h('div', { class: 'ing-list' });
+  const count = h('span', { class: 'small muted' });
+  const draw = () => {
+    fill(seg, KINDS.map(([k, label]) => h('button', { class: kind === k ? 'on' : '', 'aria-pressed': String(kind === k), text: `${label} ${k === 'all' ? all.length : all.filter((i) => i.kind === k).length}`, onclick: () => { kind = k; draw(); } })));
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    const shown = all.filter((i) => (kind === 'all' || i.kind === kind) && words.every((w) => i.name.toLowerCase().includes(w)));
+    count.textContent = `${shown.length} shown · most spent first`;
+    fill(list, h('div', { class: 'ing-row ing-head small muted' }, h('span', { text: 'Ingredient' }), h('span', { text: 'Price now' }), h('span', { text: 'Last bought' }), h('span', { class: 'num', text: 'Spent, 90 days' })),
+      shown.slice(0, 300).map((i) => h('button', { class: 'ing-row', onclick: () => recipeTree(me, [{ kind: 'product', id: i.id, name: i.name }]) },
+        h('span', { class: 'strong', text: i.name }),
+        h('span', { text: i.perUnit !== undefined ? perUnitText(i.perUnit, i.unit) : '–' }),
+        h('span', { class: 'muted', text: i.lastDate ? `${dateWithYear(i.lastDate)}${i.lastVendor ? ` · ${i.lastVendor}` : ''}` : 'Not bought yet' }),
+        h('span', { class: 'num', text: i.spent90 ? dollars(i.spent90) : '–' }))),
+      shown.length > 300 ? h('div', { class: 'small muted', text: `First 300 of ${shown.length}: type to narrow it.` }) : null,
+      shown.length ? null : h('div', { class: 'small muted', text: 'Nothing by that name. New ones are added from an invoice, or in a recipe.' }));
+  };
+  search.addEventListener('input', () => { q = search.value.trim(); draw(); });
+  draw();
+  show(shell(me, 'recipes', [
+    h('header', {}, h('div', { class: 'kicker', text: 'Recipes & ingredients' }), h('h1', { text: 'Ingredients' }),
+      h('div', { class: 'sub', text: 'Everything you buy that a recipe can use, with its price from the latest invoices.' })),
+    recipeTabs(me, 'ingredients'),
+    page([h('section', { class: 'card' }, h('div', { class: 'row wrap ing-tools' }, search, seg, h('span', { class: 'grow' }), count), list)]),
+  ]));
+  search.focus();
+}
+
 /** Recipes: the manager's clean-book home, or the cook's list for today. */
 async function recipesScreen(me, state = {}) {
   if (!atLeast(me.roleLevel, 'manager')) return cookRecipes(me);
@@ -2981,8 +3051,9 @@ async function recipesScreen(me, state = {}) {
     h('button', { class: 'btn small-btn', text: 'Recipe costs', onclick: () => cardsScreen(me) })));
   show(shell(me, 'recipes', [
     h('header', { class: 'row wrap' },
-      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: AREA_NAMES[side] }), h('h1', { text: 'Recipes' })),
+      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `Recipes & ingredients · ${AREA_NAMES[side]}` }), h('h1', { text: 'Recipes' })),
       h('div', { class: 'row wrap' }, treeSearch(me, side, open), sideSwitch(me, () => recipesScreen(me)), newRecipe)),
+    recipeTabs(me, 'recipes'),
     page([tiles.length ? h('div', {}, h('div', { class: 'small muted strong attn-h', text: 'Needs attention' }), h('div', { class: 'attn' }, tiles)) : null, list], [coverage, recent, browse]),
   ]));
 }
@@ -5753,14 +5824,15 @@ async function ordersScreen(me) {
   const pausedBox = paused.length ? sideBox('Not ordering from', h('div', { class: 'small', text: paused.map((v) => v.name).join(' · ') })) : null;
   show(shell(me, 'orders', [
     h('header', { class: 'row wrap' },
-      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${AREA_NAMES[side]} · ${dayName(today)}` }), h('h1', { text: 'Orders' }),
+      h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `Orders & invoices · ${AREA_NAMES[side]} · ${dayName(today)}` }), h('h1', { text: 'Orders' }),
         h('div', { class: 'sub', text: 'Drafted from what you’ve been buying, weighted to your busy days, less what’s on hand. Next delivery first.' })),
       h('div', { class: 'seg', role: 'group', 'aria-label': 'Kitchen, bar or both' },
         ['kitchen', 'bar', 'both'].map((a) => h('button', { class: side === a ? 'on' : '', 'aria-pressed': String(side === a), text: a === 'both' ? 'Both' : AREA_NAMES[a], onclick: () => { me.ordersSide = a; if (a !== 'both') me.side = a; ordersScreen(me); } })))),
+    orderTabs(me, 'orders'),
     page(active.length ? h('div', { class: 'stack' }, active.map(vendorCard)) : h('div', { class: 'card small muted', text: 'No vendors with regular deliveries yet. They appear after a few weeks of invoices.' }),
       [week, status, spendBox(me, side), cutoffs, recentBox, pausedBox,
-        sideBox('Invoices typed in', h('div', { class: 'small muted', text: 'The garden, cash and market buys, and vendors not on MarginEdge.' }),
-          sideActions(h('button', { class: 'btn', text: '🌱 Log a garden harvest', onclick: () => invoicesScreen(me, { garden: true }) }), h('button', { class: 'btn', text: 'Add an invoice', onclick: () => invoicesScreen(me) })))]),
+        sideBox('Garden harvest', h('div', { class: 'small muted', text: 'What came from the garden: free, but it still counts.' }),
+          sideActions(h('button', { class: 'btn', text: '🌱 Log a garden harvest', onclick: () => invoicesScreen(me, { garden: true }) })))]),
   ]));
 }
 
@@ -6180,6 +6252,7 @@ async function invoicesScreen(me, opts = {}) {
   const r = await api('GET', '/api/invoices');
   if (!r.ok) return show(shell(me, 'orders', [h('h1', { text: 'Invoices' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   const { vendors, invoices, scans = [], readerConnected } = r.data;
+  invoicesWaiting.n = scans.filter((x) => x.status !== 'reading').length; invoicesWaiting.at = Date.now();
   const garden = vendors.find((v) => v.kind === 'garden');
   const today = iso(new Date());
 
@@ -6278,9 +6351,10 @@ async function invoicesScreen(me, opts = {}) {
       h('span', { class: 'grow', text: x.vendor || 'Invoice photo' }),
       h('span', { class: `small ${x.status === 'failed' ? 'error-text' : 'muted'}`, text: x.status === 'reading' ? 'reading…' : x.status === 'failed' ? 'couldn’t read' : `ready to check · ${shortDate(x.createdAt.slice(0, 10))}` }))))) : null;
   show(shell(me, 'orders', [
-    h('header', {}, h('div', { class: 'kicker', text: 'Orders' }), h('h1', { text: 'Invoices' }),
+    h('header', {}, h('div', { class: 'kicker', text: 'Orders & invoices' }), h('h1', { text: 'Invoices' }),
       h('div', { class: 'sub', text: 'Photograph an invoice for the app to read, or type one in. MarginEdge still reads your regular invoices for now.' })),
-    page([photoCard(me, readerConnected), waiting, compareCard(), form, list], [autoCountBox(r.data.autoCount), sideBox('', sideActions(h('button', { class: 'btn', text: '← Orders', onclick: () => ordersScreen(me) })))]),
+    orderTabs(me, 'invoices'),
+    page([photoCard(me, readerConnected), waiting, compareCard(), form, list], [autoCountBox(r.data.autoCount)]),
   ]));
 }
 

@@ -8,6 +8,7 @@
  *   POST   /api/invoices              add one: { vendor: { key } | { id } | { name, kind }, date, number?, note?, lines: [{ productId, quantity, unit, total }] }
  *   DELETE /api/invoices/:id          take one back out
  *   GET    /api/invoices/compare      ours against MarginEdge's reading of the same invoices, while both run
+ *   GET    /api/invoices/waiting      how many invoices wait for a check
  *   POST   /api/invoices/settings     { autoCount }: save an invoice whose lines are all green without a check
  *
  * Managers and up.
@@ -67,6 +68,12 @@ export async function invoiceRoutes(db: Db, req: IncomingMessage, res: ServerRes
     const id = await createAppInvoice(db, who, model, today, b);
     invalidate(who.restaurantId);
     return send(res, 200, { ok: true, id }), true;
+  }
+
+  // How many invoices wait for a check (read or couldn't be read): the number on the menu.
+  if (method === 'GET' && path === '/api/invoices/waiting') {
+    const n = (await db.query<{ n: string }>("SELECT count(*)::text AS n FROM invoice_scans WHERE restaurant_id = $1 AND status IN ('read', 'failed') AND created_at > now() - interval '30 days'", [who.restaurantId])).rows[0]!.n;
+    return send(res, 200, { waiting: Number(n) }), true;
   }
 
   // Save all-green invoices without a check: on or off.

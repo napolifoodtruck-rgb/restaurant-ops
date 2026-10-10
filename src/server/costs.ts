@@ -82,6 +82,21 @@ export async function costRoutes(db: Db, res: ServerResponse, url: URL, who: Sig
     return send(res, 200, { area, dishes }), true;
   }
 
+  // Every ingredient on the list: what it costs now, when and from whom it was last bought, and
+  // what was spent on it in 90 days. For Recipes & ingredients → Ingredients.
+  if (path === '/api/costs/ingredients') {
+    const since = new Date(Date.parse(`${today}T12:00:00Z`) - 90 * 86_400_000).toISOString().slice(0, 10);
+    const ingredients = model.purchasing.products.map((p) => {
+      const points = pricesOf(model, p.externalId).sort((a, b) => b.date.localeCompare(a.date));
+      const last = points[0], u = book.unitCost(p.externalId);
+      return { id: p.externalId, name: p.name, unit: p.baseUnit ?? null, kind: purchaseKind(p.categoryType),
+        ...(u !== undefined ? { perUnit: Math.round(u * 10000) / 10000 } : {}),
+        ...(last ? { lastDate: last.date.slice(0, 10), ...(last.vendor ? { lastVendor: last.vendor } : {}) } : {}),
+        spent90: cents(points.filter((x) => x.date >= since).reduce((a, x) => a + x.packPrice * x.quantity, 0)) };
+    }).sort((a, b) => b.spent90 - a.spent90 || a.name.localeCompare(b.name));
+    return send(res, 200, { ingredients }), true;
+  }
+
   if (path === '/api/costs/search') {
     const q = (url.searchParams.get('q') ?? '').trim().toLowerCase();
     if (q.length < 2) return send(res, 200, { recipes: [], products: [] }), true;
