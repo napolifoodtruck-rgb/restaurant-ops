@@ -413,9 +413,10 @@ function shell(me, active, content) {
   const nav = [
     ['today', 'Today', todayScreen], ['ideas', 'Ideas', manager && ideasScreen], ['prep', 'Prep', prepHome], ['floor', 'Service', manager && floorManage], ['recipes', manager ? 'Recipes & ingredients' : 'Recipes', recipesScreen], ['menu', 'Menu', manager && menuScreen], ['margins', 'Performance', manager && marginsScreen], ['reports', 'Reports', manager && reportsScreen], ['orders', 'Orders & invoices', manager && ordersScreen], ['inventory', 'Inventory', atLeast(me.roleLevel, 'chef') && inventoryHome],
   ];
-  // Managers on a computer: Capture an invoice at the top right of every page's header (Today has its own,
+  // Managers on a computer: Capture an invoice at the top right of every page's header but Service's, which is
+  // full already and front of house (Today has its own,
   // beside Both / Kitchen / Bar; on a phone it's the corner button).
-  if (manager && active !== 'today' && active !== 'capture') {
+  if (manager && active !== 'today' && active !== 'capture' && active !== 'floor') {
     const head = [content].flat(Infinity).find((x) => x instanceof HTMLElement && x.tagName === 'HEADER');
     // A header that's already a row (a title, then toggles on the right): the button joins the row, after
     // the toggles, lined up with them. Any other header makes room at its top right.
@@ -7294,8 +7295,13 @@ async function floorBoard(ctx = {}) {
     specials: () => special,
     new: () => newBox,
   };
-  const widgets = (b.widgets ?? []).map((w) => { const el = make[w.type]?.(w); return el ? h('div', { class: `widget ${w.size === 'wide' ? 'wide' : 'small'}`, 'data-widget': w.type }, el) : null; });
-  const body = h('div', { class: 'floor-grid' }, widgets);
+  const widgets = (b.widgets ?? []).map((w) => { const el = make[w.type]?.(w); return el ? h('div', { class: `widget ${w.size === 'wide' ? 'wide' : 'small'}`, 'data-widget': w.type }, el) : null; }).filter(Boolean);
+  // Wide widgets down the left, small ones stacked down the right, each in the order set; nothing is
+  // stretched to match its neighbour. On a phone, one column in the order set.
+  const wide = widgets.filter((w) => w.classList.contains('wide')), small = widgets.filter((w) => !w.classList.contains('wide'));
+  const body = window.matchMedia('(max-width: 700px)').matches || !wide.length || !small.length
+    ? h('div', { class: `floor-grid${!wide.length ? ' all-small' : !small.length ? ' all-wide' : ''}` }, widgets)
+    : h('div', { class: 'floor-cols' }, h('div', { class: 'floor-col main' }, wide), h('div', { class: 'floor-col side' }, small));
   if (inShell) show(shell(ctx.me, 'floor', [head, body]));
   else show(h('div', { class: 'floor' }, head, body));
 
@@ -7329,7 +7335,7 @@ function boardEditor(post, d, reload) {
   const err = h('div', { class: 'error small' });
   const rows = h('div');
   const s = floorSheet(`${post.name}: board`, h('h2', { class: 'sheet-title', text: `${post.name}: the board` }),
-    h('div', { class: 'small muted', text: 'The widgets this iPad shows, top to bottom. Wide takes two of the three columns on an iPad.' }), rows, err);
+    h('div', { class: 'small muted', text: 'Wide widgets go down the left, small ones stack down the right, each in the order below. On a phone, one column in this order.' }), rows, err);
   const draw = () => {
     const move = (i, by) => { const j = i + by; if (j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; draw(); };
     const addType = h('select', { 'aria-label': 'Add a widget' }, h('option', { value: '', text: 'Add a widget…' }),
@@ -7919,10 +7925,11 @@ async function floorManage(me) {
  */
 let floorSettingsPart = 'posts';
 async function floorSettingsTab(me, d, reload) {
-  const PARTS = [['posts', 'Posts, iPads & checklists'], ['dough', 'Dough & takeout'], ['online', 'Online ordering']];
+  const PARTS = [['posts', 'Posts, iPads & checklists'], ['boards', 'Boards'], ['dough', 'Dough & takeout'], ['online', 'Online ordering']];
   const nav = h('div', { class: 'chips-row', role: 'tablist', 'aria-label': 'Settings' }, PARTS.map(([k, label]) =>
     h('button', { class: `chip${floorSettingsPart === k ? ' on' : ''}`, role: 'tab', 'aria-selected': String(floorSettingsPart === k), text: label, onclick: () => { floorSettingsPart = k; floorManage(me); } })));
   if (floorSettingsPart === 'dough') return [nav, page([takeoutNumbersCard()], [])];
+  if (floorSettingsPart === 'boards') return [nav, boardsPart(me, d, reload)];
   if (floorSettingsPart === 'online') {
     const toMenu = sideBox('Items sold online', h('div', { class: 'small muted', text: 'Which dishes are online, in what order, and what counts as a pizza: a version of the menu, so it lives in Menu.' }),
       sideActions(h('button', { class: 'btn small-btn', text: 'Open in Menu', onclick: () => { me.side = 'kitchen'; remember('menuChip:kitchen', 'online'); menuScreen(me); } })));
@@ -8046,6 +8053,26 @@ function floorTonightTab(d, reload) {
 }
 const addDaysISO = (day, n) => { const x = new Date(`${day}T12:00:00Z`); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
 
+/**
+ * Every post's board at a glance: its widgets, wide ones on the left and small ones on the right as
+ * the iPad lays them out. Edit widgets opens the editor; Open the board shows it as the iPad does.
+ */
+function boardsPart(me, d, reload) {
+  const KIND = { room: 'Dining room', bar: 'Bar', counter: 'Counter', host: 'Host stand', kitchen: 'Kitchen' };
+  const name = (w) => (w.type === 'sales' ? `${w.category} sold tonight` : WIDGET_INFO[w.type]?.[0] ?? w.type);
+  const cards = d.posts.map((p) => {
+    const ws = p.widgets ?? [], wide = ws.filter((w) => w.size === 'wide'), small = ws.filter((w) => w.size !== 'wide');
+    const col = (list, label) => h('div', { class: 'bmap-col' }, h('div', { class: 'small muted strong', text: label }), list.length ? list.map((w) => h('div', { class: 'bmap-w', text: name(w) })) : h('div', { class: 'small muted', text: '–' }));
+    return h('section', { class: 'card board-card' },
+      h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, h('h2', { text: p.name }), h('div', { class: 'small muted', text: `${KIND[p.kind] ?? p.kind}${p.widgetsChosen ? '' : ' · the default widgets'}` })),
+        h('button', { class: 'btn dark', text: 'Edit widgets', onclick: () => boardEditor(p, d, reload) }),
+        h('button', { class: 'btn', text: 'Open the board', onclick: () => floorBoard({ me, post: p.id }) })),
+      h('div', { class: 'bmap' }, col(wide, 'Wide · left'), col(small, 'Small · right')));
+  });
+  return page([h('div', { class: 'small muted', text: 'What each post’s iPad shows. Wide widgets go down the left, small ones stack down the right, each in the order you set; on a phone it’s one column.' }),
+    cards.length ? cards : h('div', { class: 'card small muted', text: 'No posts yet: add them under Posts, iPads & checklists.' })]);
+}
+
 function floorSetupTab(d, reload) {
   const err = h('div', { class: 'error' });
   const KINDS = { room: 'Dining room', bar: 'Bar', counter: 'Counter', host: 'Host stand (every table)', kitchen: 'Kitchen (changes the dough count)' };
@@ -8058,7 +8085,7 @@ function floorSetupTab(d, reload) {
     kind.addEventListener('change', showStation);
     showStation();
     return h('div', { class: 'row wrap post-row' }, name, kind, tables, station,
-      p ? h('button', { class: 'btn', text: 'Board', title: 'Which widgets this board shows, in what order', onclick: () => boardEditor(p, d, reload) }) : null,
+      p ? h('button', { class: 'btn', text: 'Widgets', title: 'Which widgets this board shows, in what order (also under Boards)', onclick: () => boardEditor(p, d, reload) }) : null,
       h('button', { class: 'btn', text: p ? 'Save' : 'Add post', onclick: () => pageAction(async () => {
         const res = await api('POST', '/api/floor/posts', { ...(p ? { id: p.id } : {}), name: name.value, kind: kind.value, tables: tables.value, stationId: station.value || null });
         if (!res.ok) return (err.textContent = res.data.error);

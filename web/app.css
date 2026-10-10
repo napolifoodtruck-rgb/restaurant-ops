@@ -1621,3 +1621,16 @@ header.row > .capture-bar { margin: 0; align-self: center; }
 .dough-trays .plus { font-size: 22px; padding-bottom: 10px; }
 .dough-trays .dough-field input { width: 110px; }
 .dough-total { display: grid; padding-bottom: 8px; font-size: 20px; }
+
+/* A board: wide widgets down the left, small ones stacked down the right. */
+.floor-cols { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.floor-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.floor-col > .widget { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.floor-col > .widget > .card { margin: 0; }
+.floor-grid.all-wide { grid-template-columns: 1fr; }
+.floor-grid.all-wide > .widget.wide { grid-column: auto; }
+/* Service → Settings → Boards */
+.board-card { gap: 10px; }
+.bmap { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; }
+.bmap-col { display: grid; gap: 6px; align-content: start; background: rgba(0,0,0,.03); border-radius: var(--radius); padding: 10px; }
+.bmap-w { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 13px; font-weight: 600; }
