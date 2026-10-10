@@ -149,11 +149,12 @@ export class SquareApi {
    * Orders, one row each: table, covers, the server it's attributed to, how and where it was placed,
    * net sales, tips and automatic gratuity. Every order, not only closed checks: a gelato at the
    * counter or an online pickup is paid but stays open until someone marks it done, and Square's own
-   * Net sales counts it. Net sales as Square shows it (automatic gratuity included).
+   * Net sales counts it. Sales leave out automatic gratuity (service charges are really tips): Square's
+   * Net sales less them.
    */
   ordersByDay(locationId: string, from: string, to: string): Promise<SquareItemSalesRow[]> {
     return this.report({
-      measures: ['Orders.net_sales', 'Orders.cover_count', 'Orders.tips_amount', 'Orders.auto_gratuity_amount'],
+      measures: ['Orders.net_sales_minus_auto_gratuity', 'Orders.cover_count', 'Orders.tips_amount', 'Orders.auto_gratuity_amount'],
       dimensions: ['Orders.order_id', 'Orders.table_name', 'Orders.fulfillment_method', 'Orders.order_source', 'Orders.team_member_attributed_to_id', 'Orders.team_member_attributed_to_name'],
       timeDimensions: [{ dimension: 'Orders.reporting_day', dateRange: [from, to], granularity: 'day' }],
       filters: [{ member: 'Orders.location_id', operator: 'equals', values: [locationId] }],
@@ -175,7 +176,7 @@ export class SquareApi {
   /** Sales, orders and covers by day and local hour: every order, as ordersByDay. */
   salesByHour(locationId: string, from: string, to: string): Promise<SquareItemSalesRow[]> {
     return this.report({
-      measures: ['Orders.net_sales', 'Orders.cover_count', 'Orders.count'],
+      measures: ['Orders.net_sales_minus_auto_gratuity', 'Orders.cover_count', 'Orders.count'],
       dimensions: ['Orders.local_hour'],
       timeDimensions: [{ dimension: 'Orders.reporting_day', dateRange: [from, to], granularity: 'day' }],
       filters: [{ member: 'Orders.location_id', operator: 'equals', values: [locationId] }],
