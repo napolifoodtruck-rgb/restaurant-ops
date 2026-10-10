@@ -42,7 +42,7 @@ import { leadMinutes, loadOnlineMenu, loadOrderPage, loadPause, loadWindows, loc
 import { takeoutOut } from './dough.ts';
 import type { CatalogObject } from '../core/onlineMenu.ts';
 import { CartError, priceCart, publicMenu, stockProblem, tipProblem, type CartLine, type CartLineIn } from '../core/onlineCart.ts';
-import { fitOrder, fittingWindows, isWindowStart } from '../core/pickupWindows.ts';
+import { fitOrder, fittingWindows, isWindowStart, stillOpen } from '../core/pickupWindows.ts';
 import { SquareCheckout, type SquareEnvironment } from '../connectors/squareCheckout.ts';
 import { SquareApiError, type Fetch } from '../connectors/squareApi.ts';
 import { emailSender, type EmailSettings } from '../connectors/email.ts';
@@ -385,6 +385,27 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
           await db.query("UPDATE online_orders SET status = 'paid', square_payment_id = $2, paid_at = now(), failure = NULL WHERE id = $1", [order.id, already.id]);
           return confirmLater(order.id), send(res, 200, summary((await loadOrder(order.id))!)), true;
         }
+        // Since they picked their time: online orders paused or turned off, or takeout stopped on the
+        // dough count. Turned away before anything goes to Square: nothing is charged.
+        const here = await restaurant();
+        const today = nowIn(here.timezone);
+        const pausedNow = await loadPause(db, here.id, here.timezone);
+        if (pausedNow || (await takeoutOut(db, here.id, today.date, here.timezone, ready)).out) {
+          await db.query("UPDATE online_orders SET status = 'expired' WHERE id = $1 AND status IN ('held', 'expired')", [order.id]);
+          throw new HttpError(409, pausedNow ? 'Sorry, we’ve just stopped taking online orders. You haven’t been charged.' : 'Sorry, we’ve just sold our last takeout pizzas for tonight. You haven’t been charged.', { closed: true });
+        }
+        // The kitchen needs longer now ("Ready in" went up): the time they picked is too soon. Nothing
+        // is charged; they're offered the next time that works, and pay once they've taken it.
+        if (order.day === today.date) {
+          const lead = await leadMinutes(db, here.id, today.date);
+          const windows = await loadWindows(db, here.id, order.day, order.id);
+          const picked = windows.find((w) => w.starts === hhmm(order.window_starts));
+          if (picked && !stillOpen(picked, today.time, lead)) {
+            const next = fittingWindows(windows, order.pizzas, today.time, lead)[0];
+            throw new HttpError(409, next ? `Our kitchen just got busier: the earliest pickup is now ${clock(next.starts)}, not ${clock(picked.starts)}.` : 'Our kitchen just got busier, and there are no pickup times left tonight. You haven’t been charged.',
+              { timeChanged: true, was: clock(picked.starts), ...(next ? { next: { starts: next.starts, label: clock(next.starts) } } : {}) });
+          }
+        }
         if (!order.still_held || order.status === 'expired') {
           // The hold lapsed while they were paying: fine if the window still has room.
           const r = await restaurant();
@@ -441,6 +462,22 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
         await db.query('UPDATE online_orders SET paying_since = NULL WHERE id = $1', [order.id]);
       }
       return confirmLater(order.id), send(res, 200, summary((await loadOrder(order.id))!)), true;
+    }
+
+    // A later pickup time for an order not paid yet (the kitchen needed longer): held again from now.
+    if (method === 'POST' && (m = path.match(/^\/api\/order\/([0-9a-f-]{36})\/retime$/)) && ID.test(m[1]!)) {
+      const b = await body(req);
+      const order = await loadOrder(m[1]!);
+      if (!order) throw new HttpError(404, 'That order isn’t here. Start again from the menu.');
+      if (order.status !== 'held' && order.status !== 'expired') throw new HttpError(409, 'That order can’t be changed any more. Start again from the menu.');
+      if (typeof b.window !== 'string' || !isWindowStart(b.window)) throw new HttpError(400, 'Pick a pickup time.');
+      const r = await restaurant();
+      const now = nowIn(r.timezone);
+      if (order.day !== now.date) throw new HttpError(409, 'That order was for another day. Start again from the menu.');
+      const windows = await loadWindows(db, r.id, order.day, order.id);
+      if (!fittingWindows(windows, order.pizzas, now.time, await leadMinutes(db, r.id, now.date)).some((w) => w.starts === b.window)) throw new HttpError(409, 'That time just filled up. Pick another, or call us.');
+      await db.query("UPDATE online_orders SET window_starts = $2::time, status = 'held', hold_until = now() + make_interval(mins => $3::int) WHERE id = $1 AND status IN ('held', 'expired')", [order.id, b.window, HOLD_MINUTES]);
+      return send(res, 200, { ...summary((await loadOrder(order.id))!), holdMinutes: HOLD_MINUTES }), true;
     }
 
     if (method === 'POST' && (m = path.match(/^\/api\/order\/([0-9a-f-]{36})\/release$/)) && ID.test(m[1]!)) {

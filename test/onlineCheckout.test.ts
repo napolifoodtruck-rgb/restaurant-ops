@@ -415,4 +415,27 @@ test('customer checkout', { skip: !db && 'no PostgreSQL for tests (or running as
   menu = (await customer('GET', '/api/order/menu')).json;
   assert.deepEqual([menu.open, menu.paused], [true, null]);
   assert.equal((await customer('POST', '/api/order/checkout', { ...order, window: '18:00', lines: [{ variationId: 'var-marg', quantity: 1 }], tip: 0 })).status, 201);
+
+  // The kitchen needs longer while someone is paying ("Ready in" went up): nothing is charged, they're
+  // offered the next time that works, take it, then pay.
+  time = '16:30';
+  const slow = await customer('POST', '/api/order/checkout', { ...order, window: '18:15', lines: [{ variationId: 'var-soda', quantity: 1 }], tip: 0 });
+  assert.equal(slow.status, 201);
+  await db!.query('UPDATE restaurants SET online_lead_tonight = 120, online_lead_day = $1', [today]);
+  const paymentsSlow = square.filter((x) => x.path === '/v2/payments').length;
+  const tooSoon = await customer('POST', `/api/order/${slow.json.id}/pay`, { sourceId: 'cnon:card-ok-10' });
+  assert.deepEqual([tooSoon.status, tooSoon.json.timeChanged, tooSoon.json.was, tooSoon.json.next?.starts], [409, true, '6:15 pm', '18:30']);
+  assert.equal(square.filter((x) => x.path === '/v2/payments').length, paymentsSlow, 'nothing charged');
+  assert.equal((await customer('POST', `/api/order/${slow.json.id}/retime`, { window: '18:00' })).status, 409, 'not a time that is too soon');
+  const retimed = await customer('POST', `/api/order/${slow.json.id}/retime`, { window: '18:30' });
+  assert.deepEqual([retimed.status, retimed.json.window.starts, retimed.json.holdMinutes], [200, '18:30', 10]);
+  assert.equal((await customer('POST', `/api/order/${slow.json.id}/pay`, { sourceId: 'cnon:card-ok-10' })).json.status, 'paid');
+  // Online orders paused while someone is paying: turned away, nothing charged.
+  const caught = await customer('POST', '/api/order/checkout', { ...order, window: '19:00', lines: [{ variationId: 'var-soda', quantity: 1 }], tip: 0 });
+  assert.equal(caught.status, 201);
+  await call('POST', '/api/online/pause', { minutes: 30 });
+  const stopped = await customer('POST', `/api/order/${caught.json.id}/pay`, { sourceId: 'cnon:card-ok-11' });
+  assert.deepEqual([stopped.status, stopped.json.closed, /just stopped taking online orders/.test(stopped.json.error)], [409, true, true]);
+  assert.equal((await customer('GET', `/api/order/${caught.json.id}`)).json.status, 'expired');
+  await call('POST', '/api/online/pause', { resume: true });
 });

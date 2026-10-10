@@ -462,6 +462,10 @@ async function payView(order) {
       // The answer didn't come back (signal dropped) or a payment is still going through: see where the order stands before anything else.
       if (r.status === 0 || r.data.paying) r = await settled(order.id, r);
       if (r.data.backToOrder) { await refreshMenu().catch(() => {}); return cartView(`${r.data.error} You haven’t been charged.`); }
+      // The kitchen needs longer now: the new earliest time, to take before paying (nothing was charged).
+      if (r.data.timeChanged) return timeChanged(order, r.data, err, pay);
+      // Online orders stopped since they picked their time: nothing was charged, nothing more to do here.
+      if (r.data.closed) { pay.hidden = true; return (err.textContent = r.data.error); }
       if (!r.ok || r.data.status !== 'paid') { pay.disabled = false; return (err.textContent = r.data.error ?? 'The payment didn’t go through.'); }
       paid(r.data);
     } catch {
@@ -471,6 +475,25 @@ async function payView(order) {
       err.textContent = 'We couldn’t reach the payment. Check your signal and try again: you won’t be charged twice.';
     }
   });
+}
+
+/**
+ * Asked at Pay: the kitchen now needs longer, so the time they picked is too soon. They see the new
+ * earliest time and take it (then pay as before), or go back and change the order.
+ */
+function timeChanged(order, d, err, pay) {
+  pay.hidden = true;
+  err.textContent = '';
+  const box = h('div', { class: 'card notice-box' },
+    h('div', { class: 'strong', text: 'Your pickup time has changed' }),
+    h('p', { text: d.next ? `Our kitchen just got busier, so the earliest we can have it ready is ${d.next.label} (you picked ${d.was}). You haven’t been charged.` : d.error }),
+    d.next ? h('button', { class: 'btn dark wide', text: `Pick up at ${d.next.label} instead`, onclick: async (e) => {
+      e.currentTarget.disabled = true;
+      const r = await api('POST', `/api/order/${order.id}/retime`, { window: d.next.starts });
+      if (!r.ok) { e.currentTarget.disabled = false; return (err.textContent = r.data.error ?? 'That didn’t work. Try again, or call us.'); }
+      payView(r.data);
+    } }) : null);
+  err.before(box);
 }
 
 function paid(order) {

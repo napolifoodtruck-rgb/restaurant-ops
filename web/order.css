@@ -201,3 +201,7 @@ label.field input:focus, label.field select:focus { outline: none; border-color:
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Asked at Pay when the kitchen needs longer: the new time, to take before paying. */
+.notice-box { border-left: 4px solid #B45A00; margin: 12px 0; display: grid; gap: 10px; }
+.notice-box p { margin: 0; }
