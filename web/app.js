@@ -6140,23 +6140,33 @@ function renderScan(me, id, x, pagesBox, back) {
     const unitOut = h('span', { class: 'small muted', text: l.baseUnit ? UNIT_LABEL(l.baseUnit) : '← pick the ingredient above' });
     const totalIn = h('input', { inputmode: 'decimal', class: 'amount money-in', value: String(l.read.total), 'aria-label': 'Line total' });
     const keep = h('input', { type: 'checkbox', checked: line.include, 'aria-label': 'Count this line' });
-    keep.addEventListener('change', () => { line.include = keep.checked; });
+    keep.addEventListener('change', () => { line.include = keep.checked; line.touched = true; recolour(); });
     // An ingredient and an amount: the line counts (ticked), without a separate tap.
-    const tickIfReady = () => { if (!keep.checked && line.productId && parseAmount(qtyIn.value) > 0) { keep.checked = true; line.include = true; } };
-    qtyIn.addEventListener('input', tickIfReady);
+    const tickIfReady = () => { if (!keep.checked && line.productId && parseAmount(qtyIn.value) > 0) { keep.checked = true; line.include = true; } recolour(); };
+    qtyIn.addEventListener('input', () => { line.touched = true; tickIfReady(); });
     // How sure: green, matched before; yellow, a guess or something to look at; red, nothing like it on the list.
     const conf = h('div', { class: 'scan-conf' });
     const sure = (level, text) => { line.row?.classList.remove('conf-green', 'conf-yellow', 'conf-red', 'conf-grey'); line.row?.classList.add(`conf-${level}`); conf.textContent = text; };
+    // Once you've dealt with a line it says so: ticked with an ingredient and an amount → green,
+    // unticked by you → grey (kept, not counted). Untouched lines keep how the app saw them.
+    let first;
+    const recolour = () => {
+      if (!first || !line.row) return;
+      const ready = keep.checked && line.productId && parseAmount(qtyIn.value) > 0;
+      if (ready) return first[0] === 'green' && !line.touched ? sure(...first) : sure('green', 'Checked: counts');
+      if (line.touched && !keep.checked) return sure('grey', 'Left out: kept on the invoice, not counted');
+      sure(...first);
+    };
     const picked = (p) => {
       line.productId = p.id; line.unit = p.unit; unitOut.textContent = UNIT_LABEL(p.unit); qtyIn.placeholder = '';
       // How much came in, worked out from the pack when it's printed (2 × 7 oz → 14 oz).
       if (!qtyIn.value) { const q = cameIn(l, p.unit); if (q !== undefined) qtyIn.value = String(q); }
-      sure('green', 'You picked it');
+      line.touched = true;
       suggestBox.hidden = true;
       tickIfReady(); qtyIn.focus();
     };
     const pick = ingredientPick(l.productName ?? '', picked, () => { line.productId = null; });
-    const chips = l.how === 'guess' && l.candidates?.length > 1 ? h('div', { class: 'small scan-alts' }, h('span', { class: 'muted', text: 'Or:' }), l.candidates.slice(1).map((c) => h('button', { class: 'link', type: 'button', text: c.name, onclick: () => { line.productId = c.id; pick.set(c.name); sure('green', 'You picked it'); } }))) : null;
+    const chips = l.how === 'guess' && l.candidates?.length > 1 ? h('div', { class: 'small scan-alts' }, h('span', { class: 'muted', text: 'Or:' }), l.candidates.slice(1).map((c) => h('button', { class: 'link', type: 'button', text: c.name, onclick: () => { line.productId = c.id; line.touched = true; pick.set(c.name); tickIfReady(); } }))) : null;
     // Nothing like it on the list: most likely new, so it can be added as it reads, in one go.
     const suggestBox = h('div', { class: 'scan-suggest', hidden: !l.suggest });
     if (l.suggest) fill(suggestBox, h('button', { class: 'btn small-btn', type: 'button', text: `+ Add “${l.suggest.name}” (${UNIT_LABEL(l.suggest.unit)})`,
@@ -6176,10 +6186,11 @@ function renderScan(me, id, x, pagesBox, back) {
         h('b', { text: l.read.description }),
         h('div', { class: 'small muted', text: [l.read.code ? `#${l.read.code}` : '', `${l.read.quantity} ${l.read.unit ?? ''}`.trim(), l.read.pack, l.read.unitPrice !== undefined ? `@ ${money(l.read.unitPrice)}` : '', `= ${money(l.read.total)}`].filter(Boolean).join(' · ') }))),
       h('div', { class: 'scan-ours' }, conf, pick, chips, suggestBox, h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Came in' }), qtyIn, unitOut, h('span', { class: 'small muted', text: 'for' }), totalIn), tags));
-    if (l.how === 'skip') sure('grey', 'Not counted: you left it out before');
-    else if (!l.productId) sure('red', l.suggest ? 'Not on your list: looks like a new ingredient' : 'No ingredient found');
-    else if (l.how === 'guess' || odd) sure('yellow', l.how === 'guess' ? 'Best guess: check it' : 'Matched, but something to look at');
-    else sure('green', l.how === 'learned' ? 'Matched: picked before' : 'Matched: bought before');
+    first = l.how === 'skip' ? ['grey', 'Not counted: you left it out before']
+      : !l.productId ? ['red', l.suggest ? 'Not on your list: looks like a new ingredient' : 'No ingredient found']
+      : l.how === 'guess' || odd ? ['yellow', l.how === 'guess' ? 'Best guess: check it' : 'Matched, but something to look at']
+      : ['green', l.how === 'learned' ? 'Matched: picked before' : 'Matched: bought before'];
+    sure(...first);
     return line;
   });
 
