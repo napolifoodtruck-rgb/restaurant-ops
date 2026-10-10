@@ -6171,7 +6171,7 @@ function renderScan(me, id, x, pagesBox, back) {
     const suggestBox = h('div', { class: 'scan-suggest', hidden: !l.suggest });
     if (l.suggest) fill(suggestBox, h('button', { class: 'btn small-btn', type: 'button', text: `+ Add “${l.suggest.name}” (${UNIT_LABEL(l.suggest.unit)})`,
       onclick: () => fill(suggestBox, newIngredientForm(l.suggest.name, (p) => { pick.set(p.name); costCache.clear(); picked(p); }, { unit: l.suggest.unit, kind: l.suggest.kind })) }),
-      h('span', { class: 'small muted', text: 'or pick it above if it’s on your list under another name.' }));
+      h('span', { class: 'small muted', text: 'or pick it above.' }));
     // (A guess and a new-looking item are said above the ingredient, in colour: not again as tags.)
     const flags = l.flags.filter((f) => f !== 'noProduct');
     fill(tags, flags.map((f) => h('span', { class: `tag ${SCAN_FLAG[f]?.[1] ?? ''}`, text: f === 'priceJump' && l.was ? `${l.perBase > l.was ? 'Up' : 'Down'} ${Math.round(Math.abs(l.perBase / l.was - 1) * 100)}% (was ${perUnitText(l.was, l.baseUnit)})` : f === 'handwritten' && l.read.handwritten ? `Hand-corrected: ${l.read.handwritten}` : SCAN_FLAG[f]?.[0] ?? f })));
@@ -6182,10 +6182,12 @@ function renderScan(me, id, x, pagesBox, back) {
     line.get = () => ({ productId: line.productId, quantity: parseAmount(qtyIn.value), unit: line.unit ?? l.baseUnit, total: parseAmount(totalIn.value), description: l.read.description, itemKey: l.itemKey,
       perQuantity: l.read.quantity ? parseAmount(qtyIn.value) / l.read.quantity : undefined });
     line.row = h('div', { class: `scan-line${flags.length ? ' flagged' : ''}` },
+      // Left: the line as printed, then how sure the app is and anything to look at. Right: what to do.
       h('div', { class: 'scan-read' }, keep, h('div', {},
         h('b', { text: l.read.description }),
-        h('div', { class: 'small muted', text: [l.read.code ? `#${l.read.code}` : '', `${l.read.quantity} ${l.read.unit ?? ''}`.trim(), l.read.pack, l.read.unitPrice !== undefined ? `@ ${money(l.read.unitPrice)}` : '', `= ${money(l.read.total)}`].filter(Boolean).join(' · ') }))),
-      h('div', { class: 'scan-ours' }, conf, pick, chips, suggestBox, h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Came in' }), qtyIn, unitOut, h('span', { class: 'small muted', text: 'for' }), totalIn), tags));
+        h('div', { class: 'small muted', text: [l.read.code ? `#${l.read.code}` : '', `${l.read.quantity} ${l.read.unit ?? ''}`.trim(), l.read.pack, l.read.unitPrice !== undefined ? `@ ${money(l.read.unitPrice)}` : '', `= ${money(l.read.total)}`].filter(Boolean).join(' · ') }),
+        conf, tags)),
+      h('div', { class: 'scan-ours' }, pick, chips, suggestBox, h('div', { class: 'row tight' }, h('span', { class: 'small muted', text: 'Came in' }), qtyIn, unitOut, h('span', { class: 'small muted', text: 'for' }), totalIn)));
     first = l.how === 'skip' ? ['grey', 'Not counted: you left it out before']
       : !l.productId ? ['red', l.suggest ? 'Not on your list: looks like a new ingredient' : 'No ingredient found']
       : l.how === 'guess' || odd ? ['yellow', l.how === 'guess' ? 'Best guess: check it' : 'Matched, but something to look at']

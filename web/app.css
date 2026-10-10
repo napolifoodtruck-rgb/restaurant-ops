@@ -1588,3 +1588,7 @@ section[aria-label="Email inbox"] input[type=text] { width: 100%; }
 .ing-row.ing-head:hover { background: none; }
 .ing-row .num { text-align: right; }
 @media (max-width: 700px) { .ing-row { grid-template-columns: minmax(0, 1fr) auto; } .ing-row > :nth-child(3) { grid-column: 1 / -1; font-size: 12px; } .ing-row.ing-head > :nth-child(3), .ing-row.ing-head > :nth-child(4) { display: none; } .ing-row > .num { grid-row: 1; grid-column: 2; } .ing-row > :nth-child(2) { display: none; } }
+
+/* The colour label and the tags sit under the printed line, on the left. */
+.scan-line .scan-read .scan-conf { margin: 4px 0 2px; }
+.scan-line .scan-read .scan-flags { margin-top: 2px; }
