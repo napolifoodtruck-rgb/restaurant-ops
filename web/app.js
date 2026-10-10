@@ -2584,27 +2584,38 @@ async function orderPageCard() {
  * with, and the takeout pizzas it sells. Each night starts from these on its own; the kitchen adjusts
  * them during service whenever the real count differs. At zero takeout, online ordering stops.
  */
+/** Dough comes in trays of this many balls: typed in trays, counted in balls. */
+const PER_TRAY = 8;
+/** 35 → "4 trays + 3". */
+const traysText = (n) => { const t = Math.floor(n / PER_TRAY), b = Math.round(n - t * PER_TRAY); return `${t} tray${t === 1 ? '' : 's'}${b ? ` + ${b}` : ''}`; };
+
 function takeoutNumbersCard() {
   const box = h('section', { class: 'card', 'aria-label': 'Dough and takeout' }, h('h2', { text: 'Dough & takeout' }));
   const order = [1, 2, 3, 4, 5, 6, 0];
-  const ROWS = [['doughByWeekday', 'Dough balls'], ['gfByWeekday', 'Gluten-free crusts'], ['takeoutByWeekday', 'Takeout pizzas']];
+  const ROWS = [['doughByWeekday', 'Dough trays'], ['gfByWeekday', 'Gluten-free crusts'], ['takeoutByWeekday', 'Takeout pizzas']];
   async function draw(data) {
     const r = data ? { ok: true, data } : await api('GET', '/api/floor/dough/settings');
     if (!r.ok) return fill(box, h('h2', { text: 'Dough & takeout' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' }));
     const d = r.data;
     const err = h('div', { class: 'error small' });
     const status = h('span', { class: 'small muted grow' });
+    // Dough is typed in trays (8 balls each) and kept in balls; the balls show under each day, no math.
+    const balls = new Map(order.map((wd) => [wd, h('span', { class: 'small muted' })]));
+    const showBalls = (wd, trays) => { balls.get(wd).textContent = trays.trim() === '' ? '' : `${Math.round(Number(trays) * PER_TRAY)}`; };
     const inputs = ROWS.map(([key, label]) => [key, order.map((wd) => {
       const v = d[key][wd];
-      const input = h('input', { class: 'amount', type: 'number', inputmode: 'numeric', min: '0', max: '2000', step: '1', value: v === null ? '' : String(v), placeholder: '–', 'aria-label': `${label}, ${WEEKDAYS[wd]}` });
-      input.addEventListener('input', () => { status.textContent = 'Not saved yet'; });
+      const trays = key === 'doughByWeekday';
+      const shown = v === null ? '' : trays ? String(+(v / PER_TRAY).toFixed(2)) : String(v);
+      const input = h('input', { class: 'amount', type: 'number', inputmode: 'decimal', min: '0', max: trays ? '250' : '2000', step: trays ? '0.5' : '1', value: shown, placeholder: '–', 'aria-label': `${label}, ${WEEKDAYS[wd]}` });
+      input.addEventListener('input', () => { status.textContent = 'Not saved yet'; if (trays) showBalls(wd, input.value); });
+      if (trays) showBalls(wd, shown);
       return [wd, input];
     })]);
     const spareInput = h('input', { class: 'amount', type: 'number', inputmode: 'numeric', min: '0', max: '50', step: '1', value: String(d.spare ?? 5), 'aria-label': 'Dough balls kept for remakes' });
     spareInput.addEventListener('input', () => { status.textContent = 'Not saved yet'; });
     const saveBtn = h('button', { class: 'btn small-btn dark', text: 'Save', onclick: async (e) => {
       const body = { spare: spareInput.value.trim() === '' ? 5 : Number(spareInput.value) };
-      for (const [key, cells] of inputs) { const week = Array(7).fill(null); for (const [wd, input] of cells) week[wd] = input.value.trim() === '' ? null : Number(input.value); body[key] = week; }
+      for (const [key, cells] of inputs) { const week = Array(7).fill(null); for (const [wd, input] of cells) week[wd] = input.value.trim() === '' ? null : key === 'doughByWeekday' ? Math.round(Number(input.value) * PER_TRAY) : Number(input.value); body[key] = week; }
       busy(e.currentTarget, true);
       const res = await api('POST', '/api/floor/dough/settings', body);
       busy(e.currentTarget, false);
@@ -2616,8 +2627,9 @@ function takeoutNumbersCard() {
       h('div', { class: 'small muted', text: 'What each night starts with, by weekday. The kitchen, counter and host iPads count down from these live from Square, and the kitchen adjusts them during service whenever the real count differs. At zero takeout, online ordering stops for the night, and starts again if the kitchen adds pizzas. Blank: no number that day.' }),
       h('div', { class: 'wgrid-wrap' }, h('table', { class: 'wgrid takeout-grid' },
         h('thead', {}, h('tr', {}, h('th', { text: '' }), order.map((wd) => h('th', { text: WEEKDAYS[wd] })))),
-        h('tbody', {}, inputs.map(([key, cells]) => h('tr', {}, h('th', { class: 'small', text: ROWS.find(([k]) => k === key)[1] }), cells.map(([, input]) => h('td', {}, input))))))),
-      h('div', { class: 'row wrap' }, h('label', { class: 'row tight' }, h('span', { class: 'small strong', text: 'Kept for remakes' }), spareInput), h('span', { class: 'small muted grow', text: 'Dough balls held back every night for a pizza that goes wrong; the floor and takeout share the rest.' })),
+        h('tbody', {}, inputs.map(([key, cells]) => [h('tr', {}, h('th', { class: 'small', text: ROWS.find(([k]) => k === key)[1] }), cells.map(([, input]) => h('td', {}, input))),
+          key === 'doughByWeekday' ? h('tr', { class: 'balls-row' }, h('th', { class: 'small muted', text: `= dough balls (${PER_TRAY} a tray)` }), order.map((wd) => h('td', {}, balls.get(wd)))) : null])))),
+      h('div', { class: 'row wrap' }, h('label', { class: 'row tight' }, h('span', { class: 'small strong', text: 'Kept for remakes' }), spareInput), h('span', { class: 'small muted grow', text: 'Dough balls (not trays) held back every night for a pizza that goes wrong; the floor and takeout share the rest.' })),
       h('div', { class: 'row wrap plan-save' }, status, saveBtn),
       h('div', { class: 'small muted', text: 'A dough ball: anything in Square’s Pizza category, and the breadsticks. Takeout: anything without a table number (online, phone, to go). Rung gluten-free, a pizza or breadsticks takes a gluten-free crust instead; a side of gluten-free bread takes a quarter of one.' }),
       err);
@@ -4864,16 +4876,27 @@ function doughWidget({ canEdit = false, compact = false } = {}) {
   function adjust(d, key) {
     const c = key === 'dough' ? d.dough : key === 'gf' ? d.glutenFree : d.takeout;
     const input = h('input', { type: 'number', inputmode: 'numeric', min: '0', max: '2000', step: '1', value: c.left !== undefined ? String(Math.floor(c.left)) : '', 'aria-label': `${NAMES[key]} left right now` });
+    // Dough: counted the way it sits, full trays and loose balls; the total is what's saved.
+    const left0 = c.left !== undefined ? Math.max(0, Math.floor(c.left)) : undefined;
+    const traysIn = h('input', { type: 'number', inputmode: 'numeric', min: '0', max: '250', step: '1', value: left0 !== undefined ? String(Math.floor(left0 / PER_TRAY)) : '', 'aria-label': 'Full trays' });
+    const looseIn = h('input', { type: 'number', inputmode: 'numeric', min: '0', max: '2000', step: '1', value: left0 !== undefined ? String(left0 % PER_TRAY) : '', 'aria-label': 'Loose balls' });
+    const total = h('b', {});
+    const sum = () => { const t = Number(traysIn.value || 0) * PER_TRAY + Number(looseIn.value || 0); input.value = traysIn.value.trim() === '' && looseIn.value.trim() === '' ? '' : String(t); total.textContent = input.value === '' ? '–' : `${t} balls`; };
+    if (key === 'dough') { traysIn.addEventListener('input', sum); looseIn.addEventListener('input', sum); sum(); }
     const preset = d.preset[key];
     const s = floorSheet(`${NAMES[key]} left`,
       h('h2', { class: 'sheet-title', text: `${NAMES[key]} left` }),
       h('div', { class: 'small muted', text: `${c.left !== undefined ? `The count says ${quarters(c.left)}. ` : ''}Type what’s really left right now; every board counts on from there.` }),
-      h('label', { class: 'dough-field' }, h('span', { text: 'Left right now' }), input),
+      key === 'dough'
+        ? h('div', { class: 'dough-trays' }, h('label', { class: 'dough-field' }, h('span', { text: 'Full trays' }), traysIn), h('span', { class: 'plus', text: '+' }),
+            h('label', { class: 'dough-field' }, h('span', { text: 'Loose balls' }), looseIn), h('div', { class: 'dough-total' }, h('span', { class: 'small muted', text: 'Left right now' }), total))
+        : h('label', { class: 'dough-field' }, h('span', { text: 'Left right now' }), input),
       h('div', { class: 'row wrap' },
         h('button', { class: 'btn dark', text: 'Save', onclick: async (e) => { if (input.value.trim() === '') return; if (await save({ count: key, left: Number(input.value) }, e.currentTarget)) s.close(); } }),
-        d.changed[key] ? h('button', { class: 'btn', text: preset !== undefined ? `Back to today’s preset (${preset})` : 'Back to no number', onclick: async (e) => { if (await save({ count: key, reset: true }, e.currentTarget)) s.close(); } }) : null));
-    input.focus();
-    input.select();
+        d.changed[key] ? h('button', { class: 'btn', text: preset !== undefined ? `Back to today’s preset (${preset}${key === 'dough' ? `, ${traysText(preset)}` : ''})` : 'Back to no number', onclick: async (e) => { if (await save({ count: key, reset: true }, e.currentTarget)) s.close(); } }) : null));
+    const first = key === 'dough' ? traysIn : input;
+    first.focus();
+    first.select();
   }
 
   function draw(d) {
@@ -4886,7 +4909,7 @@ function doughWidget({ canEdit = false, compact = false } = {}) {
       h('span', {}, 'Takeout ', h('b', { text: d.takeout.left !== undefined ? String(d.takeout.left) : '–' })),
       h('span', {}, 'Dine-in ', h('b', { text: String(d.dough.forDineIn) }))) : null;
     const dough = d.dough.left !== undefined
-      ? tile(d.dough.out ? 'out' : d.dough.forDineIn <= 10 ? 'low' : '', 'Dough left', String(d.dough.left), split,
+      ? tile(d.dough.out ? 'out' : d.dough.forDineIn <= 10 ? 'low' : '', 'Dough left', String(d.dough.left), h('div', { class: 'dough-under', text: traysText(Math.max(0, d.dough.left)) }), split,
         // Said to the kitchen so nobody panics at zero: a few are always kept back for a pizza that goes wrong.
         d.dough.spare ? h('div', { class: 'dough-under strong', text: `${d.dough.spare} of these kept for remakes` }) : null,
         under(d.dough.start, d.dough.used, 'dough'), canEdit ? h('div', { class: 'row tight dough-steps' }, adjustBtn('dough')) : null)

@@ -1614,3 +1614,10 @@ header.row > .capture-bar { margin: 0; align-self: center; }
 /* Today: the tiles fill the middle column and wrap; the side column starts at the top. */
 .page-main > .today-tiles { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 4px; }
 @media (max-width: 560px) { .page-main > .today-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* Dough in trays: the balls under each day in Settings; trays + loose balls on the board's Adjust. */
+.takeout-grid .balls-row td { text-align: center; padding-top: 0; }
+.dough-trays { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.dough-trays .plus { font-size: 22px; padding-bottom: 10px; }
+.dough-trays .dough-field input { width: 110px; }
+.dough-total { display: grid; padding-bottom: 8px; font-size: 20px; }
