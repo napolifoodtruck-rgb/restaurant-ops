@@ -30,7 +30,7 @@
  *   GET  /api/menu               the menu from sales, what came off, to-dos (manager or up)
  *   POST /api/answers            answer a menu question: link, new dish, not food, dismiss (manager or up)
  *   /api/prep/…                  station prep lists: see prep.ts
- *   /api/floor/…                 the front of house board on each POS iPad, and its setup: see floor.ts
+ *   /api/floor/…                 the front of house board on each POS iPad, and its setup: see floor.ts; the dough count: see dough.ts
  *   /api/plans/…                 dishes coming to the menu: see plans.ts
  *   GET  /api/today              what needs someone today: see today.ts
  *   /api/cards/…                 recipe cards, written in the app, and bar drafts: see cards.ts
@@ -69,7 +69,8 @@ import { dashboardView } from './dashboard.ts';
 import { cardRoutes } from './cards.ts';
 import { orderRoutes } from './orders.ts';
 import { onlineRoutes } from './online.ts';
-import { checkoutRoutes, type CheckoutSettings } from './onlineCheckout.ts';
+import { checkoutFrom, checkoutRoutes, type CheckoutSettings } from './onlineCheckout.ts';
+import { doughRoutes, type DoughSquare } from './dough.ts';
 import { reportRoutes } from './reports.ts';
 import { costRoutes } from './costs.ts';
 import { ideaRoutes } from './ideas.ts';
@@ -135,6 +136,9 @@ export function createApp(config: AppConfig) {
   const { db, secureCookies } = config;
 
   const orderRoute = checkoutRoutes(db, config.checkout);
+  // The dough count reads today's orders through online ordering's Square connection (read only).
+  const live = checkoutFrom(config.checkout);
+  const doughSquare: DoughSquare | undefined = live ? { square: live.square, locationId: live.locationId } : undefined;
 
   async function signedIn(req: IncomingMessage): Promise<SignedIn> {
     const who = await sessionFor(db, cookies(req)[SESSION_COOKIE]);
@@ -808,10 +812,12 @@ export function createApp(config: AppConfig) {
       const tz = (await db.query<{ timezone: string }>('SELECT timezone FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.timezone ?? 'America/New_York';
       const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', weekday: 'short' }).formatToParts(new Date()).map((p) => [p.type, p.value]));
       const mine = device && device.restaurantId === restaurantId ? { id: device.id, restaurantId, floorPostId: device.floorPostId } : undefined;
-      if (await floorRoutes(db, req, res, url, method, {
+      const floorCtx = {
         ...(who ? { who } : {}), ...(mine ? { device: mine } : {}), restaurantId, today: localDateHour(tz).date,
         minutes: Number(parts.hour) * 60 + Number(parts.minute), weekday: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(String(parts.weekday)),
-      })) return;
+      };
+      if (await doughRoutes(db, req, res, path, method, floorCtx, tz, doughSquare)) return;
+      if (await floorRoutes(db, req, res, url, method, floorCtx)) return;
     }
 
     if (path.startsWith('/api/prep')) {

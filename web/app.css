@@ -1405,3 +1405,25 @@ input[type=search]:not(.floor-search):not(.search) { height: 48px; border: 1px s
 .pair-add { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; }
 .pair-hits { display: flex; flex-wrap: wrap; gap: 6px; }
 .pair-editor > .btn { align-self: flex-start; }
+
+/* The dough count: dough, takeout, gluten-free, side by side; stacked on a phone. */
+.dough-widget { gap: 10px; }
+.dough-head { align-items: center; gap: 10px; flex-wrap: wrap; }
+.dough-head h2 { margin: 0; font-size: 18px; }
+.dough-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.dough-tile { background: var(--soft); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; border: 2px solid transparent; }
+.dough-label { font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.dough-big { font-size: 44px; font-weight: 800; line-height: 1.05; }
+.dough-under { font-size: 13px; color: var(--muted); }
+.dough-tile.unset .dough-big { color: var(--muted); }
+.dough-tile.low { background: #FFF1DF; border-color: #F2C690; }
+.dough-tile.low .dough-big { color: var(--orange); }
+.dough-tile.out { background: #FBE6E2; border-color: #EDB3A8; }
+.dough-tile.out .dough-big { color: var(--accent); }
+.dough-alert { font-size: 13px; font-weight: 700; color: var(--accent); }
+.dough-steps { margin-top: 6px; flex-wrap: wrap; gap: 6px; }
+.dough-steps .btn { min-width: 48px; }
+.dough-field { display: flex; flex-direction: column; gap: 4px; font-size: 14px; font-weight: 600; }
+.dough-field input { width: 140px; font-size: 22px; }
+.dough-total { margin-top: -4px; }
+@media (max-width: 700px) { .dough-tiles { grid-template-columns: 1fr; } .dough-big { font-size: 36px; } }

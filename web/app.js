@@ -1341,6 +1341,7 @@ async function prepHome(me, allStations = false, quiet = false) {
     h('header', {}, h('div', { class: 'kicker', text: dayName(p.today) }), h('h1', { text: 'Prep' }),
       h('div', { class: 'sub', text: 'Each station’s list for today, and tonight’s count.' })),
     page([
+      doughWidget({ canEdit: true }),
       mine ? h('div', { class: 'row' }, h('div', { class: 'grow small muted', text: allStations ? `This iPad is the ${mine.name} station’s.` : `This iPad is the ${mine.name} station’s. Other stations are a tap away.` }),
         h('button', { class: 'link', text: allStations ? `Just ${mine.name}` : 'All stations', onclick: () => prepHome(me, !allStations) })) : null,
       h('div', { class: 'stack' }, cards), addStation ? h('div', {}, addStation) : null,
@@ -2054,7 +2055,7 @@ async function menuScreen(me) {
   const valid = (k) => k === 'needs' ? needCount > 0 : k === 'coming' ? canPlan : k === 'online' || k === 'windows' ? canOnline : sections.includes(k);
   let chip = recall(chipKey);
   if (!valid(chip)) chip = needCount ? 'needs' : sections[0] ?? (canPlan ? 'coming' : 'needs');
-  let coming = null, online = null, windows = null, orderPage = null;
+  let coming = null, online = null, windows = null, orderPage = null, takeoutCard = null;
   const pickChip = (k) => { chip = k; remember(chipKey, k); draw(); };
 
   // The side: what's on, what came off (each can be put back), adding a dish back, buttons kept apart, answers.
@@ -2094,7 +2095,8 @@ async function menuScreen(me) {
     } else if (chip === 'windows') {
       windows ??= await pickupWindowsCard(me);
       orderPage ??= await orderPageCard();
-      main = [h('div', { class: 'row online-settings-head' }, h('button', { class: 'btn small-btn', text: '← Items sold online', onclick: () => pickChip('online') }), h('h2', { class: 'grow', text: 'Online settings' })), orderPage, windows];
+      takeoutCard ??= takeoutNumbersCard();
+      main = [h('div', { class: 'row online-settings-head' }, h('button', { class: 'btn small-btn', text: '← Items sold online', onclick: () => pickChip('online') }), h('h2', { class: 'grow', text: 'Online settings' })), orderPage, takeoutCard, windows];
     } else if (chip === 'coming') {
       coming ??= await comingUpCard(me);
       main = [coming ?? h('section', { class: 'card small muted', text: 'Couldn’t load what’s coming up.' })];
@@ -2559,6 +2561,68 @@ async function orderPageCard() {
   }
   const r = await api('GET', '/api/online/page');
   if (r.ok) page = r.data; else err.textContent = r.data.error ?? 'Couldn’t load.';
+  draw();
+  return box;
+}
+
+/**
+ * Takeout pizzas: how many a night sells to go (online, phone and counter together), by weekday, and
+ * tonight's if it's not the usual. The kitchen changes tonight's on the fly; at zero, online
+ * ordering stops for the night. Also which recipes are the dough and the gluten-free dough.
+ */
+function takeoutNumbersCard() {
+  const box = h('section', { class: 'card', 'aria-label': 'Takeout pizzas' }, h('h2', { text: 'Takeout pizzas' }));
+  const order = [1, 2, 3, 4, 5, 6, 0];
+  async function draw(data) {
+    const r = data ? { ok: true, data } : await api('GET', '/api/floor/dough/settings');
+    if (!r.ok) return fill(box, h('h2', { text: 'Takeout pizzas' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' }));
+    const d = r.data;
+    const err = h('div', { class: 'error small' });
+    const save = async (btn, body) => {
+      busy(btn, true);
+      const res = await api('POST', '/api/floor/dough/settings', body);
+      busy(btn, false);
+      if (!res.ok) { err.textContent = res.data.error ?? 'Not saved.'; return; }
+      draw(res.data);
+    };
+    const num = (v, label) => h('input', { class: 'amount', type: 'number', inputmode: 'numeric', min: '0', max: '2000', step: '1', value: v === null || v === undefined ? '' : String(v), placeholder: '–', 'aria-label': label });
+    const week = order.map((wd) => [wd, num(d.takeoutByWeekday[wd], `${WEEKDAYS[wd]} takeout pizzas`)]);
+    const tonight = num(d.tonight, 'Tonight’s takeout pizzas');
+    const todayWd = new Date(`${d.today}T12:00:00Z`).getUTCDay();
+    const pick = (value, label) => h('select', { class: 'small-select', 'aria-label': label },
+      d.doughs.map((x) => h('option', { value: x.id, text: x.name, selected: x.id === value ? true : undefined })),
+      value ? null : h('option', { value: '', text: 'Not found', selected: true }));
+    const dough = pick(d.doughRecipeId, 'Dough recipe'), gf = pick(d.gfRecipeId, 'Gluten-free dough recipe');
+    // Tonight's items with no recipe: counted as pizzas by their category, or not counted at all.
+    const live = await api('GET', '/api/floor/dough');
+    const chk = live.ok ? live.data.check : null;
+    const listOf = (o) => Object.entries(o ?? {}).map(([n, q]) => `${n} (${q})`).join(', ');
+    const check = chk ? h('div', { class: 'note small' },
+      h('div', { class: 'strong', text: 'Items with no recipe tonight' }),
+      Object.keys(chk.guessed ?? {}).length ? h('div', { text: `Counted as pizzas from their Square category: ${listOf(chk.guessed)}.` }) : null,
+      Object.keys(chk.notCounted ?? {}).length ? h('div', { text: `Not counted, but sold beside the dough items: ${listOf(chk.notCounted)}. If they use dough, give them a recipe that uses it, on Recipes.` }) : null) : null;
+    fill(box,
+      h('h2', { text: 'Takeout pizzas' }),
+      h('div', { class: 'small muted', text: 'How many pizzas a night sells to go: online, phone and counter together. The kitchen, counter and host iPads count them down live from Square; at zero, online ordering stops for the night, and starts again if the kitchen adds some. Blank: no takeout number that day.' }),
+      h('table', { class: 'wgrid takeout-grid' },
+        h('thead', {}, h('tr', {}, order.map((wd) => h('th', { text: WEEKDAYS[wd] })))),
+        h('tbody', {}, h('tr', {}, week.map(([, input]) => h('td', {}, input))))),
+      h('div', { class: 'row wrap' }, h('button', { class: 'btn small-btn dark', text: 'Save the week', onclick: (e) => {
+        const byWd = Array(7).fill(null);
+        for (const [wd, input] of week) byWd[wd] = input.value.trim() === '' ? null : Number(input.value);
+        save(e.currentTarget, { takeoutByWeekday: byWd });
+      } })),
+      h('div', { class: 'row wrap' },
+        h('span', { class: 'strong', text: 'Tonight' }), tonight,
+        h('span', { class: 'small muted grow', text: d.tonight !== null ? `Changed from the usual ${d.takeoutByWeekday[todayWd] ?? 'none'}.` : `The usual for ${WEEKDAYS[todayWd]}.` }),
+        h('button', { class: 'btn small-btn', text: 'Set tonight', onclick: (e) => tonight.value.trim() !== '' && save(e.currentTarget, { tonight: Number(tonight.value) }) }),
+        d.tonight !== null ? h('button', { class: 'link', text: 'Back to the usual', onclick: (e) => save(e.currentTarget, { tonight: null }) }) : null),
+      h('details', {}, h('summary', { class: 'small', text: 'Which recipes are the doughs' }),
+        h('div', { class: 'small muted', text: 'Anything whose recipe uses the dough takes one dough ball (pizzas, breadsticks). The gluten-free dough, or a gluten-free crust rung on a pizza, takes a gluten-free crust instead.' }),
+        h('div', { class: 'row wrap' }, h('span', { class: 'small', text: 'Dough' }), dough, h('span', { class: 'small', text: 'Gluten-free' }), gf,
+          h('button', { class: 'btn small-btn', text: 'Save', onclick: (e) => save(e.currentTarget, { doughRecipeId: dough.value || null, gfRecipeId: gf.value || null }) }))),
+      check, err);
+  }
   draw();
   return box;
 }
@@ -4636,6 +4700,99 @@ function onlinePauseBar() {
   return box;
 }
 
+/**
+ * The dough count, live from Square: dough balls left, gluten-free crusts left, takeout pizzas left
+ * of tonight's number. On the kitchen iPads (canEdit) the cooks enter the night's start, counted by
+ * hand, and change the takeout number on the fly; the counter and host boards just show it. At zero
+ * takeout, online ordering stops until the kitchen adds some. Freshens itself every minute.
+ */
+function doughWidget({ canEdit = false, compact = false } = {}) {
+  const box = h('section', { class: `card dough-widget${compact ? ' compact' : ''}`, 'aria-label': 'Dough count', 'aria-live': 'polite' }, h('div', { class: 'small muted', text: 'Dough count…' }));
+  let timer = null;
+  const load = async (fresh) => {
+    clearTimeout(timer);
+    if (fresh) draw(fresh);
+    else { const r = await api('GET', '/api/floor/dough'); if (r.ok) draw(r.data); else if (!box.querySelector('.dough-tiles')) fill(box, h('div', { class: 'small muted', text: r.data.error ?? 'Couldn’t load the dough count.' })); }
+    timer = setTimeout(() => { if (document.body.contains(box)) load(); }, 60000);
+  };
+  const save = async (body, btn) => {
+    if (btn) busy(btn, true);
+    const r = await api('POST', '/api/floor/dough', body);
+    if (btn) busy(btn, false);
+    if (!r.ok) { await floorMessage(r.data.error ?? 'That didn’t save.'); return false; }
+    load(r.data);
+    return true;
+  };
+  const at = (iso) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const tile = (cls, label, big, ...under) => h('div', { class: `dough-tile ${cls}` }, h('div', { class: 'dough-label', text: label }), h('div', { class: 'dough-big', text: big }), ...under);
+
+  function enterStart(d) {
+    const field = (label, value) => h('label', { class: 'dough-field' }, h('span', { text: label }), h('input', { type: 'number', inputmode: 'numeric', min: '0', max: '2000', step: '1', value: value ?? '', 'aria-label': label }));
+    const fields = { leftOver: field('Left from last night', d.night.leftOver), made: field('Made today', d.night.made), gfLeftOver: field('Left from last night', d.night.gfLeftOver), gfMade: field('Made today', d.night.gfMade) };
+    const total = () => h('div', { class: 'small muted dough-total' });
+    const dTotal = total(), gTotal = total();
+    const sum = () => {
+      const v = (k) => Number(fields[k].querySelector('input').value || 0);
+      dTotal.textContent = `Starting tonight with ${v('leftOver') + v('made')} dough balls`;
+      gTotal.textContent = `Starting tonight with ${v('gfLeftOver') + v('gfMade')} gluten-free crusts`;
+    };
+    Object.values(fields).forEach((f) => f.querySelector('input').addEventListener('input', sum));
+    sum();
+    const err = h('div', { class: 'error small' });
+    const s = floorSheet('Tonight’s dough',
+      h('h2', { class: 'sheet-title', text: 'Tonight’s dough' }),
+      h('div', { class: 'small muted', text: 'Count by hand: what’s left from last night, and what you made today.' }),
+      h('h3', { text: 'Dough balls' }), h('div', { class: 'row wrap' }, fields.leftOver, fields.made), dTotal,
+      h('h3', { text: 'Gluten-free crusts' }), h('div', { class: 'row wrap' }, fields.gfLeftOver, fields.gfMade), gTotal,
+      err,
+      h('div', { class: 'row' }, h('button', { class: 'btn dark', text: 'Save', onclick: async (e) => {
+        const body = {};
+        for (const [k, f] of Object.entries(fields)) { const v = f.querySelector('input').value.trim(); if (v !== '') body[k] = Number(v); }
+        if (!Object.keys(body).length) { err.textContent = 'Type at least one count.'; return; }
+        if (await save(body, e.currentTarget)) s.close();
+      } })));
+    s.panel.querySelector('input')?.focus();
+  }
+
+  function setTakeout(d) {
+    const input = h('input', { type: 'number', inputmode: 'numeric', min: '0', max: '2000', step: '1', value: String(d.takeout.cap ?? ''), 'aria-label': 'Takeout pizzas tonight' });
+    const s = floorSheet('Takeout pizzas tonight',
+      h('h2', { class: 'sheet-title', text: 'Takeout pizzas tonight' }),
+      h('div', { class: 'small muted', text: `${d.takeout.total} sold so far (${d.takeout.online} online, ${d.takeout.toGo} to go). The counter and online ordering go by this number.` }),
+      h('label', { class: 'dough-field' }, h('span', { text: 'Total for tonight' }), input),
+      h('div', { class: 'row wrap' },
+        h('button', { class: 'btn dark', text: 'Save', onclick: async (e) => { if (input.value.trim() === '') return; if (await save({ takeout: Number(input.value) }, e.currentTarget)) s.close(); } }),
+        d.night.changed && d.night.planned !== undefined ? h('button', { class: 'btn', text: `Back to the usual ${d.night.planned}`, onclick: async (e) => { if (await save({ takeoutReset: true }, e.currentTarget)) s.close(); } }) : null));
+    input.focus();
+  }
+
+  function draw(d) {
+    const dough = d.dough.left !== undefined
+      ? tile(d.dough.left <= 10 ? 'low' : '', 'Dough left', String(d.dough.left), h('div', { class: 'dough-under', text: `of ${d.dough.start} · ${d.dough.used} used` }))
+      : tile('unset', 'Dough left', '–', h('div', { class: 'dough-under', text: canEdit ? 'Enter tonight’s dough' : 'Kitchen hasn’t entered tonight’s dough' }));
+    const gf = d.glutenFree.left !== undefined
+      ? tile(d.glutenFree.left <= 2 ? 'low' : '', 'Gluten-free left', String(d.glutenFree.left), h('div', { class: 'dough-under', text: `of ${d.glutenFree.start} · ${d.glutenFree.used} used` }))
+      : tile('unset', 'Gluten-free left', '–', h('div', { class: 'dough-under', text: `${d.glutenFree.used} used` }));
+    const t = d.takeout;
+    const step = (n) => h('button', { class: 'btn small-btn', text: n > 0 ? `+${n}` : `−${-n}`, 'aria-label': `${n > 0 ? 'Add' : 'Take off'} ${Math.abs(n)} takeout`, onclick: (e) => save({ takeoutAdd: n }, e.currentTarget) });
+    const takeout = t.cap !== undefined
+      ? tile(d.takeoutOut ? 'out' : t.left <= 3 ? 'low' : '', 'Takeout left', String(t.left),
+        h('div', { class: 'dough-under', text: `of ${t.cap} · ${t.online} online, ${t.toGo} to go` }),
+        d.takeoutOut ? h('div', { class: 'dough-alert', text: canEdit ? 'Sold out: online ordering is off. Add pizzas to turn it back on.' : 'Sold out: online ordering is off.' }) : null,
+        canEdit ? h('div', { class: 'row tight dough-steps' }, step(-1), step(1), step(5), h('button', { class: 'btn small-btn', text: 'Set', onclick: () => setTakeout(d) })) : null)
+      : tile('unset', 'Takeout left', '–', h('div', { class: 'dough-under', text: `${t.total} sold · no takeout number tonight` }),
+        canEdit ? h('div', { class: 'row tight dough-steps' }, h('button', { class: 'btn small-btn', text: 'Set', onclick: () => setTakeout(d) })) : null);
+    fill(box,
+      h('div', { class: 'row dough-head' }, h('h2', { class: 'grow', text: 'Dough' }),
+        h('span', { class: 'small muted', text: d.asOf ? `Live from Square · ${at(d.asOf)}` : 'Waiting for Square' }),
+        canEdit ? h('button', { class: 'btn small-btn', text: d.dough.start !== undefined ? 'Edit start' : 'Enter tonight’s dough', onclick: () => enterStart(d) }) : null),
+      d.problem ? h('div', { class: 'small warn-text', text: d.problem }) : null,
+      h('div', { class: 'dough-tiles' }, dough, takeout, gf));
+  }
+  load();
+  return box;
+}
+
 /** Each tab's color: the edge of its tile on Today, its tag on a to-do, its icon in the rail. */
 const TODO_TABS = {
   prep: { name: 'Prep', color: '#2E7D4F', go: (me) => prepHome(me) },
@@ -6697,7 +6854,9 @@ async function floorBoard(ctx = {}) {
     b.gelato.panChanges.map((p) => h('div', { class: 'small strong', text: `${p.size ? `${p.size} ` : ''}${p.from} → ${p.to}` }))) : null;
   const notes = b.notes.length ? sideBox('From the managers', b.notes.map((n) => h('div', { class: 'floor-note' }, h('div', { text: n.body }), n.by ? h('div', { class: 'small muted', text: n.by }) : null))) : null;
 
-  const body = h('div', { class: 'floor-board' }, h('div', { class: 'floor-main' }, knowBox), h('aside', { class: 'floor-side' }, gelato, b.lookup.wines.length ? pairingFinder(b) : null, notes, special, newBox));
+  // The counter takes the takeout orders and the host decides on walk-ins: both see the dough count.
+  const dough = b.post.kind === 'counter' || b.post.kind === 'host' ? doughWidget({ canEdit: manager }) : null;
+  const body = h('div', { class: 'floor-board' }, h('div', { class: 'floor-main' }, dough, knowBox), h('aside', { class: 'floor-side' }, gelato, b.lookup.wines.length ? pairingFinder(b) : null, notes, special, newBox));
   if (inShell) show(shell(ctx.me, 'floor', [head, body]));
   else show(h('div', { class: 'floor' }, head, body));
 

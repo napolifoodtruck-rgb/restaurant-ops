@@ -39,6 +39,7 @@ import { createHash } from 'node:crypto';
 import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { loadOnlineMenu, loadOrderPage, loadPause, loadWindows, localNow } from './online.ts';
+import { takeoutOut } from './dough.ts';
 import type { CatalogObject } from '../core/onlineMenu.ts';
 import { CartError, priceCart, publicMenu, stockProblem, tipProblem, type CartLine, type CartLineIn } from '../core/onlineCart.ts';
 import { fitOrder, fittingWindows, isWindowStart } from '../core/pickupWindows.ts';
@@ -260,13 +261,15 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       const windows = await loadWindows(db, r.id, now.date);
       const fit = fitOrder(windows, 1, now.time);
       const pause = await loadPause(db, r.id, r.timezone);
+      // Takeout pizzas all sold for tonight (the kitchen's count): closed like a pause for the night, until the kitchen adds some.
+      const takeout = ready && fit.kind !== 'closed' && !pause ? await takeoutOut(db, r.id, now.date, r.timezone, ready) : { out: false };
       return send(res, 200, {
         restaurant: r.name,
         today: now.date,
         now: now.time,
-        open: Boolean(ready) && fit.kind !== 'closed' && !pause,
+        open: Boolean(ready) && fit.kind !== 'closed' && !pause && !takeout.out,
         // Paused for a busy spell: back at that time, or not again tonight.
-        paused: pause ? { until: pause.tonight ? null : { starts: pause.untilTime, label: clock(pause.untilTime) }, ...(pause.off ? { off: true } : {}) } : null,
+        paused: pause ? { until: pause.tonight ? null : { starts: pause.untilTime, label: clock(pause.untilTime) }, ...(pause.off ? { off: true } : {}) } : takeout.out ? { until: null, soldOut: true } : null,
         items: publicMenu(menu),
         // The page's header photo and its line of text, as set on the Online screen.
         page: await loadOrderPage(db, r.id),
@@ -325,6 +328,14 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       if (typeof b.replaces === 'string' && ID.test(b.replaces)) await release(b.replaces);
       await noticeRefunds(r.id, now.date);
       const windows = await loadWindows(db, r.id, now.date);
+      // The kitchen's takeout number for tonight: none left, or fewer than this order. Online orders taken since Square was last read count too.
+      const takeout = await takeoutOut(db, r.id, now.date, r.timezone, ready);
+      if (takeout.out) throw new HttpError(409, 'Sorry, we’ve sold all our takeout pizzas for tonight.');
+      if (takeout.left !== undefined && takeout.asOf) {
+        const since = Number((await db.query<{ pizzas: string | null }>("SELECT sum(pizzas)::text AS pizzas FROM online_orders WHERE restaurant_id = $1 AND day = $2 AND created_at > $3 AND (status = 'paid' OR (status = 'held' AND hold_until > now()))", [r.id, now.date, takeout.asOf])).rows[0]?.pizzas ?? 0);
+        const left = Math.max(0, takeout.left - since);
+        if (cart.pizzas > left) throw new HttpError(409, left === 0 ? 'Sorry, we’ve sold all our takeout pizzas for tonight.' : `Sorry, we only have ${left} takeout ${left === 1 ? 'pizza' : 'pizzas'} left tonight. Take some off, or call us.`);
+      }
       const fit = fitOrder(windows, cart.pizzas, now.time);
       if (fit.kind === 'tooBig') throw new HttpError(409, `That’s more pizzas than we can make for one pickup online (${fit.mostAnyWindowTakes} at most). Please call us and we’ll sort it out.`);
       if (fit.kind !== 'fits') throw new HttpError(409, 'Sorry, we’re full for online orders tonight.');
