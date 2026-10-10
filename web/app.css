@@ -1486,3 +1486,8 @@ input[type=search]:not(.floor-search):not(.search) { height: 48px; border: 1px s
 section[aria-label="Email inbox"] .list.compact > div { flex-wrap: wrap; }
 section[aria-label="Email inbox"] .grow { min-width: 0; overflow-wrap: anywhere; }
 section[aria-label="Email inbox"] input[type=text] { width: 100%; }
+
+/* Today: Capture an invoice, big and first on a phone. */
+.capture-bar { margin: 4px 0 14px; }
+.capture-btn { font-size: 1.05rem; padding: 14px 22px; min-height: 52px; }
+@media (max-width: 700px) { .capture-btn { width: 100%; font-size: 1.15rem; min-height: 60px; } }

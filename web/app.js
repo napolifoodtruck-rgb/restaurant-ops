@@ -4463,6 +4463,7 @@ async function todayScreen(me, filter = 'all') {
       h('header', { class: 'row wrap' },
         h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${longDay(t.today)} · ${me.restaurantName}` }), h('h1', { text: 'Today' }), h('div', { class: 'sub', text: sub })),
         h('div', { class: 'row wrap' }, sides)),
+      atLeast(me.roleLevel, 'manager') ? captureButton(me) : null,
       pauseBar,
       page([h('div', { class: 'row wrap todo-head' }, h('h2', { class: 'grow', text: 'To do' })),
         h('section', { class: 'todos', 'aria-label': 'To do' }, sections.length ? sections : h('div', { class: 'card small muted', text: asleep.length ? 'All clear, apart from what’s snoozed.' : 'All clear.' }), asleepBox)],
@@ -4494,6 +4495,7 @@ async function todayScreen(me, filter = 'all') {
         h('div', { class: 'grow' }, h('div', { class: 'kicker', text: `${longDay(t.today)} · ${me.restaurantName}` }), h('h1', { text: 'Today' }),
           h('div', { class: 'sub', text: fixes.length ? `${fixes.length} thing${fixes.length === 1 ? '' : 's'} need${fixes.length === 1 ? 's' : ''} fixing or an answer, the biggest first.` : 'Nothing needs fixing. The system’s running clean.' })),
         h('div', { class: 'row wrap' }, sides)),
+      atLeast(me.roleLevel, 'manager') ? captureButton(me) : null,
       pauseBar,
       todayTiles(me, t, side, routine, go),
       page([h('div', { class: 'row wrap todo-head' }, h('h2', { class: 'grow', text: 'Needs attention' })),
@@ -5867,12 +5869,41 @@ function compareCard() {
   return box;
 }
 
+/**
+ * Today's "Capture an invoice": the camera opens straight away (on a phone), then the pages are
+ * checked for blur, more can be added, and Read it sends them to be read and checked.
+ */
+function captureButton(me) {
+  const picker = h('input', { type: 'file', accept: 'image/*,application/pdf', capture: 'environment', multiple: true, hidden: true, 'aria-label': 'Invoice photo' });
+  const err = h('div', { class: 'error small' });
+  const btn = h('button', { class: 'btn dark capture-btn', type: 'button', text: '📷 Capture an invoice', onclick: () => { err.textContent = ''; picker.click(); } });
+  picker.addEventListener('change', async () => {
+    const files = [...picker.files];
+    picker.value = '';
+    if (!files.length) return;
+    busy(btn, true);
+    const pages = [];
+    for (const f of files) { try { pages.push(await shrinkPhoto(f)); } catch { err.textContent = `Couldn’t open ${f.name}.`; } }
+    busy(btn, false);
+    if (pages.length) captureScreen(me, pages);
+  });
+  return h('div', { class: 'capture-bar' }, btn, picker, err);
+}
+
+function captureScreen(me, pages) {
+  show(shell(me, 'today', [
+    h('header', { class: 'row wrap' }, h('div', { class: 'grow' },
+      h('button', { class: 'link', text: '← Today', onclick: () => todayScreen(me) }), h('h1', { text: 'Capture an invoice' }))),
+    page([photoCard(me, true, { pages, title: 'Pages' })]),
+  ]));
+}
+
 /** Photograph an invoice: one or more pages, then the app reads it. */
-function photoCard(me, connected) {
-  const pages = [];
+function photoCard(me, connected, opts = {}) {
+  const pages = [...(opts.pages ?? [])];
   const thumbs = h('div', { class: 'scan-thumbs' });
   const err = h('div', { class: 'error' });
-  const read = h('button', { class: 'btn primary', text: 'Read it', disabled: true });
+  const read = h('button', { class: 'btn primary dark', text: 'Read it', disabled: true });
   const picker = h('input', { type: 'file', accept: 'image/*,application/pdf', capture: 'environment', multiple: true, hidden: true, 'aria-label': 'Invoice photo' });
   const draw = () => {
     const blurry = (p) => p.sharpness !== undefined && p.sharpness < BLURRY;
@@ -5908,8 +5939,9 @@ function photoCard(me, connected) {
     if (!res.ok) return (err.textContent = res.data.error ?? 'That didn’t send.');
     scanScreen(me, res.data.id);
   };
+  if (pages.length) draw();
   return h('section', { class: 'card' },
-    h('h2', { text: 'From a photo' }),
+    h('h2', { text: opts.title ?? 'From a photo' }),
     h('div', { class: 'small muted', text: connected ? 'Take a photo of each page (or pick a PDF). The app reads the lines and matches them to your ingredients; you check them beside the photo before anything is priced.' : 'The invoice reader isn’t connected yet: add ANTHROPIC_API_KEY in Render’s settings. You can still type invoices in below.' }),
     thumbs, err, h('div', { class: 'row wrap' }, take, read), picker);
 }
