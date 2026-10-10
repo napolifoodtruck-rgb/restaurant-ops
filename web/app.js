@@ -2585,6 +2585,24 @@ async function orderPageCard() {
  * with, and the takeout pizzas it sells. Each night starts from these on its own; the kitchen adjusts
  * them during service whenever the real count differs. At zero takeout, online ordering stops.
  */
+/**
+ * How long an online order takes to make, every night: no pickup sooner than this from now. The
+ * kitchen can change it on its board for the night; the next day starts from this again.
+ */
+function leadCard() {
+  const box = h('section', { class: 'card', 'aria-label': 'How long an online order takes' }, h('h2', { text: 'How long an order takes' }));
+  const draw = (d) => {
+    const pick = h('select', { 'aria-label': 'Minutes' }, Array.from({ length: 24 }, (_, i) => (i + 1) * 5).map((m) => h('option', { value: String(m), text: `${m} minutes`, selected: m === d.standard ? true : undefined })));
+    const err = h('span', { class: 'error small' });
+    pick.addEventListener('change', async () => { const r = await api('POST', '/api/online/lead', { minutes: Number(pick.value) }); if (r.ok) draw(r.data); else err.textContent = r.data.error ?? 'Not saved.'; });
+    fill(box, h('h2', { text: 'How long an order takes' }),
+      h('div', { class: 'row wrap' }, h('span', { class: 'small strong', text: 'Ready in' }), pick, err),
+      h('div', { class: 'small muted', text: `No online pickup sooner than this from now. The kitchen can change it on its board for the night (−5 / +5); the next day starts again from here.${d.tonight ? ` Tonight it’s ${d.tonight} minutes.` : ''}` }));
+  };
+  api('GET', '/api/online/lead').then((r) => { if (r.ok) draw(r.data); else fill(box, h('h2', { text: 'How long an order takes' }), h('div', { class: 'error small', text: r.data.error ?? 'Couldn’t load.' })); });
+  return box;
+}
+
 /** Dough comes in trays of this many balls: typed in trays, counted in balls. */
 const PER_TRAY = 8;
 /** 35 → "4 trays + 3". */
@@ -7407,7 +7425,8 @@ function onlineWidget({ canChange = false } = {}) {
       h('div', { class: 'online-lead' }, h('span', { class: 'small muted strong', text: 'Ready in' }), h('b', { class: 'online-lead-n', text: `${o.leadMinutes ?? 20} min` }),
         canChange ? [h('button', { class: 'btn lead-btn', text: '−5', 'aria-label': 'Five minutes less', disabled: (o.leadMinutes ?? 20) <= 5 ? true : undefined, onclick: (e) => act(e.currentTarget, { leadMinutes: (o.leadMinutes ?? 20) - 5 }) }),
           h('button', { class: 'btn lead-btn', text: '+5', 'aria-label': 'Five minutes more', disabled: (o.leadMinutes ?? 20) >= 120 ? true : undefined, onclick: (e) => act(e.currentTarget, { leadMinutes: (o.leadMinutes ?? 20) + 5 }) })] : null,
-        h('span', { class: 'small muted', text: 'No online pickup sooner than this from now.' })),
+        o.leadChanged ? h('button', { class: 'link small', text: `Back to ${o.leadDefault} min`, onclick: (e) => act(e.currentTarget, { leadMinutes: null }) }) : null,
+        h('span', { class: 'small muted', text: o.leadChanged ? `Tonight only: usually ${o.leadDefault} min, back to it tomorrow. No online pickup sooner than this from now.` : 'No online pickup sooner than this from now.' })),
       canChange ? h('div', { class: 'online-actions' },
         p ? big(p.off || p.tonight ? 'Turn back on' : 'Resume now', { resume: true }, 'dark')
           : o.takingOrders && !o.takeoutOut ? [big('Pause 15 min', { minutes: 15 }), big('Pause 30 min', { minutes: 30 }), big('Pause 1 hour', { minutes: 60 }),
@@ -7930,9 +7949,9 @@ async function floorManage(me) {
  * online ordering (pickup windows, the order page, turning it off). What's sold online is a version
  * of the menu, so it stays in Menu, a link away.
  */
-let floorSettingsPart = 'posts';
+let floorSettingsPart = 'online';
 async function floorSettingsTab(me, d, reload) {
-  const PARTS = [['posts', 'Posts, iPads & checklists'], ['boards', 'Boards'], ['dough', 'Dough & takeout'], ['online', 'Online ordering']];
+  const PARTS = [['online', 'Online ordering'], ['posts', 'Posts, iPads & checklists'], ['boards', 'Boards'], ['dough', 'Dough & takeout']];
   const nav = h('div', { class: 'chips-row', role: 'tablist', 'aria-label': 'Settings' }, PARTS.map(([k, label]) =>
     h('button', { class: `chip${floorSettingsPart === k ? ' on' : ''}`, role: 'tab', 'aria-selected': String(floorSettingsPart === k), text: label, onclick: () => { floorSettingsPart = k; floorManage(me); } })));
   if (floorSettingsPart === 'dough') return [nav, page([takeoutNumbersCard()], [])];
@@ -7941,7 +7960,7 @@ async function floorSettingsTab(me, d, reload) {
     const toMenu = sideBox('Items sold online', h('div', { class: 'small muted', text: 'Which dishes are online, in what order, and what counts as a pizza: a version of the menu, so it lives in Menu.' }),
       sideActions(h('button', { class: 'btn small-btn', text: 'Open in Menu', onclick: () => { me.side = 'kitchen'; remember('menuChip:kitchen', 'online'); menuScreen(me); } })));
     // What changes night to night first; the order page's look and words, changed rarely, at the bottom.
-    return [nav, page([onlinePauseBar(), await pickupWindowsCard(me), await orderPageCard()], [toMenu])];
+    return [nav, page([onlinePauseBar(), leadCard(), await pickupWindowsCard(me), await orderPageCard()], [toMenu])];
   }
   return [nav, floorSetupTab(d, reload)];
 }

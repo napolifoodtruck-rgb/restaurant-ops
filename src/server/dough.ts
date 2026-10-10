@@ -22,7 +22,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast } from './auth.ts';
-import { onlineStatus, setLeadMinutes, setOnlinePause } from './online.ts';
+import { onlineStatus, setLeadTonight, setOnlinePause } from './online.ts';
 import type { FloorContext } from './floor.ts';
 import { getModel } from './model.ts';
 import { usesRecipe } from '../core/allergens.ts';
@@ -259,7 +259,7 @@ export async function doughRoutes(db: Db, req: IncomingMessage, res: ServerRespo
       if (!(await boardMayChange(db, ctx, ['kitchen', 'counter', 'host']))) throw new HttpError(401, 'Sign in to pause online orders.');
       const b = await body(req);
       // How long an order takes to make (the kitchen's call, when it's slammed), or a pause.
-      if ('leadMinutes' in b) await setLeadMinutes(db, rid, b.leadMinutes);
+      if ('leadMinutes' in b) await setLeadTonight(db, rid, today, b.leadMinutes);
       else await setOnlinePause(db, rid, timezone, b, ctx.who?.staffId ?? null);
     } else if (method !== 'GET') throw new HttpError(404, 'Not found.');
     const takeout = await takeoutOut(db, rid, today, timezone, square);

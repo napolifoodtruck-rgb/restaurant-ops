@@ -180,7 +180,16 @@ test('the dough count', { skip: !db && 'no PostgreSQL for tests (or running as r
   assert.equal((await call('GET', '/api/floor/online', { cookies: patioIpad })).status, 200, 'but it can see them');
   // How long an order takes to make: the kitchen changes it from the widget, in fives.
   assert.equal((await call('GET', '/api/floor/online', { cookies: kitchenIpad })).json.leadMinutes, 20);
-  assert.equal((await call('POST', '/api/floor/online', { cookies: kitchenIpad, body: { leadMinutes: 35 } })).json.leadMinutes, 35);
+  const changed = (await call('POST', '/api/floor/online', { cookies: kitchenIpad, body: { leadMinutes: 35 } })).json;
+  assert.deepEqual([changed.leadMinutes, changed.leadDefault, changed.leadChanged], [35, 20, true], 'tonight only');
+  // The default (Online ordering settings) is managers'; the board's change is for tonight, until set back.
+  assert.equal((await call('POST', '/api/online/lead', { cookies: owner, body: { minutes: 25 } })).json.standard, 25);
+  assert.equal((await call('GET', '/api/floor/online', { cookies: kitchenIpad })).json.leadMinutes, 35);
+  const back = (await call('POST', '/api/floor/online', { cookies: kitchenIpad, body: { leadMinutes: null } })).json;
+  assert.deepEqual([back.leadMinutes, back.leadChanged], [25, false]);
+  // Tomorrow starts from the default again.
+  await db!.query("UPDATE restaurants SET online_lead_tonight = 40, online_lead_day = current_date - 1");
+  assert.equal((await call('GET', '/api/floor/online', { cookies: kitchenIpad })).json.leadMinutes, 25);
   assert.equal((await call('POST', '/api/floor/online', { cookies: kitchenIpad, body: { leadMinutes: 33 } })).status, 400);
   assert.equal((await call('POST', '/api/floor/online', { cookies: patioIpad, body: { leadMinutes: 40 } })).status, 401);
 

@@ -156,30 +156,53 @@ export async function setOnlinePause(db: Db, restaurantId: string, timezone: str
   [restaurantId, b.tonight === true, now.date, timezone, b.tonight === true || b.off === true ? 0 : b.minutes, staffId, b.off === true]);
 }
 
-/** How long an online order takes to make, in minutes: no pickup sooner than this from now. */
-export async function leadMinutes(db: Db, restaurantId: string): Promise<number> {
-  return (await db.query<{ m: number }>('SELECT online_lead_minutes AS m FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.m ?? 20;
+/**
+ * How long an online order takes to make, in minutes: no pickup sooner than this from now. Tonight's,
+ * when a board changed it today; else the default from Online ordering settings.
+ */
+export async function leadInfo(db: Db, restaurantId: string, today: string): Promise<{ minutes: number; standard: number; changed: boolean }> {
+  const r = (await db.query<{ standard: number; tonight: number | null; day: string | null }>('SELECT online_lead_minutes AS standard, online_lead_tonight AS tonight, online_lead_day::text AS day FROM restaurants WHERE id = $1', [restaurantId])).rows[0];
+  const standard = r?.standard ?? 20, changed = Boolean(r?.tonight && r.day === today);
+  return { minutes: changed ? r!.tonight! : standard, standard, changed };
+}
+export async function leadMinutes(db: Db, restaurantId: string, today: string): Promise<number> {
+  return (await leadInfo(db, restaurantId, today)).minutes;
 }
 export const LEAD_STEPS = { min: 5, max: 120 };
-/** Sets it, in 5-minute steps between 5 minutes and 2 hours. */
-export async function setLeadMinutes(db: Db, restaurantId: string, minutes: unknown): Promise<number> {
+const checkLead = (minutes: unknown) => {
   const m = Number(minutes);
   if (!Number.isInteger(m) || m < LEAD_STEPS.min || m > LEAD_STEPS.max || m % 5) throw new HttpError(400, `Between ${LEAD_STEPS.min} and ${LEAD_STEPS.max} minutes, in fives.`);
-  await db.query('UPDATE restaurants SET online_lead_minutes = $2 WHERE id = $1', [restaurantId, m]);
   return m;
+};
+/** Tonight only (from a board): tomorrow starts from the default again. `null` goes back to the default now. */
+export async function setLeadTonight(db: Db, restaurantId: string, today: string, minutes: unknown): Promise<void> {
+  if (minutes === null) { await db.query('UPDATE restaurants SET online_lead_tonight = NULL, online_lead_day = NULL WHERE id = $1', [restaurantId]); return; }
+  await db.query('UPDATE restaurants SET online_lead_tonight = $2, online_lead_day = $3 WHERE id = $1', [restaurantId, checkLead(minutes), today]);
+}
+/** The default, every night (Online ordering settings). */
+export async function setLeadDefault(db: Db, restaurantId: string, minutes: unknown): Promise<void> {
+  await db.query('UPDATE restaurants SET online_lead_minutes = $2 WHERE id = $1', [restaurantId, checkLead(minutes)]);
 }
 
 /** Whether online orders are paused, whether any are being taken tonight, and how long one takes to make. */
 export async function onlineStatus(db: Db, restaurantId: string, timezone: string) {
   const now = localNow(timezone);
-  const [windows, lead] = await Promise.all([loadWindows(db, restaurantId, now.date), leadMinutes(db, restaurantId)]);
-  return { now: now.time, paused: (await loadPause(db, restaurantId, timezone)) ?? null, takingOrders: windows.some((w) => stillOpen(w, now.time, lead)), leadMinutes: lead };
+  const [windows, lead] = await Promise.all([loadWindows(db, restaurantId, now.date), leadInfo(db, restaurantId, now.date)]);
+  return { now: now.time, paused: (await loadPause(db, restaurantId, timezone)) ?? null, takingOrders: windows.some((w) => stillOpen(w, now.time, lead.minutes)), leadMinutes: lead.minutes, leadDefault: lead.standard, leadChanged: lead.changed };
 }
 
 export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResponse, path: string, url: URL, who: SignedIn, timezone: string): Promise<boolean> {
   if (!path.startsWith('/api/online/')) return false;
   const method = req.method ?? 'GET';
   const now = localNow(timezone);
+
+  // How long an order takes to make, by default every night (managers, Online ordering settings).
+  if (path === '/api/online/lead') {
+    if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');
+    if (method === 'POST') await setLeadDefault(db, who.restaurantId, (await body(req)).minutes);
+    const l = await leadInfo(db, who.restaurantId, now.date);
+    return send(res, 200, { standard: l.standard, tonight: l.changed ? l.minutes : null }), true;
+  }
 
   // Anyone on shift can pause: it's the cooks who see the slam coming.
   if (path === '/api/online/pause') {
