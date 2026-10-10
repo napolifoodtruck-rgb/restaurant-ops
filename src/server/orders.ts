@@ -3,6 +3,8 @@
  * then copies, emails or prints it and marks it sent.
  *
  *   GET  /api/orders?area=kitchen|bar|both        vendors: delivery days, next delivery, when the order's due, its status
+ *   GET  /api/orders/vendors                   every vendor bought from: schedule, how they take orders, 90 days' spend
+ *   GET  /api/orders/vendors/:vendorId         one vendor: settings, what's bought there, latest invoices
  *   GET  /api/orders/vendor/:vendorId          the order for the next delivery (a fresh draft if there isn't one)
  *   POST /api/orders/vendor/:vendorId          { delivery, lines: [{ productId, packs, onHand? }], note? }  save the draft
  *   POST /api/orders/vendor/:vendorId/settings { weekdays?, cutoffDaysBefore?, cutoffTime?, method?, contact?, minimum?, active? }
@@ -156,6 +158,54 @@ export async function orderRoutes(db: Db, req: IncomingMessage, res: ServerRespo
   const today = local.date;
   const nowParts = new Intl.DateTimeFormat('en-GB', { timeZone: tz?.timezone ?? 'America/New_York', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
   let m: RegExpMatchArray | null;
+
+  // Every vendor you've bought from: how often, how much, how they take orders. For Orders & invoices → Vendors.
+  if (method === 'GET' && path === '/api/orders/vendors') {
+    const data = await orderingData(db, who, today);
+    const all = data.model.purchasing.invoices.filter((i) => i.vendorExternalId && i.invoiceDate && !i.isCredit);
+    const ids = new Set([...all.map((i) => i.vendorExternalId!), ...data.settings.keys()]);
+    const since = addDays(today, -90);
+    const vendors = [...ids].map((vendorId) => {
+      const mine = all.filter((i) => i.vendorExternalId === vendorId);
+      const recent = mine.filter((i) => i.invoiceDate!.slice(0, 10) > since);
+      const schedule = data.scheduleOf(vendorId), s = data.settings.get(vendorId);
+      return { vendorId, name: vendorName(data, vendorId), side: mine.length ? sideOf(data, vendorId) : null,
+        weekdays: schedule?.weekdays ?? [], source: schedule?.source ?? null, ...(schedule?.cutoff ? { cutoff: schedule.cutoff } : {}),
+        method: s?.method ?? null, contact: s?.contact ?? null, active: s?.active ?? true,
+        lastInvoice: mine.map((i) => i.invoiceDate!.slice(0, 10)).sort().at(-1) ?? null,
+        invoices90: recent.length, spent90: money(recent.reduce((a, i) => a + i.total, 0)) };
+    }).sort((a, b) => b.spent90 - a.spent90 || (b.lastInvoice ?? '').localeCompare(a.lastInvoice ?? '') || a.name.localeCompare(b.name));
+    return send(res, 200, { vendors }), true;
+  }
+
+  // One vendor: its settings (as Orders keeps them), what you buy there, its latest invoices.
+  if (method === 'GET' && (m = path.match(/^\/api\/orders\/vendors\/([^/]+)$/))) {
+    const vendorId = decodeURIComponent(m[1]!);
+    const data = await orderingData(db, who, today);
+    const mine = data.model.purchasing.invoices.filter((i) => i.vendorExternalId === vendorId && i.invoiceDate).sort((a, b) => b.invoiceDate!.localeCompare(a.invoiceDate!));
+    const s = data.settings.get(vendorId);
+    if (!mine.length && !s) throw new HttpError(404, 'No vendor by that id.');
+    const schedule = data.scheduleOf(vendorId), learned = data.learned.get(vendorId);
+    const since = addDays(today, -90);
+    // What you buy there: each ingredient's latest pack price, and the last 90 days' spend.
+    const byProduct = new Map<string, { productId: string; name: string; spent90: number; last: { date: string; price: number; pack: string } }>();
+    for (const p of data.model.purchasing.prices.filter((x) => x.vendorExternalId === vendorId)) {
+      const name = data.products.get(p.productExternalId)?.name ?? p.productExternalId;
+      const e = byProduct.get(p.productExternalId) ?? { productId: p.productExternalId, name, spent90: 0, last: { date: '', price: 0, pack: '' } };
+      if (p.date.slice(0, 10) > since) e.spent90 += p.price * p.quantity;
+      if (p.date >= e.last.date) e.last = { date: p.date.slice(0, 10), price: money(p.price), pack: `${+p.per.amount.toFixed(3)} ${p.per.unit}` };
+      byProduct.set(p.productExternalId, e);
+    }
+    const sources = data.model.invoiceSources;
+    return send(res, 200, {
+      vendor: { vendorId, name: vendorName(data, vendorId), side: mine.length ? sideOf(data, vendorId) : null,
+        weekdays: schedule?.weekdays ?? [], source: schedule?.source ?? null, learned: learned?.weekdays ?? [], ...(schedule?.cutoff ? { cutoff: schedule.cutoff } : {}),
+        method: s?.method ?? null, contact: s?.contact ?? null, minimum: s?.minimum ? Number(s.minimum) : null, active: s?.active ?? true, ordering: Boolean(schedule?.weekdays.length) },
+      spent90: money(mine.filter((i) => i.invoiceDate!.slice(0, 10) > since && !i.isCredit).reduce((a, i) => a + i.total, 0)),
+      items: [...byProduct.values()].map((e) => ({ ...e, spent90: money(e.spent90) })).sort((a, b) => b.spent90 - a.spent90 || b.last.date.localeCompare(a.last.date)).slice(0, 40),
+      invoices: mine.slice(0, 20).map((i) => ({ date: i.invoiceDate!.slice(0, 10), number: i.invoiceNumber ?? null, total: money(i.total), credit: i.isCredit, lines: i.lines.length, source: sources.get(i.externalId) ?? 'marginedge' })),
+    }), true;
+  }
 
   if (method === 'GET' && path === '/api/orders') {
     const data = await orderingData(db, who, today);

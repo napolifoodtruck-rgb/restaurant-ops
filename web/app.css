@@ -1592,3 +1592,21 @@ section[aria-label="Email inbox"] input[type=text] { width: 100%; }
 /* The colour label and the tags sit under the printed line, on the left. */
 .scan-line .scan-read .scan-conf { margin: 4px 0 2px; }
 .scan-line .scan-read .scan-flags { margin-top: 2px; }
+
+/* In a row header the button sits with the toggles, the same height. */
+header.row > .capture-bar { margin: 0; align-self: center; }
+
+/* Vendors list and a vendor's items */
+.ven-list, .ven-items { display: grid; }
+.ven-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1.3fr) minmax(0, 1.3fr) 110px 110px; gap: 12px; align-items: baseline; padding: 10px 4px; border: 0; border-top: 1px solid var(--line); background: none; font: inherit; font-size: 14px; text-align: left; cursor: pointer; }
+.ven-item { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr) 110px 110px; gap: 12px; align-items: baseline; padding: 8px 4px; border: 0; border-top: 1px solid var(--line); background: none; font: inherit; font-size: 14px; text-align: left; cursor: pointer; }
+.ven-row:hover, .ven-item:hover { background: rgba(0,0,0,.03); }
+.ven-row.ven-head, .ven-item.ven-head { cursor: default; border-top: 0; font-size: 12px; }
+.ven-row.ven-head:hover, .ven-item.ven-head:hover { background: none; }
+.ven-row .num, .ven-item .num { text-align: right; }
+.ven-row .tag { margin-left: 4px; }
+@media (max-width: 700px) {
+  .ven-row { grid-template-columns: minmax(0, 1fr) auto; } .ven-row > :nth-child(2), .ven-row > :nth-child(4) { grid-column: 1 / -1; } .ven-row > :nth-child(3) { display: none; } .ven-row > .num { grid-row: 1; grid-column: 2; }
+  .ven-row.ven-head > :not(:first-child):not(.num) { display: none; }
+  .ven-item { grid-template-columns: minmax(0, 1fr) auto; } .ven-item > :nth-child(3) { display: none; } .ven-item > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; font-size: 12px; } .ven-item > .num { grid-row: 1; grid-column: 2; }
+}

@@ -417,7 +417,9 @@ function shell(me, active, content) {
   // beside Both / Kitchen / Bar; on a phone it's the corner button).
   if (manager && active !== 'today' && active !== 'capture') {
     const head = [content].flat(Infinity).find((x) => x instanceof HTMLElement && x.tagName === 'HEADER');
-    if (head && !head.querySelector('.capture-bar')) { head.classList.add('has-capture'); head.append(captureButton(me)); }
+    // A header that's already a row (a title, then toggles on the right): the button joins the row, after
+    // the toggles, lined up with them. Any other header makes room at its top right.
+    if (head && !head.querySelector('.capture-bar')) head.classList.contains('row') ? head.append(captureButton(me)) : (head.classList.add('has-capture'), head.append(captureButton(me)));
   }
   return h('div', { class: 'shell', 'data-active': active },
     h('nav', { class: 'rail', 'aria-label': 'Main' },
@@ -2939,7 +2941,59 @@ function sectionTabs(tabs, on) {
     h('button', { class: key === on ? 'on' : '', 'aria-current': key === on ? 'page' : undefined, onclick: go }, label, count ? h('span', { class: 'count-badge', text: String(count) }) : null)));
 }
 const recipeTabs = (me, on) => sectionTabs([['recipes', 'Recipes', () => recipesScreen(me)], ['ingredients', 'Ingredients', () => ingredientsScreen(me)]], on);
-const orderTabs = (me, on) => sectionTabs([['orders', 'Orders', () => ordersScreen(me)], ['invoices', 'Invoices', () => invoicesScreen(me), invoicesWaiting.n]], on);
+const orderTabs = (me, on) => sectionTabs([['orders', 'Orders', () => ordersScreen(me)], ['invoices', 'Invoices', () => invoicesScreen(me), invoicesWaiting.n], ['vendors', 'Vendors', () => vendorsScreen(me)]], on);
+
+/**
+ * Every vendor you've bought from, most spent first: kitchen or bar, when they deliver, how they take
+ * orders, the last invoice, and 90 days' spend. One opens its page.
+ */
+async function vendorsScreen(me) {
+  loadingScreen(me, 'orders', 'Vendors');
+  const r = await api('GET', '/api/orders/vendors');
+  const head = h('header', {}, h('div', { class: 'kicker', text: 'Orders & invoices' }), h('h1', { text: 'Vendors' }),
+    h('div', { class: 'sub', text: 'Everyone you buy from, by their invoices: most spent first.' }));
+  if (!r.ok) return show(shell(me, 'orders', [head, orderTabs(me, 'vendors'), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const vendors = r.data.vendors;
+  const days = (v) => (v.weekdays.length ? `${v.weekdays.map((d) => WD[d]).join(', ')}${v.source === 'confirmed' ? '' : ' (from invoices)'}` : 'No regular days');
+  const rows = vendors.map((v) => h('button', { class: 'ven-row', onclick: () => vendorScreen(me, v.vendorId) },
+    h('span', {}, h('span', { class: 'strong', text: v.name }), ' ', v.side ? h('span', { class: 'tag', text: AREA_NAMES[v.side] }) : null, v.active ? null : h('span', { class: 'tag warn', text: 'Not ordering' })),
+    h('span', { class: 'small', text: days(v) }),
+    h('span', { class: 'small muted', text: v.method ? `${v.method[0].toUpperCase()}${v.method.slice(1)}${v.contact ? ` · ${v.contact}` : ''}` : '–' }),
+    h('span', { class: 'small muted', text: v.lastInvoice ? dateWithYear(v.lastInvoice) : '–' }),
+    h('span', { class: 'num', text: v.spent90 ? dollars(v.spent90) : '–' })));
+  show(shell(me, 'orders', [head, orderTabs(me, 'vendors'),
+    page([h('section', { class: 'card' }, h('div', { class: 'ven-list' },
+      h('div', { class: 'ven-row ven-head small muted' }, h('span', { text: 'Vendor' }), h('span', { text: 'Delivers' }), h('span', { text: 'Takes orders by' }), h('span', { text: 'Last invoice' }), h('span', { class: 'num', text: 'Spent, 90 days' })),
+      rows.length ? rows : h('div', { class: 'small muted', text: 'No vendors yet: they come with the first invoices.' })))]),
+  ]));
+}
+
+/** One vendor: what you buy there and at what price, its latest invoices, and its ordering settings. */
+async function vendorScreen(me, vendorId) {
+  loadingScreen(me, 'orders', 'Vendor');
+  const r = await api('GET', `/api/orders/vendors/${encodeURIComponent(vendorId)}`);
+  if (!r.ok) return show(shell(me, 'orders', [h('h1', { text: 'Vendor' }), orderTabs(me, 'vendors'), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
+  const d = r.data, v = d.vendor;
+  const items = h('section', { class: 'card' }, h('h2', { text: 'What you buy here' }),
+    d.items.length ? h('div', { class: 'ven-items' },
+      h('div', { class: 'ven-item ven-head small muted' }, h('span', { text: 'Ingredient' }), h('span', { text: 'Last price' }), h('span', { text: 'Last bought' }), h('span', { class: 'num', text: 'Spent, 90 days' })),
+      d.items.map((i) => h('button', { class: 'ven-item', onclick: () => recipeTree(me, [{ kind: 'product', id: i.productId, name: i.name }]) },
+        h('span', { class: 'strong', text: i.name }), h('span', { text: `${dollars(i.last.price, { cents: true })} / ${i.last.pack}` }),
+        h('span', { class: 'muted', text: dateWithYear(i.last.date) }), h('span', { class: 'num', text: i.spent90 ? dollars(i.spent90) : '–' }))))
+      : h('div', { class: 'small muted', text: 'Nothing matched to an ingredient yet.' }));
+  const invoices = h('section', { class: 'card' }, h('h2', { text: 'Latest invoices' }),
+    h('div', { class: 'list compact' }, d.invoices.map((i) => h('div', {},
+      h('span', { class: 'grow', text: `${dateWithYear(i.date)}${i.number ? ` · #${i.number}` : ''}${i.credit ? ' · credit' : ''}` }),
+      h('span', { class: 'small muted', text: `${i.lines} line${i.lines === 1 ? '' : 's'} · ${i.source === 'marginedge' ? 'MarginEdge' : i.source === 'photo' ? 'photo or email' : i.source}` }),
+      h('b', { text: dollars(i.total, { cents: true }) })))));
+  const stats = statBox('Spent, last 90 days', dollars(d.spent90), h('div', { class: 'small muted', text: v.weekdays.length ? `Delivers ${v.weekdays.map((x) => WD[x]).join(', ')}${v.source === 'confirmed' ? '' : ' (from invoices)'}` : 'No regular delivery days.' }),
+    v.ordering ? sideActions(h('button', { class: 'btn dark', text: 'Start an order', onclick: () => orderScreen(me, vendorId) })) : null);
+  show(shell(me, 'orders', [
+    h('header', {}, h('div', { class: 'kicker', text: `Orders & invoices · Vendors${v.side ? ` · ${AREA_NAMES[v.side]}` : ''}` }), h('h1', { text: v.name })),
+    orderTabs(me, 'vendors'),
+    page([items, invoices, vendorSettings(me, d, () => vendorScreen(me, vendorId))], [stats, sideBox('', sideActions(h('button', { class: 'btn', text: '← All vendors', onclick: () => vendorsScreen(me) })))]),
+  ]));
+}
 
 /** Invoices waiting for a check, for the number on Orders & invoices; asked again at most once a minute. */
 const invoicesWaiting = { n: 0, at: 0 };
@@ -4391,7 +4445,8 @@ async function todayScreen(me, filter = 'all') {
   const seq = ++todaySeq;
   loadingScreen(me, 'today', 'Today');
   const r = await api('GET', '/api/today');
-  if (seq !== todaySeq) return; // Left while it loaded (Invoice tapped, say).
+  // Left while it loaded (Invoice tapped, or another menu button): don't come up over that page.
+  if (seq !== todaySeq || (app.querySelector('.rail > button.on') && !app.querySelector('.rail > button.on[data-key="today"]'))) return;
   if (!r.ok) return show(shell(me, 'today', [h('h1', { text: 'Today' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   let t = r.data;
   // Lines just answered or snoozed stay where they were, folded up with an Undo, until you leave Today.
