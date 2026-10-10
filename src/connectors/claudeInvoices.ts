@@ -99,6 +99,7 @@ export async function readInvoice(pages: readonly ReadPage[], opts: ReaderOption
   const prompt = [
     `This is a supplier invoice for a restaurant${pages.length > 1 ? `, ${pages.length} pages in order` : ''}. Record it with record_invoice.`,
     'Copy numbers exactly as printed; do not correct or compute them. Use the quantity actually shipped or delivered.',
+    'If a line\'s printed total includes tax (a per-line tax column), record that line\'s total before tax (unit price × quantity) and the tax once, in tax.',
     'Include every product line, credits and returns as negative lines. Leave out subtotal, tax, delivery and deposit summary rows from lines (put them in their own fields).',
     'Handwritten corrections (a crossed-out quantity, "short 1", a refused item) change the line only when they are clear: then record the corrected quantity and total and say what changed in handwritten. If a mark is unclear, keep the printed numbers, set unsure, and describe the mark in notes.',
     'If two images show the same page, record its lines once and say so in notes. If a page seems to be missing (page 1 of 2 with no page 2, totals carried forward), say so in notes.',
@@ -132,5 +133,20 @@ export function cleanRead(input: any): ReadInvoice {
   if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) out.invoiceDate = date;
   for (const k of ['tax', 'delivery', 'otherCharges', 'total'] as const) { const v = num(input?.[k]); if (v !== undefined) out[k] = v; }
   if (str(input?.notes)) out.notes = str(input.notes)!;
-  return out;
+  return foldLineTax(out);
+}
+
+/**
+ * Some invoices (WebstaurantStore's) print each line's total with its tax already in, then the tax
+ * again below. When every line is its price × quantity plus a share of the tax, and those shares
+ * come to the tax, the lines are taken before tax, so the tax counts once.
+ */
+export function foldLineTax(inv: ReadInvoice): ReadInvoice {
+  const tax = inv.tax ?? 0;
+  if (!(tax > 0) || !inv.lines.length || inv.lines.some((l) => l.unitPrice === undefined || l.quantity <= 0)) return inv;
+  const cents = (v: number) => Math.round(v * 100) / 100;
+  const extra = inv.lines.map((l) => cents(l.total - l.unitPrice! * l.quantity));
+  if (extra.some((e) => e < 0) || Math.abs(extra.reduce((a, e) => a + e, 0) - tax) > 0.02) return inv;
+  return { ...inv, lines: inv.lines.map((l) => ({ ...l, total: cents(l.unitPrice! * l.quantity) })),
+    notes: [inv.notes, 'Line totals included tax: counted before tax.'].filter(Boolean).join(' ') };
 }

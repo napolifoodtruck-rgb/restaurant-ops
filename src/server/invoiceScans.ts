@@ -21,7 +21,7 @@ import { atLeast, type SignedIn } from './auth.ts';
 import { getModel, invalidate, type Model } from './model.ts';
 import { appendAppInvoiceLines, baseOf, createAppInvoice } from './appInvoices.ts';
 import { replaceMarginEdgeCopy } from './meImport.ts';
-import { readInvoice, ReaderError, type ReadInvoice, type ReadPage } from '../connectors/claudeInvoices.ts';
+import { foldLineTax, readInvoice, ReaderError, type ReadInvoice, type ReadPage } from '../connectors/claudeInvoices.ts';
 import { autoCountable, itemKey, matchInvoice, vendorKey, type Learned, type PastLine } from '../core/invoiceMatch.ts';
 import { localNow } from './online.ts';
 import { packBaseOf } from '../core/purchasing.ts';
@@ -123,7 +123,7 @@ export async function scanRoutes(db: Db, req: IncomingMessage, res: ServerRespon
   const scan = (await db.query<{ id: string; status: string; result: any; error: string | null; usage: any; invoice_id: string | null; created_at: string; pages: string }>(
     'SELECT s.id, s.status, s.result, s.error, s.usage, s.invoice_id, s.created_at::text AS created_at, (SELECT count(*) FROM invoice_scan_pages p WHERE p.scan_id = s.id)::text AS pages FROM invoice_scans s WHERE s.restaurant_id = $1 AND s.id = $2', [who.restaurantId, m[1]])).rows[0];
   if (!scan) throw new HttpError(404, 'No invoice photo by that id.');
-  const result: ReadInvoice | null = scan.result ? (typeof scan.result === 'string' ? JSON.parse(scan.result) : scan.result) : null;
+  const result: ReadInvoice | null = scan.result ? foldLineTax(typeof scan.result === 'string' ? JSON.parse(scan.result) : scan.result) : null;
 
   if (method === 'GET' && m[2] === 'page') {
     const page = (await db.query<{ media_type: string; data: Buffer }>('SELECT media_type, data FROM invoice_scan_pages WHERE scan_id = $1 AND page = $2', [scan.id, Number(m[3])])).rows[0];
@@ -232,7 +232,7 @@ export async function autoCount(db: Db, restaurantId: string, scanId: string): P
   const scan = (await db.query<{ status: string; result: any; tz: string; received: string }>(
     `SELECT s.status, s.result, r.timezone AS tz, s.created_at::text AS received FROM invoice_scans s JOIN restaurants r ON r.id = s.restaurant_id WHERE s.id = $1 AND s.restaurant_id = $2`, [scanId, restaurantId])).rows[0];
   if (!scan || scan.status !== 'read' || !scan.result) return { counted: false, why: 'Not read.' };
-  const result: ReadInvoice = typeof scan.result === 'string' ? JSON.parse(scan.result) : scan.result;
+  const result: ReadInvoice = foldLineTax(typeof scan.result === 'string' ? JSON.parse(scan.result) : scan.result);
   const today = localNow(scan.tz).date;
   const model = await getModel(db, restaurantId, today);
   const mt = await matched(db, restaurantId, model, result);

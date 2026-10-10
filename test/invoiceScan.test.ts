@@ -109,3 +109,19 @@ test('a model that won’t be made to call the tool is asked to in words', async
   assert.match(sent[1].messages[0].content.at(-1).text, /calling the record_invoice tool/);
   assert.equal(r.invoice.lines[0]!.description, 'BASIL');
 });
+
+test('line totals that already include their tax are taken before tax', () => {
+  // WebstaurantStore: $10.49 × 2 + $0.42 tax = $21.40; $4.49 × 2 + $0.18 = $9.16; tax $0.60; total $30.56.
+  const r = cleanRead({ vendor: 'WebstaurantStore', lines: [
+    { code: '102708412', description: 'Regal Whole Star Anise 7 oz.', quantity: 2, unitPrice: 10.49, total: 21.4 },
+    { code: '10207035', description: 'Regal Cinnamon Sticks 4 oz.', quantity: 2, unitPrice: 4.49, total: 9.16 }], tax: 0.6, total: 30.56 });
+  assert.deepEqual(r.lines.map((l) => l.total), [20.98, 8.98]);
+  assert.match(r.notes!, /included tax/);
+  const m = matchInvoice(base({ read: r }));
+  assert.equal(Math.abs(m.totalDifference!), 0);
+  assert.deepEqual(m.lines.map((l) => l.flags.includes('math')), [false, false]);
+  // An ordinary invoice is left alone.
+  const plain = cleanRead({ vendor: 'X', lines: [{ description: 'A', quantity: 2, unitPrice: 5, total: 10 }], tax: 0.7, total: 10.7 });
+  assert.equal(plain.lines[0]!.total, 10);
+  assert.equal(plain.notes, undefined);
+});
