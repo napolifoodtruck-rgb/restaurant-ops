@@ -6138,9 +6138,9 @@ function renderScan(me, id, x, pagesBox, back) {
   };
   const extras = [read.tax ? `Tax ${money(read.tax)}` : '', read.delivery ? `Delivery ${money(read.delivery)}` : '', read.otherCharges ? `Other charges ${money(read.otherCharges)}` : '', read.total !== undefined ? `Total ${money(read.total)}` : ''].filter(Boolean).join(' · ');
   const main = h('section', { class: 'card' },
-    h('div', { class: 'row wrap inv-head' }, h('div', {}, vendorIn, vendorNote), dateIn, numIn),
+    h('div', { class: 'scan-head' }, h('div', {}, vendorIn, vendorNote), dateIn, numIn),
     ...banners,
-    h('div', { class: 'small muted', text: 'Each line as printed on the left; on the right, the ingredient and how much came in, in the way you count it. Green lines are ticked; tick the others once they look right. A line left unticked stays on the invoice but isn’t counted, and is left out next time too.' }),
+    h('div', { class: 'small muted', text: 'Green lines are ticked; tick the others once they look right. Unticked lines stay on the invoice, not counted, and are left out next time too.' }),
     h('div', { class: 'scan-lines' }, rows.map((r) => r.row)),
     extras ? h('div', { class: 'small', text: extras }) : null,
     err,

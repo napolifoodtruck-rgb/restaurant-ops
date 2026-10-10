@@ -1542,3 +1542,28 @@ section[aria-label="Email inbox"] input[type=text] { width: 100%; }
 .scan-preview img { width: 100%; display: block; border: 1px solid var(--line); border-radius: var(--radius); }
 .scan-frame { width: 100%; height: calc(100vh - 170px); min-height: 420px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
 @media (min-width: 1001px) { .page.wide-side.sticky-side > .page-side .scan-preview { max-height: calc(100vh - 110px); overflow: auto; } }
+
+/* Invoice check, tighter: smaller type and inputs so more lines fit beside the invoice. */
+.scan-line { padding-top: 8px; padding-bottom: 8px; gap: 10px; font-size: 13px; }
+.scan-line .scan-read b { font-size: 14px; line-height: 1.25; }
+.scan-line .scan-read .small { font-size: 12px; }
+.scan-line .scan-conf { font-size: 10.5px; margin-bottom: 2px; }
+.scan-line .scan-ours { display: grid; gap: 4px; align-content: start; }
+.scan-line .scan-ours input[type=text], .scan-line .scan-ours input.amount { height: 34px; font-size: 14px; padding: 0 10px; }
+.scan-line .scan-ours input.amount { width: 78px; }
+.scan-line .scan-ours .row.tight { gap: 6px; }
+.scan-line .scan-ours .small, .scan-line .scan-alts { font-size: 12px; }
+.scan-line .scan-alts { line-height: 1.5; }
+.scan-line .scan-suggest { margin: 2px 0; gap: 6px; }
+.scan-line .scan-suggest .btn { height: 30px; font-size: 11px; padding: 0 10px; }
+.scan-line .scan-flags .tag { font-size: 11px; padding: 1px 6px; }
+.scan-line .scan-read > input[type="checkbox"] { width: 18px; height: 18px; }
+.scan-line .new-ing { gap: 6px; }
+.scan-line .new-ing select { height: 34px; font-size: 13px; }
+.scan-line .scan-alts { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
+.scan-line .scan-alts button.link { padding: 0; min-height: 0; height: auto; font-size: 12px; line-height: 1.4; }
+/* The vendor, date and number on one line, sized to fit beside the invoice. */
+.scan-head { display: grid; grid-template-columns: minmax(0, 2fr) auto minmax(0, 1fr); gap: 8px; align-items: start; margin: 4px 0 8px; }
+.scan-head input { height: 40px !important; font-size: 15px; min-width: 0 !important; width: 100%; box-sizing: border-box; }
+.scan-head input[type=date] { width: auto; }
+.scan-head .small { margin-top: 2px; }
