@@ -5,6 +5,8 @@
  *   POST /api/floor/dough             { count: 'dough' | 'gf' | 'takeout', left: n } what's really left right now: counts on from there
  *                                     or { count, add: ±n } (takeout's quick buttons) or { count, reset: true } back to the weekday's preset
  *   GET  /api/floor/dough/settings    managers: each weekday's presets
+ *   GET  /api/floor/online            online orders on or paused; POST { minutes | tonight | off | resume } from a kitchen, counter or host iPad
+ *   GET  /api/floor/sold?category=    sold tonight in one Square category, live (the bar's cocktails)
  *   POST /api/floor/dough/settings    { doughByWeekday?, gfByWeekday?, takeoutByWeekday?: (n | null)[7], Sunday first; spare?: n kept back for remakes }
  *
  * Each night starts from the weekday's preset; the kitchen changes it whenever the real count
@@ -20,6 +22,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast } from './auth.ts';
+import { onlineStatus, setOnlinePause } from './online.ts';
 import type { FloorContext } from './floor.ts';
 import { getModel } from './model.ts';
 import { usesRecipe } from '../core/allergens.ts';
@@ -37,7 +40,7 @@ const isGlutenFree = (name: string) => /gluten|\bgf\b/i.test(name);
 
 interface Rules { doughOf: DoughOf; at: number; day: string }
 const rulesCache = new Map<string, Rules>();
-interface Live { day: string; at: number; tally?: DoughTally; error?: string; pending?: Promise<void> }
+interface Live { day: string; at: number; tally?: DoughTally; orders?: LiveOrder[]; error?: string; pending?: Promise<void> }
 const liveCache = new Map<string, Live>();
 
 /** Forget what was read (tests, and a changed recipe choice). */
@@ -163,7 +166,8 @@ async function tallyFor(db: Db, rid: string, today: string, timezone: string, sq
     l.pending ??= (async () => {
       try {
         const rules = await rulesFor(db, rid, today);
-        l.tally = tallyDough(await liveOrders(db, rid, square, midnightOf(today, timezone)), rules.doughOf);
+        l.orders = await liveOrders(db, rid, square, midnightOf(today, timezone));
+        l.tally = tallyDough(l.orders, rules.doughOf);
         delete l.error;
       } catch (err) {
         console.error(`dough count: couldn’t read today’s orders from Square: ${(err as Error).message}`);
@@ -220,17 +224,57 @@ const count = (v: unknown, what: string) => {
 const COUNTS = { dough: 'dough', gf: 'gf', takeout: 'takeout' } as const;
 type CountKey = keyof typeof COUNTS;
 
+/**
+ * Sold tonight in one Square category (the bar's cocktails), from the same once-a-minute read as the
+ * dough count: how many, the sales, and the items, most sold first.
+ */
+export async function soldTonight(db: Db, rid: string, today: string, timezone: string, square: DoughSquare | undefined, category: string) {
+  const live = await tallyFor(db, rid, today, timezone, square);
+  const categoryOf = await categoriesOf(db, rid, today);
+  const want = category.trim().toLowerCase();
+  const items = new Map<string, { name: string; quantity: number }>();
+  for (const o of live.orders ?? []) for (const l of o.lines) {
+    if (!l.catalogId || (categoryOf.get(l.catalogId) ?? '').toLowerCase() !== want) continue;
+    const it = items.get(l.name) ?? { name: l.name, quantity: 0 };
+    it.quantity += l.quantity;
+    items.set(l.name, it);
+  }
+  const list = [...items.values()].map((i) => ({ ...i, quantity: Math.round(i.quantity * 100) / 100 })).sort((a, b) => b.quantity - a.quantity);
+  return { category, count: Math.round(list.reduce((a, i) => a + i.quantity, 0)), items: list, asOf: live.at ? new Date(live.at).toISOString() : null, ...(live.error ? { problem: live.error } : {}) };
+}
+
+/** May this request change things from a board: someone signed in, or the iPad of one of these kinds of post. */
+async function boardMayChange(db: Db, ctx: FloorContext, kinds: readonly string[]): Promise<boolean> {
+  if (ctx.who) return true;
+  if (!ctx.device?.floorPostId) return false;
+  return (await db.query("SELECT 1 FROM floor_posts WHERE restaurant_id = $1 AND id = $2 AND active AND kind = ANY(string_to_array($3, ','))", [ctx.restaurantId, ctx.device.floorPostId, kinds.join(',')])).rows.length > 0;
+}
+
 export async function doughRoutes(db: Db, req: IncomingMessage, res: ServerResponse, path: string, method: string, ctx: FloorContext, timezone: string, square: DoughSquare | undefined): Promise<boolean> {
-  if (path !== '/api/floor/dough' && path !== '/api/floor/dough/settings') return false;
   const rid = ctx.restaurantId, today = ctx.today;
+
+  // The online orders widget: on or paused; the kitchen, counter and host iPads pause them with no one signed in.
+  if (path === '/api/floor/online') {
+    if (method === 'POST') {
+      if (!(await boardMayChange(db, ctx, ['kitchen', 'counter', 'host']))) throw new HttpError(401, 'Sign in to pause online orders.');
+      await setOnlinePause(db, rid, timezone, await body(req), ctx.who?.staffId ?? null);
+    } else if (method !== 'GET') throw new HttpError(404, 'Not found.');
+    const takeout = await takeoutOut(db, rid, today, timezone, square);
+    return send(res, 200, { ...(await onlineStatus(db, rid, timezone)), takeoutOut: takeout.out }), true;
+  }
+  // The Sold tonight widget: one category, counted live.
+  if (path === '/api/floor/sold' && method === 'GET') {
+    const category = new URL(req.url ?? '', 'http://x').searchParams.get('category')?.trim();
+    if (!category) throw new HttpError(400, 'Which category?');
+    return send(res, 200, await soldTonight(db, rid, today, timezone, square, category)), true;
+  }
+  if (path !== '/api/floor/dough' && path !== '/api/floor/dough/settings') return false;
 
   if (path === '/api/floor/dough') {
     if (method === 'GET') return send(res, 200, await doughView(db, rid, today, timezone, square)), true;
     if (method !== 'POST') throw new HttpError(404, 'Not found.');
     // Someone signed in, or the kitchen's own iPad (a Kitchen post), trusted as it is for check-offs.
-    const kitchenIpad = !ctx.who && ctx.device?.floorPostId
-      ? (await db.query("SELECT 1 FROM floor_posts WHERE restaurant_id = $1 AND id = $2 AND kind = 'kitchen' AND active", [rid, ctx.device.floorPostId])).rows.length > 0 : false;
-    if (!ctx.who && !kitchenIpad) throw new HttpError(401, 'Sign in to change the counts.');
+    if (!(await boardMayChange(db, ctx, ['kitchen']))) throw new HttpError(401, 'Sign in to change the counts.');
     const b = await body(req);
     if (typeof b.count !== 'string' || !(b.count in COUNTS)) throw new HttpError(400, 'Which count: dough, gluten-free or takeout?');
     const key = b.count as CountKey;

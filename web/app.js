@@ -6912,10 +6912,22 @@ async function floorBoard(ctx = {}) {
     b.gelato.panChanges.map((p) => h('div', { class: 'small strong', text: `${p.size ? `${p.size} ` : ''}${p.from} → ${p.to}` }))) : null;
   const notes = b.notes.length ? sideBox('From the managers', b.notes.map((n) => h('div', { class: 'floor-note' }, h('div', { text: n.body }), n.by ? h('div', { class: 'small muted', text: n.by }) : null))) : null;
 
-  // The counter takes the takeout orders and the host decides on walk-ins: both see the dough count.
-  // The kitchen changes it; the counter takes the takeout orders and the host decides on seating: all three see it.
-  const dough = b.post.kind === 'kitchen' ? doughWidget({ canEdit: true }) : b.post.kind === 'counter' || b.post.kind === 'host' ? doughWidget({ canEdit: manager }) : null;
-  const body = h('div', { class: 'floor-board' }, h('div', { class: 'floor-main' }, dough, knowBox), h('aside', { class: 'floor-side' }, gelato, b.lookup.wines.length ? pairingFinder(b) : null, notes, special, newBox));
+  // --- the board: its widgets, in the order a manager chose (or the defaults for this kind of post), each small or wide.
+  // The kitchen's board changes the dough count; the kitchen, counter and host pause online orders.
+  const kind = b.post.kind;
+  const make = {
+    dough: () => doughWidget({ canEdit: kind === 'kitchen' || manager }),
+    online: () => onlineWidget({ canChange: ['kitchen', 'counter', 'host'].includes(kind) || manager }),
+    book: () => knowBox,
+    sales: (w) => soldWidget(w.category),
+    gelato: () => gelato,
+    pairings: () => (b.lookup.wines.length ? pairingFinder(b) : null),
+    notes: () => notes,
+    specials: () => special,
+    new: () => newBox,
+  };
+  const widgets = (b.widgets ?? []).map((w) => { const el = make[w.type]?.(w); return el ? h('div', { class: `widget ${w.size === 'wide' ? 'wide' : 'small'}`, 'data-widget': w.type }, el) : null; });
+  const body = h('div', { class: 'floor-grid' }, widgets);
   if (inShell) show(shell(ctx.me, 'floor', [head, body]));
   else show(h('div', { class: 'floor' }, head, body));
 
@@ -6927,6 +6939,122 @@ async function floorBoard(ctx = {}) {
   }, 120000); };
   again();
   if (manager && !inShell) floorIdleSignOut();
+}
+
+/**
+ * A board's widgets, for a manager: in order, each small or wide, removed or added from the list.
+ * A Sold tonight counter picks its Square category. Saves as a whole; Back to the defaults undoes it.
+ */
+const WIDGET_INFO = {
+  dough: ['Dough count', 'Takeout, dough and gluten-free left, live. The kitchen’s board can change them.'],
+  online: ['Online orders', 'On or paused, with big buttons to pause or turn them off for the night.'],
+  book: ['Tonight to know', 'Allergies, celebrations, regulars and big parties from the OpenTable report.'],
+  sales: ['Sold tonight', 'A live count of one Square category tonight, e.g. cocktails.'],
+  gelato: ['Gelato flight', 'Tonight’s flavors and pan changes.'],
+  pairings: ['Find a pairing', 'Wine for a dish, or a dish for a wine.'],
+  notes: ['From the managers', 'Tonight’s notes for this post.'],
+  specials: ['Specials', 'Tonight’s specials, or what to talk up.'],
+  new: ['New on the menu', 'New dishes to browse, and the menu quiz.'],
+};
+function boardEditor(post, d, reload) {
+  let list = (post.widgets ?? []).map((w) => ({ ...w }));
+  const err = h('div', { class: 'error small' });
+  const rows = h('div');
+  const s = floorSheet(`${post.name}: board`, h('h2', { class: 'sheet-title', text: `${post.name}: the board` }),
+    h('div', { class: 'small muted', text: 'The widgets this iPad shows, top to bottom. Wide takes two of the three columns on an iPad.' }), rows, err);
+  const draw = () => {
+    const move = (i, by) => { const j = i + by; if (j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; draw(); };
+    const addType = h('select', { 'aria-label': 'Add a widget' }, h('option', { value: '', text: 'Add a widget…' }),
+      Object.entries(WIDGET_INFO).filter(([k]) => k === 'sales' || !list.some((w) => w.type === k)).map(([k, [name]]) => h('option', { value: k, text: name })));
+    const category = h('select', { 'aria-label': 'Category to count', hidden: true }, (d.categories ?? []).map((c) => h('option', { value: c, text: c, selected: /cocktail/i.test(c) ? true : undefined })));
+    addType.addEventListener('change', () => { category.hidden = addType.value !== 'sales'; });
+    fill(rows,
+      list.map((w, i) => h('div', { class: 'wedit-row' },
+        h('div', { class: 'grow' }, h('div', { class: 'strong', text: w.type === 'sales' ? `${w.category} sold tonight` : WIDGET_INFO[w.type][0] }), h('div', { class: 'small muted', text: WIDGET_INFO[w.type][1] })),
+        h('div', { class: 'seg', role: 'group', 'aria-label': 'Size' }, [['small', 'Small'], ['wide', 'Wide']].map(([k, label]) => h('button', { class: w.size === k ? 'on' : '', 'aria-pressed': String(w.size === k), text: label, onclick: () => { w.size = k; draw(); } }))),
+        h('button', { class: 'btn small-btn', text: '↑', 'aria-label': `Move ${WIDGET_INFO[w.type][0]} up`, disabled: i === 0 ? true : undefined, onclick: () => move(i, -1) }),
+        h('button', { class: 'btn small-btn', text: '↓', 'aria-label': `Move ${WIDGET_INFO[w.type][0]} down`, disabled: i === list.length - 1 ? true : undefined, onclick: () => move(i, 1) }),
+        h('button', { class: 'link', text: 'Remove', onclick: () => { list.splice(i, 1); draw(); } }))),
+      h('div', { class: 'row wrap', style: 'margin-top:10px' }, addType, category,
+        h('button', { class: 'btn small-btn', text: 'Add', onclick: () => {
+          if (!addType.value) return;
+          if (addType.value === 'sales' && !category.value) { err.textContent = 'Pick the category to count.'; return; }
+          list.push({ type: addType.value, size: addType.value === 'dough' || addType.value === 'book' ? 'wide' : 'small', ...(addType.value === 'sales' ? { category: category.value } : {}) });
+          draw();
+        } })),
+      h('div', { class: 'row wrap', style: 'margin-top:14px' },
+        h('button', { class: 'btn dark', text: 'Save', onclick: async (e) => {
+          busy(e.currentTarget, true);
+          const r = await api('POST', '/api/floor/widgets', { postId: post.id, widgets: list });
+          busy(e.currentTarget, false);
+          if (!r.ok) { err.textContent = r.data.error ?? 'Not saved.'; return; }
+          s.close(); reload();
+        } }),
+        post.widgetsChosen ? h('button', { class: 'link', text: 'Back to the defaults', onclick: async () => { const r = await api('POST', '/api/floor/widgets', { postId: post.id, reset: true }); if (r.ok) { s.close(); reload(); } else err.textContent = r.data.error ?? 'Not saved.'; } }) : null));
+  };
+  draw();
+}
+
+/**
+ * The online orders widget: on or paused, in big letters, with big buttons to pause for a while or
+ * turn them off for the night, and to turn them back on. Freshens itself every minute.
+ */
+function onlineWidget({ canChange = false } = {}) {
+  const box = h('section', { class: 'card online-widget', 'aria-label': 'Online orders' }, h('div', { class: 'small muted', text: 'Online orders…' }));
+  let timer = null;
+  const load = async (fresh) => {
+    clearTimeout(timer);
+    const r = fresh ? { ok: true, data: fresh } : await api('GET', '/api/floor/online');
+    if (r.ok) draw(r.data);
+    timer = setTimeout(() => { if (document.body.contains(box)) load(); }, 60000);
+  };
+  const act = async (btn, body, ask) => {
+    if (ask && !confirmText(ask)) return;
+    busy(btn, true);
+    const r = await api('POST', '/api/floor/online', body);
+    busy(btn, false);
+    if (!r.ok) return floorMessage(r.data.error ?? 'That didn’t save.');
+    load(r.data);
+  };
+  const big = (text, body, cls = '', ask) => h('button', { class: `btn big-btn ${cls}`, text, onclick: (e) => act(e.currentTarget, body, ask) });
+  function draw(o) {
+    const p = o.paused;
+    const state = o.takeoutOut && !p ? ['off', 'Off: takeout sold out', 'Add takeout pizzas on the dough count to turn them back on.']
+      : p?.off ? ['off', 'Off', 'Until someone turns them back on.']
+      : p?.tonight ? ['off', 'Off for tonight', 'Back on by themselves at midnight, for tomorrow.']
+      : p ? ['paused', `Paused until ${clock12(p.untilTime)}`, 'Orders already placed still come through.']
+      : o.takingOrders ? ['on', 'On', 'Taking online orders.'] : ['quiet', 'No pickups left tonight', 'Nothing more to take online tonight.'];
+    fill(box,
+      h('div', { class: 'row dough-head' }, h('h2', { class: 'grow', text: 'Online orders' })),
+      h('div', { class: `online-state ${state[0]}` }, h('div', { class: 'online-big', text: state[1] }), h('div', { class: 'small', text: state[2] })),
+      canChange ? h('div', { class: 'online-actions' },
+        p ? big(p.off || p.tonight ? 'Turn back on' : 'Resume now', { resume: true }, 'dark')
+          : o.takingOrders && !o.takeoutOut ? [big('Pause 15 min', { minutes: 15 }), big('Pause 30 min', { minutes: 30 }), big('Pause 1 hour', { minutes: 60 }),
+            big('Off for tonight', { tonight: true }, 'stop-btn', 'Turn online orders off for the rest of tonight? They come back on by themselves at midnight.')] : null) : null);
+  }
+  load();
+  return box;
+}
+
+/** Sold tonight in one Square category (the bar's cocktails): the count, big, and what sold most. Live from Square, every minute. */
+function soldWidget(category) {
+  const box = h('section', { class: 'card sold-widget', 'aria-label': `${category} sold tonight` }, h('div', { class: 'small muted', text: `${category}…` }));
+  let timer = null;
+  const load = async () => {
+    clearTimeout(timer);
+    const r = await api('GET', `/api/floor/sold?category=${encodeURIComponent(category)}`);
+    if (r.ok) {
+      const d = r.data;
+      fill(box,
+        h('div', { class: 'row dough-head' }, h('h2', { class: 'grow', text: `${category} sold tonight` }), d.asOf ? h('span', { class: 'small muted', text: new Date(d.asOf).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) }) : null),
+        h('div', { class: 'dough-big', text: String(d.count) }),
+        d.items.length ? h('div', { class: 'list compact' }, d.items.slice(0, 6).map((i) => h('div', {}, h('span', { class: 'grow', text: i.name }), h('b', { text: qty(i.quantity) })))) : h('div', { class: 'small muted', text: 'None yet tonight.' }),
+        d.problem ? h('div', { class: 'small warn-text', text: d.problem }) : null);
+    }
+    timer = setTimeout(() => { if (document.body.contains(box)) load(); }, 60000);
+  };
+  load();
+  return box;
 }
 
 /** Tasks, behind one button: what's due now shows on it (opening before 5, the slow list in service, closing after). */
@@ -7562,6 +7690,7 @@ function floorSetupTab(d, reload) {
     kind.addEventListener('change', showStation);
     showStation();
     return h('div', { class: 'row wrap post-row' }, name, kind, tables, station,
+      p ? h('button', { class: 'btn', text: 'Board', title: 'Which widgets this board shows, in what order', onclick: () => boardEditor(p, d, reload) }) : null,
       h('button', { class: 'btn', text: p ? 'Save' : 'Add post', onclick: () => pageAction(async () => {
         const res = await api('POST', '/api/floor/posts', { ...(p ? { id: p.id } : {}), name: name.value, kind: kind.value, tables: tables.value, stationId: station.value || null });
         if (!res.ok) return (err.textContent = res.data.error);
@@ -7575,7 +7704,8 @@ function floorSetupTab(d, reload) {
   const deviceRows = d.devices.map((x) => {
     const pick = h('select', { 'aria-label': `What ${x.name} is for` }, h('option', { value: '', text: 'Kitchen (prep)' }), d.posts.map((p) => h('option', { value: p.id, text: `Service: ${p.name}`, selected: x.postId === p.id ? true : undefined })));
     pick.addEventListener('change', () => pageAction(async () => { const res = await api('POST', `/api/devices/${x.id}`, { floorPostId: pick.value || null }); if (!res.ok) err.textContent = res.data.error; }));
-    return h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', { text: x.name }), h('div', { class: 'small muted', text: x.lastSeen ? `Last used ${when(x.lastSeen)}` : 'Not used yet' })), pick);
+    // The name and when it was last used on one line, what it's for under it (the side column is narrow).
+    return h('div', { class: 'ipad-row' }, h('div', { class: 'row tight' }, h('span', { class: 'strong grow', text: x.name }), h('span', { class: 'small muted', text: x.lastSeen ? `Last used ${when(x.lastSeen)}` : 'Not used yet' })), pick);
   });
   const ipads = sideBox('iPads', h('div', { class: 'small muted', text: 'Set up a new POS iPad from Settings on that iPad (signed in as a manager), then pick its post here or there.' }), deviceRows.length ? deviceRows : h('div', { class: 'small muted', text: 'No iPads set up yet.' }));
   const KLIST = { opening: 'Opening', closing: 'Closing', slow: 'When it’s slow (deep cleaning)' };

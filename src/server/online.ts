@@ -142,6 +142,27 @@ export async function loadOrderPage(db: Db, restaurantId: string): Promise<{ hea
 /** Words a manager typed for the order page: spaces tidied, at most one blank line in a row. */
 const tidyWords = (v: string): string => v.replace(/\r/g, '').split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 
+/**
+ * Pause online orders: { minutes: 15 | 30 | 60 }, { tonight: true } (to midnight, the restaurant's
+ * time), { off: true } (until someone turns them back on) or { resume: true }. Also from the boards.
+ */
+export async function setOnlinePause(db: Db, restaurantId: string, timezone: string, b: Record<string, unknown>, staffId: string | null): Promise<void> {
+  const now = localNow(timezone);
+  if (b.resume === true) { await db.query('DELETE FROM online_pause WHERE restaurant_id = $1', [restaurantId]); return; }
+  if (b.off !== true && b.tonight !== true && !PAUSE_MINUTES.includes(b.minutes as number)) throw new HttpError(400, `Pause for ${PAUSE_MINUTES.join(', ')} minutes or the rest of tonight, or turn online orders off.`);
+  await db.query(`INSERT INTO online_pause (restaurant_id, until, paused_by)
+    VALUES ($1, CASE WHEN $7::boolean THEN 'infinity'::timestamptz WHEN $2::boolean THEN ($3::date + 1)::timestamp AT TIME ZONE $4 ELSE now() + make_interval(mins => $5::int) END, $6)
+    ON CONFLICT (restaurant_id) DO UPDATE SET until = EXCLUDED.until, paused_by = EXCLUDED.paused_by, paused_at = now()`,
+  [restaurantId, b.tonight === true, now.date, timezone, b.tonight === true || b.off === true ? 0 : b.minutes, staffId, b.off === true]);
+}
+
+/** Whether online orders are paused, and whether any are being taken tonight. */
+export async function onlineStatus(db: Db, restaurantId: string, timezone: string) {
+  const now = localNow(timezone);
+  const windows = await loadWindows(db, restaurantId, now.date);
+  return { now: now.time, paused: (await loadPause(db, restaurantId, timezone)) ?? null, takingOrders: windows.some((w) => stillOpen(w, now.time)) };
+}
+
 export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResponse, path: string, url: URL, who: SignedIn, timezone: string): Promise<boolean> {
   if (!path.startsWith('/api/online/')) return false;
   const method = req.method ?? 'GET';
@@ -149,20 +170,9 @@ export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResp
 
   // Anyone on shift can pause: it's the cooks who see the slam coming.
   if (path === '/api/online/pause') {
-    if (method === 'POST') {
-      const b = await body(req);
-      if (b.resume === true) await db.query('DELETE FROM online_pause WHERE restaurant_id = $1', [who.restaurantId]);
-      else {
-        if (b.off !== true && b.tonight !== true && !PAUSE_MINUTES.includes(b.minutes as number)) throw new HttpError(400, `Pause for ${PAUSE_MINUTES.join(', ')} minutes or the rest of tonight, or turn online orders off.`);
-        // "The rest of tonight" runs to midnight, the restaurant's time; "off" lasts until someone turns them back on.
-        await db.query(`INSERT INTO online_pause (restaurant_id, until, paused_by)
-          VALUES ($1, CASE WHEN $7::boolean THEN 'infinity'::timestamptz WHEN $2::boolean THEN ($3::date + 1)::timestamp AT TIME ZONE $4 ELSE now() + make_interval(mins => $5::int) END, $6)
-          ON CONFLICT (restaurant_id) DO UPDATE SET until = EXCLUDED.until, paused_by = EXCLUDED.paused_by, paused_at = now()`,
-        [who.restaurantId, b.tonight === true, now.date, timezone, b.tonight === true || b.off === true ? 0 : b.minutes, who.staffId, b.off === true]);
-      }
-    } else if (method !== 'GET') throw new HttpError(404, 'Not found.');
-    const windows = await loadWindows(db, who.restaurantId, now.date);
-    return send(res, 200, { now: now.time, paused: (await loadPause(db, who.restaurantId, timezone)) ?? null, takingOrders: windows.some((w) => stillOpen(w, now.time)) }), true;
+    if (method === 'POST') await setOnlinePause(db, who.restaurantId, timezone, await body(req), who.staffId);
+    else if (method !== 'GET') throw new HttpError(404, 'Not found.');
+    return send(res, 200, await onlineStatus(db, who.restaurantId, timezone)), true;
   }
 
   if (!atLeast(who.roleLevel, 'manager')) throw new HttpError(403, 'Managers only.');

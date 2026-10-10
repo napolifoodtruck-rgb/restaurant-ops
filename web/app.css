@@ -1455,3 +1455,30 @@ input[type=search]:not(.floor-search):not(.search) { height: 48px; border: 1px s
 .day-item .num { text-align: right; }
 @media (max-width: 700px) { .way-tiles { grid-template-columns: 1fr; } .day-item { grid-template-columns: minmax(0, 1fr) 40px 70px; } .day-item > :nth-child(3) { display: none; } }
 @media print { .day-cat:not([open]) > .day-items { display: block; } }
+
+/* Boards built from widgets: three columns on an iPad, a wide widget takes two; two columns, then one, on narrower screens. */
+.floor-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-flow: row dense; gap: 14px; align-items: start; }
+.floor-grid > .widget { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.floor-grid > .widget.wide { grid-column: span 2; }
+.floor-grid > .widget > .card { margin: 0; }
+@media (max-width: 1000px) { .floor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .floor-grid { grid-template-columns: 1fr; } .floor-grid > .widget.wide { grid-column: auto; } }
+/* A small widget too narrow for three dough tiles stacks them. */
+.widget.small .dough-tiles { grid-template-columns: 1fr; }
+/* Online orders: the state in big letters, big buttons. */
+.online-state { border-radius: 12px; padding: 12px 14px; background: var(--soft); }
+.online-state.on { background: #E3F0E6; color: var(--green); }
+.online-state.paused { background: #FFF1DF; color: var(--orange); }
+.online-state.off { background: #FBE6E2; color: var(--accent); }
+.online-big { font-size: 26px; font-weight: 800; }
+.online-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.btn.big-btn { height: 56px; font-size: 16px; }
+.online-actions .big-btn.dark, .online-actions .stop-btn { grid-column: span 2; }
+.sold-widget .dough-big { font-size: 52px; }
+/* The board editor. */
+.wedit-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--soft); flex-wrap: wrap; }
+.wedit-row .grow { min-width: 160px; }
+.ipad-row { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; border-top: 1px solid var(--soft); }
+.ipad-row select { width: 100%; }
+.online-actions .big-btn { width: 100%; min-width: 0; padding: 0 8px; white-space: normal; line-height: 1.15; }
+.wedit-row .grow { flex: 1 1 100%; }

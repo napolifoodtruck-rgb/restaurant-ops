@@ -9,7 +9,8 @@
  *   GET  /api/floor/wines/:id/photo         a wine's bottle photo
  *
  * Managers (signed in, on any iPad with their PIN, or on a computer):
- *   GET  /api/floor/setup                   posts, iPads, checklists, notes, features, gelato, settings
+ *   GET  /api/floor/setup                   posts (with their boards' widgets), iPads, checklists, notes, features, gelato, settings
+ *   POST /api/floor/widgets                 { postId, widgets: [{ type, size, category? }] } or { postId, reset: true }
  *   POST /api/floor/posts                   { id?, name, kind, tables, stationId?, active? }
  *   POST /api/floor/checklists              { id?, postId?, kind, name, everyDays?, active? }
  *   POST /api/floor/notes                   { id?, postId?, startsOn, endsOn, weekdays?, body, remove? }
@@ -46,6 +47,7 @@ import { celebrationOf, dietaryOf, forTables, mergeBooks, readOpenTableCsv, whyN
 import { claudeOptions, type ClaudePage } from '../connectors/claude.ts';
 import { readReservations, readWineSheets, suggestIngredients, suggestPairings, type WineSheet } from '../connectors/floorReaders.ts';
 import { normalizeName } from '../core/recipeCards.ts';
+import { cleanWidgets, defaultWidgets, type Widget } from '../core/widgets.ts';
 
 export interface FloorContext { who?: SignedIn; device?: { id: string; restaurantId: string; floorPostId: string | null }; restaurantId: string; today: string; minutes: number; weekday: number }
 
@@ -265,6 +267,10 @@ export const wineBase = (name: string) => name.replace(/\(.*?\)/g, ' ').replace(
 
 // ---------------------------------------------------------------- tonight's book
 
+/** A post's widgets: as a manager chose them, or the defaults for its kind. */
+export const widgetsOf = (post: { kind: string; widgets: unknown }): Widget[] =>
+  cleanWidgets(typeof post.widgets === 'string' ? JSON.parse(post.widgets) : post.widgets) ?? defaultWidgets(post.kind);
+
 export async function tonightsBook(db: Db, restaurantId: string, today: string): Promise<{ book: Book; asOf: string; source: string } | undefined> {
   // Guest details are for the night only.
   await db.query('DELETE FROM floor_reports WHERE restaurant_id = $1 AND day < $2', [restaurantId, today]);
@@ -284,8 +290,8 @@ export async function tonightsBook(db: Db, restaurantId: string, today: string):
 // ---------------------------------------------------------------- the board
 
 async function postFor(db: Db, ctx: FloorContext, asked: string | undefined) {
-  const posts = (await db.query<{ id: string; name: string; kind: string; tables: string[]; station_id: string | null }>(
-    'SELECT id, name, kind, tables, station_id FROM floor_posts WHERE restaurant_id = $1 AND active ORDER BY sort_order, name', [ctx.restaurantId])).rows;
+  const posts = (await db.query<{ id: string; name: string; kind: string; tables: string[]; station_id: string | null; widgets: unknown }>(
+    'SELECT id, name, kind, tables, station_id, widgets FROM floor_posts WHERE restaurant_id = $1 AND active ORDER BY sort_order, name', [ctx.restaurantId])).rows;
   const manager = ctx.who && atLeast(ctx.who.roleLevel, 'manager');
   const id = (manager && asked) || ctx.device?.floorPostId || (manager ? posts[0]?.id : undefined);
   const post = posts.find((p) => p.id === id);
@@ -390,6 +396,8 @@ export async function floorBoard(db: Db, ctx: FloorContext, asked?: string) {
   } : null;
   return {
     post: { id: post.id, name: post.name, kind: post.kind, ...(post.station_id ? { stationId: post.station_id } : {}) },
+    // The board's widgets, in order: the manager's choice, or the defaults for this kind of post.
+    widgets: widgetsOf(post),
     posts: ctx.who && atLeast(ctx.who.roleLevel, 'manager') ? posts.map((p) => ({ id: p.id, name: p.name })) : undefined,
     day: today, weekday: ctx.weekday, minutes: ctx.minutes, phase: phaseAt(ctx.minutes),
     book, featured,
@@ -556,7 +564,7 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
   if (method === 'GET' && path === '/api/floor/setup') {
     const q = <T>(sql: string, p: unknown[] = [rid]) => db.query<T>(sql, p).then((r) => r.rows);
     const [posts, devices, stations, checklists, notes, features, pushes, gelato, settings, handoffs] = await Promise.all([
-      q('SELECT id, name, kind, tables, station_id AS "stationId", sort_order AS "sortOrder" FROM floor_posts WHERE restaurant_id = $1 AND active ORDER BY sort_order, name'),
+      q('SELECT id, name, kind, tables, station_id AS "stationId", sort_order AS "sortOrder", widgets FROM floor_posts WHERE restaurant_id = $1 AND active ORDER BY sort_order, name'),
       q('SELECT id, name, floor_post_id AS "postId", station_id AS "stationId", last_seen_at::text AS "lastSeen" FROM devices WHERE restaurant_id = $1 AND revoked_at IS NULL ORDER BY name'),
       q('SELECT id, name FROM stations WHERE restaurant_id = $1 AND active ORDER BY sort_order'),
       q('SELECT id, post_id AS "postId", kind, name, every_days AS "everyDays", read_only AS "readOnly" FROM floor_checklists WHERE restaurant_id = $1 AND active ORDER BY kind, sort_order, name'),
@@ -574,7 +582,9 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
     const { dishes } = await dishIndex(db, rid, model);
     const report = (await db.query<{ id: string; status: string; error: string | null; source: string; uploaded_at: string }>("SELECT id, status, error, source, uploaded_at::text AS uploaded_at FROM floor_reports WHERE restaurant_id = $1 AND day = $2 ORDER BY uploaded_at DESC LIMIT 1", [rid, ctx.today])).rows[0];
     return send(res, 200, {
-      today: ctx.today, posts, devices, stations, checklists, notes, features, pushes, gelato: (gelato as unknown[])[0] ?? null, handoffs,
+      // Square's categories, for a Sold tonight widget.
+      categories: (await db.query<{ category: string }>("SELECT DISTINCT category FROM pos_item_sales_daily WHERE restaurant_id = $1 AND category <> '' AND day >= $2::date - 60 ORDER BY category", [rid, ctx.today])).rows.map((r) => r.category),
+      today: ctx.today, posts: (posts as { kind: string; widgets: unknown }[]).map((p) => ({ ...p, widgets: widgetsOf(p), widgetsChosen: p.widgets !== null })), devices, stations, checklists, notes, features, pushes, gelato: (gelato as unknown[])[0] ?? null, handoffs,
       allergyNote: js<{ allergyNote?: string }>((settings as { settings: unknown }[])[0]?.settings ?? {}).allergyNote ?? '',
       swaps: js<{ swaps?: Swap[] }>((settings as { settings: unknown }[])[0]?.settings ?? {}).swaps ?? [],
       readOnlyLists: js<{ readOnlyLists?: string[] }>((settings as { settings: unknown }[])[0]?.settings ?? {}).readOnlyLists ?? [],
@@ -583,6 +593,16 @@ export async function floorRoutes(db: Db, req: IncomingMessage, res: ServerRespo
       ...(report ? { report: { id: report.id, status: report.status, error: report.error, source: report.source, at: report.uploaded_at } } : {}),
       canRead: Boolean(claudeOptions()),
     }), true;
+  }
+
+  // A board's widgets, in order: { postId, widgets: [{ type, size, category? }] } or { postId, reset: true } (the defaults again).
+  if (method === 'POST' && path === '/api/floor/widgets') {
+    const b = await body(req);
+    const widgets = b.reset === true ? null : cleanWidgets(b.widgets);
+    if (widgets === undefined) throw new HttpError(400, 'Pick the widgets from the list; a Sold tonight counter needs a category.');
+    const r = await db.query('UPDATE floor_posts SET widgets = $3::jsonb WHERE restaurant_id = $1 AND id = $2 RETURNING id', [rid, b.postId, widgets === null ? null : JSON.stringify(widgets)]);
+    if (!r.rows.length) throw new HttpError(404, 'That post isn’t here.');
+    return send(res, 200, { ok: true }), true;
   }
 
   if (method === 'POST' && path === '/api/floor/posts') {

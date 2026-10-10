@@ -156,6 +156,29 @@ test('the dough count', { skip: !db && 'no PostgreSQL for tests (or running as r
   v = (await call('POST', '/api/floor/dough', { cookies: owner, body: { count: 'takeout', reset: true } })).json;
   assert.equal(v.takeout.cap, 5);
 
+  // Boards: the defaults for each kind until a manager chooses; the bar's cocktails counted live.
+  orders.push(at({ ticket_name: 'T7', line_items: [{ catalog_object_id: 'var-gimlet', name: 'Basil Gimlet', quantity: '2' }] }));
+  await db!.query("INSERT INTO pos_item_sales_daily (restaurant_id, day, catalog_id, item_name, category, quantity, net_sales) VALUES ($1, current_date - 3, 'var-gimlet', 'Basil Gimlet', 'Cocktails', 1, 12)", [rid]);
+  resetDoughCache();
+  assert.deepEqual((await call('GET', '/api/floor/board', { cookies: kitchenIpad })).json.widgets.map((w: any) => w.type), ['dough', 'online', 'notes', 'specials', 'book']);
+  assert.equal((await call('POST', '/api/floor/widgets', { cookies: kitchenIpad, body: { postId: kitchen, widgets: [] } })).status, 401, 'managers choose');
+  assert.equal((await call('POST', '/api/floor/widgets', { cookies: owner, body: { postId: kitchen, widgets: [{ type: 'sales', size: 'small' }] } })).status, 400);
+  assert.equal((await call('POST', '/api/floor/widgets', { cookies: owner, body: { postId: kitchen, widgets: [{ type: 'online', size: 'wide' }, { type: 'sales', size: 'small', category: 'Cocktails' }] } })).status, 200);
+  assert.deepEqual((await call('GET', '/api/floor/board', { cookies: kitchenIpad })).json.widgets, [{ type: 'online', size: 'wide' }, { type: 'sales', size: 'small', category: 'Cocktails' }]);
+  const sold = (await call('GET', '/api/floor/sold?category=cocktails', { cookies: kitchenIpad })).json;
+  assert.deepEqual([sold.count, sold.items], [2, [{ name: 'Basil Gimlet', quantity: 2 }]]);
+  await call('POST', '/api/floor/widgets', { cookies: owner, body: { postId: kitchen, reset: true } });
+  assert.equal((await call('GET', '/api/floor/board', { cookies: kitchenIpad })).json.widgets[0].type, 'dough');
+  // Online orders from a board: the kitchen's iPad pauses them with no one signed in; the counter's too; not a dining room's.
+  const paused = (await call('POST', '/api/floor/online', { cookies: kitchenIpad, body: { minutes: 30 } })).json;
+  assert.ok(paused.paused && !paused.paused.tonight);
+  assert.equal((await call('POST', '/api/floor/online', { cookies: kitchenIpad, body: { minutes: 7 } })).status, 400);
+  assert.equal((await call('POST', '/api/floor/online', { cookies: ipad, body: { resume: true } })).json.paused, null);
+  const patio = (await call('POST', '/api/floor/posts', { cookies: owner, body: { name: 'Patio', kind: 'room', tables: 'T1 T2' } })).json.id;
+  const patioIpad = (await call('POST', '/api/devices', { cookies: owner, body: { name: 'Patio POS', floorPostId: patio } })).cookies;
+  assert.equal((await call('POST', '/api/floor/online', { cookies: patioIpad, body: { minutes: 15 } })).status, 401);
+  assert.equal((await call('GET', '/api/floor/online', { cookies: patioIpad })).status, 200, 'but it can see them');
+
   // A failed read from Square never closes online ordering: the last count stays, flagged.
   const broken = createApp({ db: db!, setupToken: 'x', secureCookies: false, checkout: { token: 't', applicationId: 'a', locationId: 'l', fetch: async () => ({ ok: false, status: 500, json: async () => ({}), text: async () => '' }), now: () => now } });
   const s2 = createServer(broken);
