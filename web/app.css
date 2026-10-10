@@ -1528,3 +1528,8 @@ section[aria-label="Email inbox"] input[type=text] { width: 100%; }
   .rail .cam-chip.busy::after { display: none; }
   .cam-chip.busy .me-dot { opacity: .5; }
 }
+
+/* Invoice check: every tick box the same size, and the vendor, date and number on one line. */
+.scan-read > input[type="checkbox"] { flex: none; width: 22px; height: 22px; margin: 2px 0 0; }
+.inv-head { align-items: flex-start; }
+.inv-head > input, .inv-head > div > input { height: 48px; box-sizing: border-box; }
