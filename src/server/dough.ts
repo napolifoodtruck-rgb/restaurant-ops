@@ -5,7 +5,7 @@
  *   POST /api/floor/dough             { count: 'dough' | 'gf' | 'takeout', left: n } what's really left right now: counts on from there
  *                                     or { count, add: ±n } (takeout's quick buttons) or { count, reset: true } back to the weekday's preset
  *   GET  /api/floor/dough/settings    managers: each weekday's presets
- *   GET  /api/floor/online            online orders on or paused; POST { minutes | tonight | off | resume } from a kitchen, counter or host iPad
+ *   GET  /api/floor/online            online orders on or paused; POST { minutes | tonight | off | resume } or { leadMinutes } from a kitchen, counter or host iPad
  *   GET  /api/floor/sold?category=    sold tonight in one Square category, live (the bar's cocktails)
  *   POST /api/floor/dough/settings    { doughByWeekday?, gfByWeekday?, takeoutByWeekday?: (n | null)[7], Sunday first; spare?: n kept back for remakes }
  *
@@ -22,7 +22,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
 import { atLeast } from './auth.ts';
-import { onlineStatus, setOnlinePause } from './online.ts';
+import { onlineStatus, setLeadMinutes, setOnlinePause } from './online.ts';
 import type { FloorContext } from './floor.ts';
 import { getModel } from './model.ts';
 import { usesRecipe } from '../core/allergens.ts';
@@ -257,7 +257,10 @@ export async function doughRoutes(db: Db, req: IncomingMessage, res: ServerRespo
   if (path === '/api/floor/online') {
     if (method === 'POST') {
       if (!(await boardMayChange(db, ctx, ['kitchen', 'counter', 'host']))) throw new HttpError(401, 'Sign in to pause online orders.');
-      await setOnlinePause(db, rid, timezone, await body(req), ctx.who?.staffId ?? null);
+      const b = await body(req);
+      // How long an order takes to make (the kitchen's call, when it's slammed), or a pause.
+      if ('leadMinutes' in b) await setLeadMinutes(db, rid, b.leadMinutes);
+      else await setOnlinePause(db, rid, timezone, b, ctx.who?.staffId ?? null);
     } else if (method !== 'GET') throw new HttpError(404, 'Not found.');
     const takeout = await takeoutOut(db, rid, today, timezone, square);
     return send(res, 200, { ...(await onlineStatus(db, rid, timezone)), takeoutOut: takeout.out }), true;

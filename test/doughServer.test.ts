@@ -178,6 +178,11 @@ test('the dough count', { skip: !db && 'no PostgreSQL for tests (or running as r
   const patioIpad = (await call('POST', '/api/devices', { cookies: owner, body: { name: 'Patio POS', floorPostId: patio } })).cookies;
   assert.equal((await call('POST', '/api/floor/online', { cookies: patioIpad, body: { minutes: 15 } })).status, 401);
   assert.equal((await call('GET', '/api/floor/online', { cookies: patioIpad })).status, 200, 'but it can see them');
+  // How long an order takes to make: the kitchen changes it from the widget, in fives.
+  assert.equal((await call('GET', '/api/floor/online', { cookies: kitchenIpad })).json.leadMinutes, 20);
+  assert.equal((await call('POST', '/api/floor/online', { cookies: kitchenIpad, body: { leadMinutes: 35 } })).json.leadMinutes, 35);
+  assert.equal((await call('POST', '/api/floor/online', { cookies: kitchenIpad, body: { leadMinutes: 33 } })).status, 400);
+  assert.equal((await call('POST', '/api/floor/online', { cookies: patioIpad, body: { leadMinutes: 40 } })).status, 401);
 
   // A failed read from Square never closes online ordering: the last count stays, flagged.
   const broken = createApp({ db: db!, setupToken: 'x', secureCookies: false, checkout: { token: 't', applicationId: 'a', locationId: 'l', fetch: async () => ({ ok: false, status: 500, json: async () => ({}), text: async () => '' }), now: () => now } });

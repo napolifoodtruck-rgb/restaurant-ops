@@ -156,11 +156,24 @@ export async function setOnlinePause(db: Db, restaurantId: string, timezone: str
   [restaurantId, b.tonight === true, now.date, timezone, b.tonight === true || b.off === true ? 0 : b.minutes, staffId, b.off === true]);
 }
 
-/** Whether online orders are paused, and whether any are being taken tonight. */
+/** How long an online order takes to make, in minutes: no pickup sooner than this from now. */
+export async function leadMinutes(db: Db, restaurantId: string): Promise<number> {
+  return (await db.query<{ m: number }>('SELECT online_lead_minutes AS m FROM restaurants WHERE id = $1', [restaurantId])).rows[0]?.m ?? 20;
+}
+export const LEAD_STEPS = { min: 5, max: 120 };
+/** Sets it, in 5-minute steps between 5 minutes and 2 hours. */
+export async function setLeadMinutes(db: Db, restaurantId: string, minutes: unknown): Promise<number> {
+  const m = Number(minutes);
+  if (!Number.isInteger(m) || m < LEAD_STEPS.min || m > LEAD_STEPS.max || m % 5) throw new HttpError(400, `Between ${LEAD_STEPS.min} and ${LEAD_STEPS.max} minutes, in fives.`);
+  await db.query('UPDATE restaurants SET online_lead_minutes = $2 WHERE id = $1', [restaurantId, m]);
+  return m;
+}
+
+/** Whether online orders are paused, whether any are being taken tonight, and how long one takes to make. */
 export async function onlineStatus(db: Db, restaurantId: string, timezone: string) {
   const now = localNow(timezone);
-  const windows = await loadWindows(db, restaurantId, now.date);
-  return { now: now.time, paused: (await loadPause(db, restaurantId, timezone)) ?? null, takingOrders: windows.some((w) => stillOpen(w, now.time)) };
+  const [windows, lead] = await Promise.all([loadWindows(db, restaurantId, now.date), leadMinutes(db, restaurantId)]);
+  return { now: now.time, paused: (await loadPause(db, restaurantId, timezone)) ?? null, takingOrders: windows.some((w) => stillOpen(w, now.time, lead)), leadMinutes: lead };
 }
 
 export async function onlineRoutes(db: Db, req: IncomingMessage, res: ServerResponse, path: string, url: URL, who: SignedIn, timezone: string): Promise<boolean> {

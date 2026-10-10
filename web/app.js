@@ -431,7 +431,7 @@ function shell(me, active, content) {
       h('button', { class: active === 'settings' ? 'on' : '', 'data-key': 'settings', onclick: () => home(me) }, icon('settings'), 'Settings'),
       h('div', { class: 'spacer' }),
       whoAmI(me),
-      manager && active !== 'capture' ? captureButton(me, 'chip') : null,
+      manager && active !== 'capture' ? captureButton(me, 'chip', Boolean(me.device)) : null,
     ),
     h('main', {}, content),
   );
@@ -6047,7 +6047,7 @@ function compareCard() {
  * Today's "Capture an invoice": the camera opens straight away (on a phone), then the pages are
  * checked for blur, more can be added, and Read it sends them to be read and checked.
  */
-function captureButton(me, kind = 'button') {
+function captureButton(me, kind = 'button', always = false) {
   const picker = h('input', { type: 'file', accept: 'image/*,application/pdf', capture: 'environment', multiple: true, hidden: true, 'aria-label': 'Invoice photo' });
   const err = h('div', { class: 'error small' });
   const open = () => { err.textContent = ''; picker.click(); };
@@ -6064,7 +6064,8 @@ function captureButton(me, kind = 'button') {
     busy(btn, false); busy(chip, false);
     if (pages.length) captureScreen(me, pages);
   });
-  return h('div', { class: kind === 'chip' ? 'capture-corner' : 'capture-bar' }, kind === 'chip' ? chip : btn, picker, err);
+  // always: on an iPad with a manager signed in, the corner button shows at any width.
+  return h('div', { class: kind === 'chip' ? `capture-corner${always ? ' always' : ''}` : 'capture-bar' }, kind === 'chip' ? chip : btn, picker, err);
 }
 
 /** A camera, two-tone: the body in the text colour, the lens ring in the background's. */
@@ -7303,7 +7304,8 @@ async function floorBoard(ctx = {}) {
     ? h('div', { class: `floor-grid${!wide.length ? ' all-small' : !small.length ? ' all-wide' : ''}` }, widgets)
     : h('div', { class: 'floor-cols' }, h('div', { class: 'floor-col main' }, wide), h('div', { class: 'floor-col side' }, small));
   if (inShell) show(shell(ctx.me, 'floor', [head, body]));
-  else show(h('div', { class: 'floor' }, head, body));
+  // A manager signed in on the iPad itself: the Invoice button floats in the corner of the board.
+  else show(h('div', { class: 'floor' }, head, body, manager ? captureButton(ctx.me, 'chip', true) : null));
 
   // Fresh every two minutes (new check-offs, another report), unless a dialog is open or they've gone elsewhere.
   const again = () => { floorRefresh = setTimeout(() => {
@@ -7401,6 +7403,11 @@ function onlineWidget({ canChange = false } = {}) {
     fill(box,
       h('div', { class: 'row dough-head' }, h('h2', { class: 'grow', text: 'Online orders' })),
       h('div', { class: `online-state ${state[0]}` }, h('div', { class: 'online-big', text: state[1] }), h('div', { class: 'small', text: state[2] })),
+      // How long an order takes to make: the soonest pickup is this far from now. Up when it's slammed.
+      h('div', { class: 'online-lead' }, h('span', { class: 'small muted strong', text: 'Ready in' }), h('b', { class: 'online-lead-n', text: `${o.leadMinutes ?? 20} min` }),
+        canChange ? [h('button', { class: 'btn lead-btn', text: '−5', 'aria-label': 'Five minutes less', disabled: (o.leadMinutes ?? 20) <= 5 ? true : undefined, onclick: (e) => act(e.currentTarget, { leadMinutes: (o.leadMinutes ?? 20) - 5 }) }),
+          h('button', { class: 'btn lead-btn', text: '+5', 'aria-label': 'Five minutes more', disabled: (o.leadMinutes ?? 20) >= 120 ? true : undefined, onclick: (e) => act(e.currentTarget, { leadMinutes: (o.leadMinutes ?? 20) + 5 }) })] : null,
+        h('span', { class: 'small muted', text: 'No online pickup sooner than this from now.' })),
       canChange ? h('div', { class: 'online-actions' },
         p ? big(p.off || p.tonight ? 'Turn back on' : 'Resume now', { resume: true }, 'dark')
           : o.takingOrders && !o.takeoutOut ? [big('Pause 15 min', { minutes: 15 }), big('Pause 30 min', { minutes: 30 }), big('Pause 1 hour', { minutes: 60 }),

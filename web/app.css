@@ -1634,3 +1634,18 @@ header.row > .capture-bar { margin: 0; align-self: center; }
 .bmap { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; }
 .bmap-col { display: grid; gap: 6px; align-content: start; background: rgba(0,0,0,.03); border-radius: var(--radius); padding: 10px; }
 .bmap-w { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 13px; font-weight: 600; }
+
+/* Online orders widget: how long an order takes to make. */
+.online-lead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 4px; }
+.online-lead-n { font-size: 22px; }
+.online-lead .lead-btn { min-width: 52px; height: 44px; font-size: 16px; }
+.online-lead .small:last-child { flex-basis: 100%; }
+
+/* An iPad with a manager signed in: the Invoice button floats bottom-right at any width (Logout moves up). */
+.capture-corner.always { display: block; position: fixed; right: 16px; bottom: 16px; z-index: 60; }
+.capture-corner.always .cam-chip { display: flex; flex-direction: row; align-items: center; gap: 0; width: auto; padding: 4px; border: 0; border-radius: 999px; background: #000; color: #fff; box-shadow: 0 4px 14px rgba(0,0,0,.25); cursor: pointer; font: inherit; }
+.capture-corner.always .cam-chip .me-dot { color: #000; width: 40px; height: 40px; }
+.capture-corner.always .cam-chip .me-dot .cam-icon { width: 22px; height: 22px; }
+.capture-corner.always .cam-chip .me-out { border: 0; padding: 0 12px 0 8px; margin: 0; width: auto; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: #fff; }
+.capture-corner.always .cam-chip.busy::after { display: none; }
+.capture-corner.always .error:empty { display: none; }

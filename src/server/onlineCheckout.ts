@@ -38,7 +38,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createHash } from 'node:crypto';
 import type { Db } from './db.ts';
 import { HttpError, body, send } from './http.ts';
-import { loadOnlineMenu, loadOrderPage, loadPause, loadWindows, localNow } from './online.ts';
+import { leadMinutes, loadOnlineMenu, loadOrderPage, loadPause, loadWindows, localNow } from './online.ts';
 import { takeoutOut } from './dough.ts';
 import type { CatalogObject } from '../core/onlineMenu.ts';
 import { CartError, priceCart, publicMenu, stockProblem, tipProblem, type CartLine, type CartLineIn } from '../core/onlineCart.ts';
@@ -259,7 +259,8 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
       await noticeRefunds(r.id, now.date);
       await closeUnpaid(r.id);
       const windows = await loadWindows(db, r.id, now.date);
-      const fit = fitOrder(windows, 1, now.time);
+      const lead = await leadMinutes(db, r.id);
+      const fit = fitOrder(windows, 1, now.time, lead);
       const pause = await loadPause(db, r.id, r.timezone);
       // Takeout pizzas all sold for tonight (the kitchen's count): closed like a pause for the night, until the kitchen adds some.
       const takeout = ready && fit.kind !== 'closed' && !pause ? await takeoutOut(db, r.id, now.date, r.timezone, ready) : { out: false };
@@ -274,7 +275,7 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
         // The page's header photo and its line of text, as set on the Online screen.
         page: await loadOrderPage(db, r.id),
         // How much room each window has left, so the cart can show the earliest pickup as it fills.
-        windows: windows.map((w) => ({ starts: w.starts, ends: w.ends, label: clock(w.starts), left: w.left, open: fittingWindows([w], 0, now.time).length > 0 })),
+        windows: windows.map((w) => ({ starts: w.starts, ends: w.ends, label: clock(w.starts), left: w.left, open: fittingWindows([w], 0, now.time, lead).length > 0 })),
         payments: ready ? { applicationId: ready.applicationId, locationId: ready.locationId, environment: ready.square.environment } : null,
       }), true;
     }
@@ -336,7 +337,8 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
         const left = Math.max(0, takeout.left - since);
         if (cart.pizzas > left) throw new HttpError(409, left === 0 ? 'Sorry, we’ve sold all our takeout pizzas for tonight.' : `Sorry, we only have ${left} takeout ${left === 1 ? 'pizza' : 'pizzas'} left tonight. Take some off, or call us.`);
       }
-      const fit = fitOrder(windows, cart.pizzas, now.time);
+      const lead = await leadMinutes(db, r.id);
+      const fit = fitOrder(windows, cart.pizzas, now.time, lead);
       if (fit.kind === 'tooBig') throw new HttpError(409, `That’s more pizzas than we can make for one pickup online (${fit.mostAnyWindowTakes} at most). Please call us and we’ll sort it out.`);
       if (fit.kind !== 'fits') throw new HttpError(409, 'Sorry, we’re full for online orders tonight.');
       if (!fit.windows.some((w) => w.starts === b.window)) throw new HttpError(409, `That pickup time just filled up. The earliest now is ${clock(fit.earliest.starts)}.`);
@@ -388,7 +390,7 @@ export function checkoutRoutes(db: Db, settings: CheckoutSettings = {}) {
           const r = await restaurant();
           const now = nowIn(r.timezone);
           const windows = await loadWindows(db, r.id, order.day, order.id);
-          if (order.day !== now.date || !fittingWindows(windows, order.pizzas, now.time).some((w) => w.starts === hhmm(order.window_starts))) {
+          if (order.day !== now.date || !fittingWindows(windows, order.pizzas, now.time, await leadMinutes(db, r.id)).some((w) => w.starts === hhmm(order.window_starts))) {
             await db.query("UPDATE online_orders SET status = 'expired' WHERE id = $1 AND status = 'held'", [order.id]);
             throw new HttpError(409, 'Sorry, that pickup time filled up while you were paying. You haven’t been charged: start again to pick another time.');
           }
