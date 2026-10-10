@@ -421,6 +421,7 @@ function shell(me, active, content) {
       h('button', { class: active === 'settings' ? 'on' : '', 'data-key': 'settings', onclick: () => home(me) }, icon('settings'), 'Settings'),
       h('div', { class: 'spacer' }),
       whoAmI(me),
+      manager && active !== 'capture' ? captureButton(me, 'chip') : null,
     ),
     h('main', {}, content),
   );
@@ -4299,6 +4300,7 @@ async function todayScreen(me, filter = 'all') {
   const seq = ++todaySeq;
   loadingScreen(me, 'today', 'Today');
   const r = await api('GET', '/api/today');
+  if (seq !== todaySeq) return; // Left while it loaded (Invoice tapped, say).
   if (!r.ok) return show(shell(me, 'today', [h('h1', { text: 'Today' }), h('div', { class: 'error', text: r.data.error ?? 'Couldn’t load.' })]));
   let t = r.data;
   // Lines just answered or snoozed stay where they were, folded up with an Undo, until you leave Today.
@@ -5873,25 +5875,39 @@ function compareCard() {
  * Today's "Capture an invoice": the camera opens straight away (on a phone), then the pages are
  * checked for blur, more can be added, and Read it sends them to be read and checked.
  */
-function captureButton(me) {
+function captureButton(me, kind = 'button') {
   const picker = h('input', { type: 'file', accept: 'image/*,application/pdf', capture: 'environment', multiple: true, hidden: true, 'aria-label': 'Invoice photo' });
   const err = h('div', { class: 'error small' });
-  const btn = h('button', { class: 'btn dark capture-btn', type: 'button', text: '📷 Capture an invoice', onclick: () => { err.textContent = ''; picker.click(); } });
+  const open = () => { err.textContent = ''; picker.click(); };
+  // A computer: a button at the top of Today. A phone: a round chip in the bottom-right corner, on every screen.
+  const btn = h('button', { class: 'btn dark capture-btn', type: 'button', onclick: open }, cameraIcon(), h('span', { text: 'Capture an invoice' }));
+  const chip = h('button', { class: 'cam-chip', type: 'button', 'aria-label': 'Capture an invoice', onclick: open }, h('span', { class: 'me-dot' }, cameraIcon()), h('span', { class: 'me-out', text: 'Invoice' }));
   picker.addEventListener('change', async () => {
     const files = [...picker.files];
     picker.value = '';
     if (!files.length) return;
-    busy(btn, true);
+    busy(btn, true); busy(chip, true);
     const pages = [];
     for (const f of files) { try { pages.push(await shrinkPhoto(f)); } catch { err.textContent = `Couldn’t open ${f.name}.`; } }
-    busy(btn, false);
+    busy(btn, false); busy(chip, false);
     if (pages.length) captureScreen(me, pages);
   });
-  return h('div', { class: 'capture-bar' }, btn, picker, err);
+  return h('div', { class: kind === 'chip' ? 'capture-corner' : 'capture-bar' }, kind === 'chip' ? chip : btn, picker, err);
+}
+
+/** A camera, two-tone: the body in the text colour, the lens ring in the background's. */
+function cameraIcon() {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('class', 'cam-icon');
+  svg.innerHTML = '<path fill="currentColor" d="M9.2 3.8h5.6c.5 0 .9.2 1.2.6l1.2 1.8h1.9A2.9 2.9 0 0 1 22 9.1v8.2a2.9 2.9 0 0 1-2.9 2.9H4.9A2.9 2.9 0 0 1 2 17.3V9.1a2.9 2.9 0 0 1 2.9-2.9h1.9L8 4.4c.3-.4.7-.6 1.2-.6z"/>'
+    + '<circle cx="12" cy="13.1" r="4.3" fill="var(--lens, #fff)"/><circle cx="12" cy="13.1" r="2.7" fill="currentColor"/><circle cx="18.2" cy="9.3" r=".9" fill="var(--lens, #fff)"/>';
+  return svg;
 }
 
 function captureScreen(me, pages) {
-  show(shell(me, 'today', [
+  todaySeq++; // Today, if it's still loading, doesn't come up over this.
+  show(shell(me, 'capture', [
     h('header', { class: 'row wrap' }, h('div', { class: 'grow' },
       h('button', { class: 'link', text: '← Today', onclick: () => todayScreen(me) }), h('h1', { text: 'Capture an invoice' }))),
     page([photoCard(me, true, { pages, title: 'Pages' })]),
@@ -6421,10 +6437,13 @@ async function unitsScreen(me, back) {
 
 async function home(me) {
   const manager = atLeast(me.roleLevel, 'manager');
-  const signOut = h('button', { class: 'btn', onclick: async () => { await api('POST', '/api/logout'); start(); }, text: 'Sign out' });
+  const logOut = async (e) => { busy(e.currentTarget, true); await api('POST', '/api/logout'); start(); };
+  const signOut = h('button', { class: 'btn', onclick: logOut, text: 'Log out' });
+  // On a phone the corner holds Invoice, so Log out lives here, at the top.
   const header = h('header', { class: 'row' },
     h('div', { class: 'grow' }, h('div', { class: 'kicker', text: me.restaurantName ?? '' }), h('h1', { text: 'Settings' }),
-      h('div', { class: 'sub', text: manager ? 'Your team, kitchen iPads and how the menu is split, in the middle; connections and your own sign-in on the right.' : 'Your prep list will show up here once your station is set up.' })));
+      h('div', { class: 'sub', text: manager ? 'Your team, kitchen iPads and how the menu is split, in the middle; connections and your own sign-in on the right.' : 'Your prep list will show up here once your station is set up.' })),
+    h('button', { class: 'btn phone-only settings-logout', onclick: logOut, text: 'Log out' }));
   const you = sideBox('Signed in', h('div', { class: 'strong', text: me.name }), h('div', { class: 'small muted', text: `${ACCESS_NAMES[me.access] ?? me.access}${me.area ? ` · ${AREA_NAMES[me.area] ?? me.area}` : ''}` }), sideActions(signOut));
   const unitsCard = h('section', { class: 'card' }, h('div', { class: 'row wrap' }, h('h2', { class: 'grow', text: 'Units and containers' }), h('button', { class: 'btn small-btn', text: 'Open', onclick: () => unitsScreen(me, () => home(me)) })),
     h('div', { class: 'small muted', text: 'The fixed conversions, and the containers everyone shares (1/9 pan, deep 1/9 pan, deli quart, Cambros…).' }));

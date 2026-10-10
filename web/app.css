@@ -1487,7 +1487,25 @@ section[aria-label="Email inbox"] .list.compact > div { flex-wrap: wrap; }
 section[aria-label="Email inbox"] .grow { min-width: 0; overflow-wrap: anywhere; }
 section[aria-label="Email inbox"] input[type=text] { width: 100%; }
 
-/* Today: Capture an invoice, big and first on a phone. */
+/* Capture an invoice. A computer: a button at the top of Today. A phone: a round chip in the bottom-right
+   corner on every screen, where Logout was (Log out is in Settings on a phone). */
 .capture-bar { margin: 4px 0 14px; }
-.capture-btn { font-size: 1.05rem; padding: 14px 22px; min-height: 52px; }
-@media (max-width: 700px) { .capture-btn { width: 100%; font-size: 1.15rem; min-height: 60px; } }
+.capture-btn { display: inline-flex; align-items: center; gap: 10px; --lens: #000; }
+.capture-btn .cam-icon { width: 20px; height: 20px; }
+.capture-corner { display: none; }
+.phone-only { display: none; }
+@media (max-width: 700px) {
+  .capture-bar { display: none; }
+  .phone-only { display: inline-flex; align-items: center; justify-content: center; }
+  .rail .me { display: none; }
+  .capture-corner { display: block; position: fixed; right: 12px; bottom: 12px; z-index: 60; }
+  .capture-corner .error:empty { display: none; }
+  .settings-logout { align-self: flex-start; flex: none; }
+  .capture-corner .error { position: absolute; right: 0; bottom: calc(100% + 6px); width: max-content; max-width: 70vw; background: var(--card); padding: 6px 8px; }
+  .rail .cam-chip { display: flex; flex-direction: row; align-items: center; gap: 0; width: auto; padding: 4px; border: 0; border-radius: 999px; background: #000; color: #fff; box-shadow: 0 4px 14px rgba(0,0,0,.25); cursor: pointer; font: inherit; }
+  .cam-chip .me-dot { color: #000; }
+  .cam-chip .me-dot .cam-icon { width: 20px; height: 20px; }
+  .cam-chip .me-out { border: 0; padding: 0 8px 0 6px; margin: 0; width: auto; }
+  .rail .cam-chip.busy::after { display: none; }
+  .cam-chip.busy .me-dot { opacity: .5; }
+}
